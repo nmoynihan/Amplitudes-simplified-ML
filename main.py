@@ -1,4 +1,5 @@
 import math
+import random
 import numpy as np
 import torch
 import torch.nn as nn
@@ -8,13 +9,18 @@ from torch.utils.data import Dataset, DataLoader
 class ExpressionDataset(Dataset):
     def __init__(self, num_samples=100000):
         self.samples = [self.generate_scramble() for _ in range(num_samples)]
+        # Print example using self.multi_scramble (this runs when an instance is created)
+        simple_expr = "e1.p2 + e3.p4"
+        complex_expr = self.multi_scramble(simple_expr, times=3, total_particles=5, include_mass=True)
+        print("Simple expr: e1.p2 + e3.p4. Scrambled", complex_expr)
 
     # Enacts momentum conservation, i.e. it enacts p_index = -(sum_{k != index} p_k)    
-    def momentum_substitution(momentum_index, total_particles=5):
+    def momentum_substitution(self, momentum_index, total_particles=5):
         others = [f"p{k}" for k in range(1, total_particles+1) if k != momentum_index]
         return "(-" + "+".join(others) + ")"
-
-    def scramble_expression(expr, total_particles=5, include_mass=False):
+    
+    # Scramble an expression
+    def scramble_expression(self, expr, total_particles=5, include_mass=False):
         """
         Scrambles a simple amplitude expression (given as a string) by applying one of three operations.
         
@@ -36,16 +42,17 @@ class ExpressionDataset(Dataset):
         op = random.choice(ops)
         
         if op == 0:
-            # --- Multiply-by-1 using an ε·p fraction ---
+            # Multiply-by-1 using an ε·p fraction or a p.p function 
             i = random.randint(1, total_particles)
             j = random.randint(1, total_particles)
-            # With 50% chance, substitute momentum conservation in the numerator.
+            # Substitute momentum conservation in the numerator.
+            substituted = self.momentum_substitution(j, total_particles)
             if random.choice([True, False]):
-                substituted = momentum_substitution(j, total_particles)
                 numerator = f"e{i}.{substituted}"
+                denominator = f"e{i}.p{j}"
             else:
-                numerator = f"e{i}.p{j}"
-            denominator = f"e{i}.p{j}"
+                numerator = f"p{i}.{substituted}"
+                denominator = f"p{i}.p{j}"
             fraction = f"({numerator})/({denominator})"
             scrambled = f"({expr})*{fraction}"
         
@@ -66,15 +73,20 @@ class ExpressionDataset(Dataset):
             scrambled = f"({expr})*{fraction}"
         
         return scrambled
-
-    # Example usage:
-    if __name__ == "__main__":
-        simple_expr = "e1.p2 + e3.p4"  # a simple amplitude expression
-        print("Scrambled expressions (including masses):")
-        for _ in range(5):
-            print(scramble_expression(simple_expr, total_particles=5, include_mass=True))
-
-
+    
+    def multi_scramble(self, expr, times=3, total_particles=5, include_mass=False):
+        scrambled_expr = expr
+        for _ in range(times):
+            scrambled_expr = self.scramble_expression(scrambled_expr, total_particles, include_mass)
+        return scrambled_expr
+    
+    def generate_scramble(self):
+        # For illustration, scramble a fixed simple expression.
+        simple_expr = "e1.p2 + e3.p4"
+        complex_expr = self.multi_scramble(simple_expr, times=3, total_particles=5, include_mass=True)
+        # Return a tuple (complex expression, simple expression)
+        return complex_expr, simple_expr
+    
     def generate_sample(self):
         # Use the scrambler above to generate a bunch of data
         return complex_expr, simple_expr
@@ -100,17 +112,16 @@ class SimpleTokenizer:
     def decode(self, ids):
         return " ".join(self.id_to_token[i] for i in ids)
 
-    vocab = [
+vocab = [
         "<pad>", "<s>", "</s>",
         "eps",    # polarization vector symbol
         "p",      # momentum vector symbol
         "dot",    # dot product operator
         "(", ")",
         "^", # powers
-        
         "+", "-", "*",
         "1", "2", "3", "4", "5", "6", "7", "8"  # particle labels
-    ]
+]
 tokenizer = SimpleTokenizer(vocab)
 vocab_size = len(vocab)
 
