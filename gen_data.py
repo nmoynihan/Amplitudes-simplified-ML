@@ -154,14 +154,17 @@ def write_dataset_to_hdf5(filename, simple_exprs, scrambled_exprs):
 
 if __name__ == "__main__":
     num_samples = 10000    # Total number of amplitude examples.
-    n_gluons = 4           # Number of external gluons (1 polarization vector per gluon).
+    n_gluons_max = 4           # Number of external gluons (1 polarization vector per gluon).
+    n_gluons_min = 2
     num_terms_simple = 1   # Number of terms summed in the simple amplitude.
     scramble_times = 3     # Number of scrambling operations applied.
-    
-    # Generate the dataset.
-    simple_exprs, scrambled_exprs = generate_dataset(num_samples, n_gluons,
-                                                     num_terms_simple, scramble_times)
-    
-    # Write the dataset to an HDF5 file.
-    output_filename = "amplitude_dataset.hdf5"
-    write_dataset_to_hdf5(output_filename, simple_exprs, scrambled_exprs)
+    i=n_gluons_min
+    while (i<= n_gluons_max):
+      # Generate the dataset.
+      simple_exprs, scrambled_exprs = generate_dataset(num_samples, i,
+                                                      num_terms_simple, scramble_times)
+      
+      # Write the dataset to an HDF5 file.
+      output_filename = f"amplitude_dataset{i}.hdf5"
+      write_dataset_to_hdf5(output_filename, simple_exprs, scrambled_exprs)
+      i=i+1
