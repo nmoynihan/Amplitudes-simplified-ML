@@ -98,13 +98,14 @@ def scramble_expression(expr, total_particles=5, include_mass=False):
     
     elif op == 2:
         # Multiply-by-1 using masses.
-        i = random.randint(1, total_particles)
-        fraction = f"(m{i}^2)/(m{i}^2)"
-        scrambled = f"({expr})*{fraction}"
-    
+        # Todo: Implement this operation.
+        pass
     elif op == 3:
         # Apply momentum conservation directly to the original expression.
         scrambled = momentum_conservation_substitution(expr, total_particles)
+    """
+    Note: Another thing that could added to scramble is to use the fact that eta_{\mu\nu} can be written in terms of \epsilon_\mu(k)\bar{\epsilon}_\nu(k) + k_\mu k_\nu / k^2 + gauge terms. This is a fairly horrible scramble, but is worth putting in.
+    """
     
     return scrambled
 
