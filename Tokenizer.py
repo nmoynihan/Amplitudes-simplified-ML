@@ -7,7 +7,7 @@ class ScatteringAmplitudeTokenizer:
     # p_1, e_1, F_1 are the particle, polarisation and field strength tokens, respectively.
     # Tr is the trace operator.
     _token_re = re.compile(
-        r'p_\d+|e_\d+|F_\d+'
+        r'p_\d+|e_\d+|F_\d+|M_\d+'
         r'|Tr'
         r'|M' # mass, should probably not be used in expressions (favour p_1.p_1)
         r'|\d+'                     # one-or-more digits
@@ -56,11 +56,13 @@ class ScatteringAmplitudeTokenizer:
                          for i in range(1, max_particles + 1)}
         self.f_tokens = {f"F_{i}": nxt + 2 * max_particles + i - 1
                          for i in range(1, max_particles + 1)}
-
+        self.m_tokens = {f"M_{i}": nxt + 3 * max_particles + i - 1
+                         for i in range(1, max_particles + 1)}
         self.vocab: Dict[str, int] = {
-            **self.vocab_init, **self.p_tokens, **self.e_tokens, **self.f_tokens
+            **self.vocab_init, **self.p_tokens, **self.e_tokens, **self.f_tokens, **self.m_tokens
         }
         self.id_to_token = {i: t for t, i in self.vocab.items()}
+        print(f"Tokenizer vocabulary size: {len(self.vocab)}")
 
         # precedence & arity tables
         # airity is basically the number of objects the operator eats, i.e. +-* eats two, Tr eats one
@@ -265,7 +267,7 @@ if __name__ == "__main__":
         "-6(p_1 · p_2) / (e_1 · e_2)",
         "(Tr(F_1 · F_2) ^ 2:) / (5p_1 · p_1) + 7",
         "12(p_2 · p_3 - p_3 · p_4) * Tr(3F_1 · F_1)",
-        "M^2*p_1 · p_2 + 3e_1 · e_2 - 4F_1 · F_2"
+        "M_1*M_2*p_1 · p_2 + 3e_1 · e_2 - 4F_1 · F_2"
     ]
 
 
