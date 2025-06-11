@@ -9,6 +9,7 @@ class ScatteringAmplitudeTokenizer:
     _token_re = re.compile(
         r'p_\d+|e_\d+|F_\d+'
         r'|Tr'
+        r'|M' # mass, should probably not be used in expressions!
         r'|\d+'                     # one-or-more digits
         r'|[+\-*/^·().]'
     )
@@ -44,7 +45,9 @@ class ScatteringAmplitudeTokenizer:
             "9:": 20,
             "10:": 21,
             "·": 22, # dot operator.
-            "Tr": 23
+            "Tr": 23,
+            "u-": 24,  # unary minus
+            "M": 25,  # mass. Probably best not used!
         }
 
         nxt = max(self.vocab_init.values()) + 1
@@ -62,16 +65,31 @@ class ScatteringAmplitudeTokenizer:
         # precedence & arity tables
         # airity is basically the number of objects the operator eats, i.e. +-* eats two, Tr eats one
         # precedence is the order of operations, i.e. Tr > ^ > * > / > + > -
-        self._prec = {"+": 1, "-": 1, "*": 2, "/": 2, "·": 2, "^": 3, "Tr": 4}
+        self._prec = {"+":1, "-":1, "*":2, "/":2, "·":2, "^":3, "u-":4, "Tr":5}
         self._arity = {op: 2 for op in ["+", "-", "*", "/", "·", "^"]}
         self._arity["Tr"] = 1
+        # We also define a unary minus operator for when it appears at the start of an expression or after an operator
+        self._arity["u-"] = 1
 
     # ──────────────────────────────────────────────────────────────────── #
     # Public helpers
     # ──────────────────────────────────────────────────────────────────── #
     def encode_infix(self, expr: str) -> List[int]:
         tokens = self._to_prefix(expr)
-        return [self.vocab.get(tok, self.vocab["<UNK>"]) for tok in tokens]
+        result = []
+        unknown_tokens = []
+        
+        for tok in tokens:
+            if tok in self.vocab:
+                result.append(self.vocab[tok])
+            else:
+                result.append(self.vocab["<UNK>"])
+                unknown_tokens.append(tok)
+        
+        if unknown_tokens:
+            raise ValueError(f"Unknown tokens found in expression '{expr}': {unknown_tokens}")
+        
+        return result
 
     def decode_prefix(self, ids: List[int]) -> str:
         return " ".join(self.id_to_token[i] for i in ids if i != self.vocab["<PAD>"])
@@ -80,13 +98,19 @@ class ScatteringAmplitudeTokenizer:
         toks = [self.id_to_token[i] for i in ids if i != self.vocab["<PAD>"]]
 
         def _parse(idx: int) -> Tuple[str, int]:
+            if idx >= len(toks):
+                raise ValueError("Malformed prefix tokens: ran out of tokens.")
+
             tok = toks[idx]
             # operators --------------------------------------------------- #
-            if tok in self._arity:
-                if tok == "Tr":                     # unary
-                    child, nxt = _parse(idx + 1)
-                    return f"Tr({child})", nxt
-                left, nxt = _parse(idx + 1)        # binary
+            if tok == "Tr":                     # unary trace operator
+                child, nxt = _parse(idx + 1)
+                return f"Tr({child})", nxt
+            elif tok == 'u-':                   # unary minus
+                child, nxt = _parse(idx + 1)
+                return f"-({child})", nxt
+            elif tok in self._arity:            # binary operators
+                left, nxt = _parse(idx + 1)
                 right, nxt = _parse(nxt)
                 return f"({left} {tok} {right})", nxt
 
@@ -140,11 +164,28 @@ class ScatteringAmplitudeTokenizer:
             res.append(t)
         return res
 
+    def _detect_unary_minus(self, tokens: List[str]) -> List[str]:
+        res = []
+        for i, t in enumerate(tokens):
+            if t == '-':
+                #print(f"Detected unary minus at position {i} in tokens: {tokens}")
+                if i == 0 or tokens[i - 1] in self._prec or tokens[i - 1] == '(':
+                    #print(f"  → treating as unary minus")
+                    res.append('u-')
+                else:
+                    res.append('-')
+            else:
+                res.append(t)
+        #print(f"Tokens after unary minus detection: {res}")
+        return res
+
     def _to_prefix(self, expr: str) -> List[str]:
         infix = self._insert_implicit_mul(self._tokenise(expr))
-        # reverse and swap parens
+        infix = self._detect_unary_minus(infix)
+        
+        # Reverse the infix expression and swap parentheses
         infix = [")" if t == "(" else "(" if t == ")" else t for t in infix[::-1]]
-
+        
         # shunting-yard on reversed stream
         out, stack = [], []
         for tok in infix:
@@ -158,7 +199,8 @@ class ScatteringAmplitudeTokenizer:
                         stack.pop()
                 else:  # real operator
                     while (stack and stack[-1] != "("
-                           and self._prec[stack[-1]] > self._prec[tok]):
+                        and stack[-1] in self._prec
+                        and self._prec[stack[-1]] > self._prec[tok]):
                         out.append(stack.pop())
                     stack.append(tok)
             else:
@@ -166,17 +208,36 @@ class ScatteringAmplitudeTokenizer:
         out.extend(reversed(stack))           # drain
         return out[::-1]                      # postfix → prefix
 
+    def debug_tokenization(self, expr: str) -> Dict[str, any]:
+        """Debug method to see all tokenization steps"""
+        raw_tokens = self._tokenise(expr)
+        with_implicit_mul = self._insert_implicit_mul(raw_tokens)
+        with_unary_minus = self._detect_unary_minus(with_implicit_mul)
+        prefix_tokens = self._to_prefix(expr)
+        
+        unknown_tokens = [tok for tok in prefix_tokens if tok not in self.vocab]
+        
+        return {
+            "original": expr,
+            "raw_tokens": raw_tokens,
+            "with_implicit_mul": with_implicit_mul,
+            "with_unary_minus": with_unary_minus,
+            "prefix_tokens": prefix_tokens,
+            "unknown_tokens": unknown_tokens,
+            "vocab_keys": list(self.vocab.keys())
+        }
+
 
 if __name__ == "__main__":
     tests =   [
         "13p_2 · p_2",
         "(4p_1 · p_2) ^ 3:",
         "Tr(7F_1 · F_2) + 5p_3 · e_2",
-        "Tr((F_1 · F_1) ^ 2:) / (3p_1 · p_1)",
+        "-Tr((F_1 · F_1) ^ 2:) / (3p_1 · p_1)",
         "(9p_4 · p_4 - 8p_3 · p_3) / (2p_2 · p_2)",
         "64Tr(F_3 · F_3 · F_3) - 12p_6 · p_6",
         "(Tr(F_2 · F_3) + 4p_1 · e_1) ^ 2:",
-        "6(p_1 · p_2) / (e_1 · e_2)",
+        "-6(p_1 · p_2) / (e_1 · e_2)",
         "(Tr(F_1 · F_2) ^ 2:) / (5p_1 · p_1) + 7",
         "12(p_2 · p_3 - p_3 · p_4) * Tr(3F_1 · F_1)"
     ]
@@ -193,3 +254,18 @@ if __name__ == "__main__":
         print(f"Vector:             {vec}")
         print(f"Polish:             {pref}")
         print(f"Decoded Vector:     {back}")
+    
+    vec1 = tok.encode_infix("-(e_3 · p_2*e_4 · p_3*p_1 · p_3*p_1 · p_4) + e_3 · p_1*e_4 · p_3*p_1 · p_4*p_2 · p_3 - (p_1 · p_1*e_3 · p_2*e_4 · p_1*p_1 · p_3*p_3 · p_4)/(p_1 · p_4) - (e_3 · p_2*e_4 · p_1*(p_1 · p_3)^2*p_3 · p_4)/(p_1 · p_4) - e_3 · p_1*e_4 · p_1*p_2 · p_3*p_3 · p_4 + (e_3 · p_2*e_4 · p_1*p_1 · p_2*p_1 · p_3*p_2 · p_4*p_3 · p_4)/(p_1 · p_4)^2 + (e_3 · p_2*e_4 · p_1*p_1 · p_2*p_1 · p_3*(p_3 · p_4)^2)/(p_1 · p_4)^2") 
+    print(f"Vector: {vec1}")   
+    print(f"Extra test: {tok.decode_infix(vec1)}")
+
+    # Debug a problematic expression
+    problematic_expr = "M^2*p_1 · p_2 + 3e_1 · e_2 - 4F_1 · F_2"
+    debug_info = tok.debug_tokenization(problematic_expr)
+    
+    print("=== DEBUG INFO ===")
+    for key, value in debug_info.items():
+        print(f"{key}: {value}")
+    
+    if debug_info["unknown_tokens"]:
+        print(f"ERROR: Unknown tokens found: {debug_info['unknown_tokens']}")
