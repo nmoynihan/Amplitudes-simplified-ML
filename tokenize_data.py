@@ -59,8 +59,8 @@ def tokenise_file(src: pathlib.Path,
             else:
                 simple_ids = json.loads(row["simple"])
                 scrambled_ids = json.loads(row["scrambled"])
-
-                if reader.line_num == 300:
+                debug_reader = False  # Set to True to debug a specific row
+                if reader.line_num == 300 & debug_reader == True:
                     print("Row", reader.line_num, ":", row)
                     print("Simple tokenized", simple_ids)
                     print("Simple infix", tok.decode_infix(simple_ids))
