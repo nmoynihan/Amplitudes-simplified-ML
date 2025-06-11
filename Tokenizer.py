@@ -97,22 +97,47 @@ class ScatteringAmplitudeTokenizer:
     def decode_infix(self, ids: List[int]) -> str:
         toks = [self.id_to_token[i] for i in ids if i != self.vocab["<PAD>"]]
 
-        def _parse(idx: int) -> Tuple[str, int]:
+        def _needs_parens(expr: str, parent_prec: int) -> bool:
+            """Check if an expression needs parentheses based on its content"""
+            # Simple heuristic: if it contains operators with lower precedence
+            for op in ['+', '-']:
+                if op in expr and self._prec[op] < parent_prec:
+                    return True
+            return False
+
+        def _parse(idx: int, parent_prec: int = 0, is_right: bool = False) -> Tuple[str, int]:
             if idx >= len(toks):
                 raise ValueError("Malformed prefix tokens: ran out of tokens.")
 
             tok = toks[idx]
+            
             # operators --------------------------------------------------- #
             if tok == "Tr":                     # unary trace operator
-                child, nxt = _parse(idx + 1)
+                child, nxt = _parse(idx + 1, self._prec[tok])
                 return f"Tr({child})", nxt
             elif tok == 'u-':                   # unary minus
-                child, nxt = _parse(idx + 1)
-                return f"-({child})", nxt
+                child, nxt = _parse(idx + 1, self._prec[tok])
+                # Only add parentheses if child has lower precedence
+                if _needs_parens(child, self._prec[tok]):
+                    return f"-({child})", nxt
+                else:
+                    return f"-{child}", nxt
             elif tok in self._arity:            # binary operators
-                left, nxt = _parse(idx + 1)
-                right, nxt = _parse(nxt)
-                return f"({left} {tok} {right})", nxt
+                left, nxt = _parse(idx + 1, self._prec[tok], False)
+                right, nxt = _parse(nxt, self._prec[tok], True)
+                
+                # Determine if we need parentheses around the whole expression
+                current_prec = self._prec[tok]
+                needs_parens = (current_prec < parent_prec or 
+                               (current_prec == parent_prec and is_right and tok in ['-', '/', '^']))
+                
+                # Format with appropriate spacing
+                if tok in ['+', '-']:  # Binary + and - get spaces
+                    expr = f"{left} {tok} {right}"
+                else:  # All other operators (*, /, ^, ·) get no spaces
+                    expr = f"{left}{tok}{right}"
+                
+                return f"({expr})" if needs_parens else expr, nxt
 
             # leaf (maybe part of a multi-digit constant) ---------------- #
             if tok.endswith(":") and tok[:-1].isdigit():
