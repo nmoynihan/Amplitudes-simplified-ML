@@ -9,7 +9,7 @@ class ScatteringAmplitudeTokenizer:
     _token_re = re.compile(
         r'p_\d+|e_\d+|F_\d+'
         r'|Tr'
-        r'|M' # mass, should probably not be used in expressions!
+        r'|M' # mass, should probably not be used in expressions (favour p_1.p_1)
         r'|\d+'                     # one-or-more digits
         r'|[+\-*/^·().]'
     )
@@ -239,7 +239,8 @@ if __name__ == "__main__":
         "(Tr(F_2 · F_3) + 4p_1 · e_1) ^ 2:",
         "-6(p_1 · p_2) / (e_1 · e_2)",
         "(Tr(F_1 · F_2) ^ 2:) / (5p_1 · p_1) + 7",
-        "12(p_2 · p_3 - p_3 · p_4) * Tr(3F_1 · F_1)"
+        "12(p_2 · p_3 - p_3 · p_4) * Tr(3F_1 · F_1)",
+        "M^2*p_1 · p_2 + 3e_1 · e_2 - 4F_1 · F_2"
     ]
 
 
@@ -254,7 +255,9 @@ if __name__ == "__main__":
         print(f"Vector:             {vec}")
         print(f"Polish:             {pref}")
         print(f"Decoded Vector:     {back}")
-    
+        
+    # Uncomment the following lines to test a more complex expression with debug info
+    """
     vec1 = tok.encode_infix("-(e_3 · p_2*e_4 · p_3*p_1 · p_3*p_1 · p_4) + e_3 · p_1*e_4 · p_3*p_1 · p_4*p_2 · p_3 - (p_1 · p_1*e_3 · p_2*e_4 · p_1*p_1 · p_3*p_3 · p_4)/(p_1 · p_4) - (e_3 · p_2*e_4 · p_1*(p_1 · p_3)^2*p_3 · p_4)/(p_1 · p_4) - e_3 · p_1*e_4 · p_1*p_2 · p_3*p_3 · p_4 + (e_3 · p_2*e_4 · p_1*p_1 · p_2*p_1 · p_3*p_2 · p_4*p_3 · p_4)/(p_1 · p_4)^2 + (e_3 · p_2*e_4 · p_1*p_1 · p_2*p_1 · p_3*(p_3 · p_4)^2)/(p_1 · p_4)^2") 
     print(f"Vector: {vec1}")   
     print(f"Extra test: {tok.decode_infix(vec1)}")
@@ -269,3 +272,4 @@ if __name__ == "__main__":
     
     if debug_info["unknown_tokens"]:
         print(f"ERROR: Unknown tokens found: {debug_info['unknown_tokens']}")
+    """
