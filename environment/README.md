@@ -4,5 +4,5 @@ conda create -n ml_amplitudes
 ```
 ...then, activate this environment and install the required packages:
 ```
-conda activate ainstein && pip install -r environment/requirements.txt
+conda activate ml_amplitudes && pip install -r environment/requirements.txt
 ```
