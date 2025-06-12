@@ -1,7 +1,7 @@
-.DS_Store
+**/.DS_Store
 tags
-__pycache__
-.ipynb_checkpoints
+**/__pycache__
+**/.ipynb_checkpoints
 venv/
 models/*
 messabout.ipynb
