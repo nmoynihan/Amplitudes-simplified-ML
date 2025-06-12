@@ -12,8 +12,14 @@ from transformer_functions import create_model, train_model
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Specify the run hyperparameters
-filename = 'w1.csv'
-hyperparams = {
+filename = 'w1_short.csv'
+training_hyperparams = {
+    'n_epochs': 2,
+    'batch_size': 16,
+    'train_split': 0.8,
+    'learning_rate': 1e-4
+}
+model_hyperparams = {
     'embedding_dim': 256,
     'n_heads': 8,
     'n_enc_layers': 6,
@@ -60,22 +66,22 @@ csv_file = os.getcwd()+'/Data/'+filename
 # Set up the dataloaders
 train_loader, val_loader = load_and_prepare_data(
     csv_file, 
-    batch_size=16, 
+    batch_size=training_hyperparams['batch_size'], 
     max_length=None, 
-    train_split=0.8
+    train_split=training_hyperparams['train_split']
  )
 
 # Create model (automatically moves to device)
-model = create_model(vocab_size, **hyperparams)
+model = create_model(vocab_size, **model_hyperparams)
 
 # Loss function (ignore padding tokens)
 criterion = nn.CrossEntropyLoss(ignore_index=0)  # 0 is pad token
 
 # Optimizer
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+optimizer = torch.optim.Adam(model.parameters(), lr=training_hyperparams['learning_rate'])
 
-print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
-print(f"Hyperparameters: {hyperparams}")
+print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters.")
+print(f"Hyperparameters:\nModel:{model_hyperparams}\nTraining:{training_hyperparams}")
 
 # Run training
 train_losses, val_losses = train_model(
@@ -84,5 +90,16 @@ train_losses, val_losses = train_model(
     criterion, 
     train_loader, 
     val_loader, 
-    epochs=10
+    epochs=training_hyperparams['n_epochs']
 )
+
+'''
+# Code to import a pre-trained transformer model
+from transformer_functions import TransformerRegressor, load_transformer_model
+
+# Load the model
+loaded_model_path = '../models/transformer_e2.pt'
+loaded_data = load_transformer_model(TransformerRegressor, loaded_model_path)
+loaded_model = loaded_data['model']
+print(f"Loaded model from epoch {loaded_data['epoch']}")
+'''
