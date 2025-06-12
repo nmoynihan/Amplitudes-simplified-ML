@@ -1,4 +1,5 @@
 '''Script to define the functions used in initialising and training the transformer model'''
+import os
 import torch
 import torch.nn as nn
 import math
@@ -290,6 +291,9 @@ def validate_step(model, batch, criterion):
 def train_model(model, optimizer, criterion, train_loader, val_loader, epochs):
     train_losses, val_losses = [], []
     
+    # Create models directory if it doesn't exist
+    os.makedirs('models', exist_ok=True)
+    
     for epoch in range(epochs):
         # Training
         model.train()
@@ -311,7 +315,16 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs):
         train_losses.append(epoch_train_loss)
         val_losses.append(epoch_val_loss)
         
-        print(f"Epoch {epoch+1}: Train Loss: {epoch_train_loss:.4f}, Val Loss: {epoch_val_loss:.4f}")
+        # Save model after each epoch
+        model_path = os.path.join('models', f'transformer_epoch_{epoch+1}.pt')
+        torch.save({
+            'epoch': epoch + 1,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'train_loss': epoch_train_loss,
+            'val_loss': epoch_val_loss,
+        }, model_path)
+        
+        print(f"Epoch {epoch+1}: Train Loss: {epoch_train_loss:.4f}, Val Loss: {epoch_val_loss:.4f} | Model saved to {model_path}")
     
     return train_losses, val_losses
-
