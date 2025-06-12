@@ -61,7 +61,7 @@ vocab = {
 vocab_size = 58 ###len(vocab.keys())
 
 # Load data
-csv_file = os.getcwd()+'/Data/'+filename
+csv_file = os.getcwd()+'/data/'+filename
 
 # Set up the dataloaders
 train_loader, val_loader = load_and_prepare_data(
