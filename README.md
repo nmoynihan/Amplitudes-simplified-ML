@@ -10,7 +10,7 @@ Ensure this venv is activated, then follow the instructions below to generate da
 ### Transformer Training Instructions
 In the main repo directory run:
 ```
-python3 Transformer/transformer_trainer.py
+python3 transformer/transformer_trainer.py
 ```
 
 ## BibTeX Citation  
