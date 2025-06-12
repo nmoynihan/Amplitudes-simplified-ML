@@ -1,5 +1,6 @@
 torch
-numpy
+tqdm
+pandas
 matplotlib
 sympy
 h5py
