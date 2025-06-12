@@ -1,2 +1,6 @@
+.DS_Store
+tags
+__pycache__
+.ipynb_checkpoints
 venv/
 messabout.ipynb
