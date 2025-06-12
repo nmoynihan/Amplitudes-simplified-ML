@@ -3,4 +3,5 @@ tags
 __pycache__
 .ipynb_checkpoints
 venv/
+models/*
 messabout.ipynb

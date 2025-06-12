@@ -67,10 +67,27 @@ class TransformerRegressor(nn.Module):
     ):
         super().__init__()
         
+        self.vocab_size = vocab_size
         self.embedding_dim = embedding_dim
-        self.pad_token_id = pad_token_id
+        self.n_heads = n_heads
+        self.n_enc_layers = n_enc_layers
+        self.n_dec_layers = n_dec_layers
+        self.dropout = dropout
+        self.sinusoidal_embeddings = sinusoidal_embeddings
         self.max_seq_len = max_seq_len
+        self.pad_token_id = pad_token_id
         self.device = device
+        self.model_hyperparams = {'vocab_size': self.vocab_size, 
+                                  'embedding_dim': self.embedding_dim,
+                                  'n_heads': self.n_heads,
+                                  'n_enc_layers': self.n_enc_layers,
+                                  'n_dec_layers': self.n_dec_layers,
+                                  'dropout': self.dropout,
+                                  'sinusoidal_embeddings': self.sinusoidal_embeddings,
+                                  'max_seq_len': self.max_seq_len,
+                                  'pad_token_id': self.pad_token_id,
+                                  'device': self.device,
+                                  }
         
         # Token embeddings
         self.src_embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=pad_token_id)
@@ -289,6 +306,25 @@ def validate_step(model, batch, criterion):
 
 
 def train_model(model, optimizer, criterion, train_loader, val_loader, epochs):
+    """Trains a transformer model with automatic checkpointing after each epoch.
+
+    Performs training and validation loops for the specified number of epochs,
+    saving the model after each epoch (in 'models/' directory) and deleting
+    the previous epoch's checkpoint. Tracks and returns training/validation losses.
+
+    Args:
+        model (torch.nn.Module): Transformer model to be trained
+        optimizer (torch.optim.Optimizer): Optimizer for training (e.g. Adam)
+        criterion (callable): Loss function (e.g. nn.CrossEntropyLoss)
+        train_loader (torch.utils.data.DataLoader): Training data loader
+        val_loader (torch.utils.data.DataLoader): Validation data loader
+        epochs (int): Number of complete passes through the training data
+
+    Returns:
+        tuple: Two lists containing:
+            - train_losses (list[float]): Average training loss per epoch
+            - val_losses (list[float]): Average validation loss per epoch
+    """
     train_losses, val_losses = [], []
     
     # Create models directory if it doesn't exist
@@ -315,16 +351,76 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs):
         train_losses.append(epoch_train_loss)
         val_losses.append(epoch_val_loss)
         
-        # Save model after each epoch
-        model_path = os.path.join('models', f'transformer_epoch_{epoch+1}.pt')
+        # Delete previous epoch's model if it exists
+        if epoch > 0:
+            prev_model_path = os.path.join('models', f'transformer_e{epoch}.pt')
+            if os.path.exists(prev_model_path):
+                os.remove(prev_model_path)
+        
+        # Save current model
+        model_path = os.path.join('models', f'transformer_e{epoch+1}.pt')
         torch.save({
             'epoch': epoch + 1,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'train_loss': epoch_train_loss,
             'val_loss': epoch_val_loss,
+            'model_args': model.model_hyperparams,
         }, model_path)
         
         print(f"Epoch {epoch+1}: Train Loss: {epoch_train_loss:.4f}, Val Loss: {epoch_val_loss:.4f} | Model saved to {model_path}")
     
     return train_losses, val_losses
+
+
+def load_transformer_model(model_class, model_path, optimizer=None, device='cpu'):
+    """
+    Load a saved transformer model checkpoint.
+    
+    Args:
+        model_class: The model class (needed to initialize empty model)
+        model_path: Path to the .pt checkpoint file
+        optimizer: Optional optimizer to load state into
+        device: Target device ('cuda' or 'cpu')
+    
+    Returns:
+        model: Loaded model with trained weights
+        optimizer: Optimizer with saved state (if provided)
+        epoch: The epoch number when saved
+        train_loss: Training loss at that epoch
+        val_loss: Validation loss at that epoch
+    """
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"No model found at {model_path}")
+        
+    # Auto-detect device if not specified
+    if device is None:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    # Verify CUDA availability if requested
+    if device == 'cuda' and not torch.cuda.is_available():
+        raise RuntimeError("CUDA device requested but not available")
+    
+    # Load checkpoint
+    checkpoint = torch.load(model_path, map_location=device)
+    
+    # Initialize model
+    model = model_class(**checkpoint['model_args']).to(device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Initialize optimizer if provided
+    if optimizer is not None:
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    
+    # Extract training info
+    epoch = checkpoint['epoch']
+    train_loss = checkpoint['train_loss']
+    val_loss = checkpoint['val_loss']
+    
+    return {
+        'model': model,
+        'optimizer': optimizer if optimizer else None,
+        'epoch': epoch,
+        'train_loss': train_loss,
+        'val_loss': val_loss
+    }
