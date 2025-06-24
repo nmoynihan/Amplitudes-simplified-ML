@@ -66,7 +66,6 @@ class TransformerRegressor(nn.Module):
         device: str = 'cpu'
     ):
         super().__init__()
-        
         self.vocab_size = vocab_size
         self.embedding_dim = embedding_dim
         self.n_heads = n_heads
@@ -78,16 +77,16 @@ class TransformerRegressor(nn.Module):
         self.pad_token_id = pad_token_id
         self.device = device
         self.model_hyperparams = {'vocab_size': self.vocab_size, 
-                                  'embedding_dim': self.embedding_dim,
-                                  'n_heads': self.n_heads,
-                                  'n_enc_layers': self.n_enc_layers,
-                                  'n_dec_layers': self.n_dec_layers,
-                                  'dropout': self.dropout,
-                                  'sinusoidal_embeddings': self.sinusoidal_embeddings,
-                                  'max_seq_len': self.max_seq_len,
-                                  'pad_token_id': self.pad_token_id,
-                                  'device': self.device,
-                                  }
+                                 'embedding_dim': self.embedding_dim,
+                                 'n_heads': self.n_heads,
+                                 'n_enc_layers': self.n_enc_layers,
+                                 'n_dec_layers': self.n_dec_layers,
+                                 'dropout': self.dropout,
+                                 'sinusoidal_embeddings': self.sinusoidal_embeddings,
+                                 'max_seq_len': self.max_seq_len,
+                                 'pad_token_id': self.pad_token_id,
+                                 'device': self.device,
+                                 }
         
         # Token embeddings
         self.src_embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=pad_token_id)
@@ -228,6 +227,183 @@ class TransformerRegressor(nn.Module):
         
         return generated
 
+    def generate_beam(self, src, beam_size=5, length_penalty=1.0, early_stopping=True, max_length=100,
+                      stochastic=True, nucl_p=0.95, temperature=1.0, rng_gen=None,
+                      bos_token=2, eos_token=3, pad_token=0):
+        """
+        Beam search or nucleus sampling decoding for sequence generation.
+        Args:
+            src: Source sequence [batch_size, src_seq_len]
+            beam_size: Number of beams
+            length_penalty: Length penalty for beam search
+            early_stopping: Whether to stop early when enough hypotheses are found
+            max_length: Maximum generation length
+            stochastic: If True, use nucleus sampling; else, standard beam search
+            nucl_p: Nucleus cutoff probability (for nucleus sampling)
+            temperature: Softmax temperature (for stochastic sampling)
+            rng_gen: Optional torch.Generator for reproducibility
+            bos_token, eos_token, pad_token: Special token ids
+        Returns:
+            decoded: [max_length, batch_size] tensor of generated tokens
+            tgt_len: [batch_size] tensor of output lengths
+            generated_hyps: List of BeamHypotheses objects
+        """
+        self.eval()
+        device = self.device
+        src = src.to(device)
+        batch_size = src.size(0)
+        n_words = self.vocab_size
+
+        # Expand source for beam size
+        src_rep = src.unsqueeze(1).expand((batch_size, beam_size, src.size(1))).contiguous().view(batch_size * beam_size, src.size(1))
+
+        # Generated tokens: [max_length, batch_size * beam_size]
+        generated = torch.full((max_length, batch_size * beam_size), pad_token, dtype=torch.long, device=device)
+        generated[0].fill_(bos_token)
+
+        # Hypotheses
+        generated_hyps = [BeamHypotheses(beam_size, max_length, length_penalty, early_stopping) for _ in range(batch_size)]
+
+        # Beam scores
+        beam_scores = torch.zeros((batch_size, beam_size), dtype=torch.float, device=device)
+        if not stochastic:
+            beam_scores[:, 1:] = -1e9
+        beam_scores = beam_scores.view(-1)
+
+        # Done flags
+        done = [False for _ in range(batch_size)]
+        cur_len = 1
+
+        while cur_len < max_length:
+            # Prepare decoder input
+            input_ids = generated[:cur_len, :].transpose(0, 1)  # [batch_size * beam_size, cur_len]
+            # Decoder expects [batch, seq_len]
+            tgt_mask = self.create_causal_mask(cur_len).to(device)
+            # Forward pass
+            with torch.no_grad():
+                src_key_padding_mask = self.create_padding_mask(src_rep, pad_token)
+                tgt_key_padding_mask = self.create_padding_mask(input_ids, pad_token)
+                src_emb = self.src_embedding(src_rep) * math.sqrt(self.embedding_dim)
+                tgt_emb = self.tgt_embedding(input_ids) * math.sqrt(self.embedding_dim)
+                src_emb = self.src_pos_encoding(src_emb)
+                tgt_emb = self.tgt_pos_encoding(tgt_emb)
+                src_emb = self.dropout(src_emb)
+                tgt_emb = self.dropout(tgt_emb)
+                output = self.transformer(
+                    src=src_emb,
+                    tgt=tgt_emb,
+                    tgt_mask=tgt_mask,
+                    src_key_padding_mask=src_key_padding_mask,
+                    tgt_key_padding_mask=tgt_key_padding_mask
+                )
+                logits = self.output_projection(output)  # [batch_size * beam_size, cur_len, vocab_size]
+                scores = logits[:, -1, :]  # [batch_size * beam_size, vocab_size]
+
+            if stochastic:
+                scores = scores / temperature
+                log_probs = torch.log_softmax(scores, dim=-1)
+                probs = torch.exp(log_probs)
+                # Nucleus sampling
+                sorted_probs, sorted_indices = torch.sort(probs, dim=-1, descending=True)
+                cum_probs = torch.cumsum(sorted_probs, dim=-1)
+                nucleus_mask = cum_probs < nucl_p
+                # Always include the first token
+                nucleus_mask[:, 0] = True
+                filtered_probs = sorted_probs * nucleus_mask.float()
+                filtered_probs = filtered_probs / filtered_probs.sum(dim=-1, keepdim=True)
+                # Sample next tokens
+                next_tokens = torch.multinomial(filtered_probs, num_samples=1, generator=rng_gen)
+                next_words = sorted_indices.gather(1, next_tokens)
+                next_scores = log_probs.gather(1, next_words) + beam_scores[:, None]
+                next_scores = next_scores.view(batch_size, beam_size)
+                next_words = next_words.view(batch_size, beam_size)
+            else:
+                log_probs = torch.log_softmax(scores, dim=-1)
+                _scores = log_probs + beam_scores[:, None].expand_as(log_probs)
+                _scores = _scores.view(batch_size, beam_size * n_words)
+                next_scores, next_words = torch.topk(_scores, 2 * beam_size, dim=1, largest=True, sorted=True)
+
+            # Prepare next beam
+            next_batch_beam = []
+            for sent_id in range(batch_size):
+                done[sent_id] = done[sent_id] or generated_hyps[sent_id].is_done(next_scores[sent_id].max().item())
+                if done[sent_id]:
+                    next_batch_beam.extend([(0, pad_token, 0)] * beam_size)
+                    continue
+                next_sent_beam = []
+                for i, (idx, value) in enumerate(zip(next_words[sent_id], next_scores[sent_id])):
+                    if stochastic:
+                        beam_id = i
+                        word_id = idx.item()
+                    else:
+                        beam_id = idx.item() // n_words
+                        word_id = idx.item() % n_words
+                    if word_id == eos_token or cur_len + 1 == max_length:
+                        hyp = generated[:cur_len, sent_id * beam_size + beam_id].clone().cpu()
+                        generated_hyps[sent_id].add(hyp, value.item())
+                    else:
+                        next_sent_beam.append((value.item(), word_id, sent_id * beam_size + beam_id))
+                    if len(next_sent_beam) == beam_size:
+                        break
+                if not stochastic:
+                    assert len(next_sent_beam) == 0 if cur_len + 1 == max_length else len(next_sent_beam) == beam_size
+                if len(next_sent_beam) == 0:
+                    next_sent_beam = [(0, pad_token, 0)] * beam_size
+                if stochastic and len(next_sent_beam) < beam_size:
+                    next_sent_beam.extend([(-1e9, pad_token, 0)] * (beam_size - len(next_sent_beam)))
+                next_batch_beam.extend(next_sent_beam)
+                assert len(next_batch_beam) == beam_size * (sent_id + 1)
+            assert len(next_batch_beam) == batch_size * beam_size
+            beam_scores = beam_scores.new_tensor([x[0] for x in next_batch_beam])
+            beam_words = generated.new_tensor([x[1] for x in next_batch_beam])
+            beam_idx = torch.tensor([x[2] for x in next_batch_beam], device=device, dtype=torch.long)
+            generated = generated[:, beam_idx]
+            generated[cur_len] = beam_words
+            cur_len += 1
+            if all(done):
+                break
+        # Select best hypotheses
+        tgt_len = torch.zeros(batch_size, dtype=torch.long)
+        best = []
+        for i, hypotheses in enumerate(generated_hyps):
+            best_hyp = max(hypotheses.hyp, key=lambda x: x[0])[1]
+            tgt_len[i] = len(best_hyp) + 1
+            best.append(best_hyp)
+        decoded = torch.full((tgt_len.max().item(), batch_size), pad_token, dtype=torch.long, device=device)
+        for i, hypo in enumerate(best):
+            decoded[:tgt_len[i] - 1, i] = hypo
+            decoded[tgt_len[i] - 1, i] = eos_token
+        return decoded, tgt_len, generated_hyps
+
+
+class BeamHypotheses(object):
+    def __init__(self, n_hyp, max_len, length_penalty, early_stopping):
+        self.max_len = max_len - 1
+        self.length_penalty = length_penalty
+        self.early_stopping = early_stopping
+        self.n_hyp = n_hyp
+        self.hyp = []
+        self.worst_score = 1e9
+    def __len__(self):
+        return len(self.hyp)
+    def add(self, hyp, sum_logprobs):
+        score = sum_logprobs / (len(hyp) ** self.length_penalty)
+        if len(self) < self.n_hyp or score > self.worst_score:
+            self.hyp.append((score, hyp))
+            if len(self) > self.n_hyp:
+                sorted_scores = sorted([(s, idx) for idx, (s, _) in enumerate(self.hyp)])
+                del self.hyp[sorted_scores[0][1]]
+                self.worst_score = sorted_scores[1][0]
+            else:
+                self.worst_score = min(score, self.worst_score)
+    def is_done(self, best_sum_logprobs):
+        if len(self) < self.n_hyp:
+            return False
+        elif self.early_stopping:
+            return True
+        else:
+            return self.worst_score >= best_sum_logprobs / (self.max_len ** self.length_penalty)
+
 
 def create_model(vocab_size, **hyperparams):
     """
@@ -242,6 +418,10 @@ def create_model(vocab_size, **hyperparams):
             - n_dec_layers: Number of decoder layers
             - dropout: Dropout rate
             - sinusoidal_embeddings: Use sinusoidal vs learned positional encodings
+            - decoding_method: 'greedy', 'beam', or 'nucleus'
+            - beam_size: Number of beams for beam/nucleus search
+            - p_nucleus: Nucleus cutoff probability for nucleus sampling
+            - temperature_nucleus: Temperature for nucleus sampling
     
     Returns:
         TransformerRegressor model

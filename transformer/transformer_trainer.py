@@ -14,7 +14,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # Specify the run hyperparameters
 filename = 'w1_short.csv'
 training_hyperparams = {
-    'n_epochs': 2,
+    'n_epochs': 1,
     'batch_size': 16,
     'train_split': 0.8,
     'learning_rate': 1e-4
