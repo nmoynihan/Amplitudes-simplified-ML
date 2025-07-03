@@ -11,6 +11,11 @@ from transformer_functions import create_model, train_model
 # Device setup
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+# Detect and set number of CPU threads for PyTorch
+n_threads = int(os.environ.get('OMP_NUM_THREADS', torch.get_num_threads()))
+torch.set_num_threads(n_threads)
+print(f"Using {n_threads} CPU threads for PyTorch.")
+
 # Specify the run hyperparameters
 filename = 'w1_short.csv'
 training_hyperparams = {
