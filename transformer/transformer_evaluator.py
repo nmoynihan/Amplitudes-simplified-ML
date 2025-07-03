@@ -1,5 +1,9 @@
 import os
 import torch
+# Detect and set number of CPU threads for PyTorch
+n_threads = int(os.environ.get('OMP_NUM_THREADS', torch.get_num_threads()))
+torch.set_num_threads(n_threads)
+print(f"Using {n_threads} CPU threads for PyTorch.")
 from transformer_functions import TransformerRegressor, load_transformer_model
 from data_import import load_and_prepare_data
 

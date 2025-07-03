@@ -5,6 +5,11 @@ import optuna
 from transformer_functions import create_model, train_model
 from data_import import load_and_prepare_data
 
+# Detect and set number of CPU threads for PyTorch
+n_threads = int(os.environ.get('OMP_NUM_THREADS', torch.get_num_threads()))
+torch.set_num_threads(n_threads)
+print(f"Using {n_threads} CPU threads for PyTorch.")
+
 def objective(trial):
     # Suggest hyperparameters
     embedding_dim = 2 ** trial.suggest_int('embedding_dim_exp', 6, 9)  # 64, 128, 256, 512
