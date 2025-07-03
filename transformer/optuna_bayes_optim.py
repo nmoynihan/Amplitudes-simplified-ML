@@ -13,7 +13,7 @@ def objective(trial):
     n_dec_layers = trial.suggest_int('n_dec_layers', 2, 8)
     dropout = trial.suggest_float('dropout', 0.0, 0.3)
     sinusoidal_embeddings = trial.suggest_categorical('sinusoidal_embeddings', [True, False])
-    learning_rate = trial.suggest_loguniform('learning_rate', 1e-5, 1e-3)
+    learning_rate = trial.suggest_float('learning_rate', 1e-5, 1e-3, log=True)
     batch_size = 2 ** trial.suggest_int('batch_size_exp', 3, 6)  # 8, 16, 32, 64
     n_epochs = trial.suggest_int('n_epochs', 20, 50)
 
