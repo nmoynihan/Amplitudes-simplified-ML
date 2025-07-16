@@ -1,6 +1,8 @@
 '''Script for training a transformer model on amplitude simplification'''
 # Import libraries
 import os
+import multiprocessing
+os.environ.pop("OMP_NUM_THREADS", None)  # Remove OMP_NUM_THREADS to avoid OpenBLAS warning
 import torch
 import torch.nn as nn
 
@@ -11,8 +13,8 @@ from transformer_functions import create_model, train_model
 # Device setup
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# Detect and set number of CPU threads for PyTorch
-n_threads = int(os.environ.get('OMP_NUM_THREADS', torch.get_num_threads()))
+# Set the number of threads to the number of CPU cores
+n_threads = multiprocessing.cpu_count()
 torch.set_num_threads(n_threads)
 print(f"Using {n_threads} CPU threads for PyTorch.")
 
