@@ -485,7 +485,7 @@ def validate_step(model, batch, criterion):
     return loss.item()
 
 
-def train_model(model, optimizer, criterion, train_loader, val_loader, epochs):
+def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, run_name='default_run'):
     """Trains a transformer model with automatic checkpointing after each epoch.
 
     Performs training and validation loops for the specified number of epochs,
@@ -508,7 +508,8 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs):
     train_losses, val_losses = [], []
     
     # Create models directory if it doesn't exist
-    os.makedirs('models', exist_ok=True)
+    output_dir = os.path.join('models', run_name)
+    os.makedirs(output_dir, exist_ok=True)
     
     for epoch in range(epochs):
         # Training
@@ -533,12 +534,12 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs):
         
         # Delete previous epoch's model if it exists
         if epoch > 0:
-            prev_model_path = os.path.join('models', f'transformer_e{epoch}.pt')
+            prev_model_path = os.path.join(output_dir, f'transformer_e{epoch}.pt')
             if os.path.exists(prev_model_path):
                 os.remove(prev_model_path)
         
         # Save current model
-        model_path = os.path.join('models', f'transformer_e{epoch+1}.pt')
+        model_save_path = os.path.join(output_dir, f'model_epoch_{epoch+1}.pt')
         torch.save({
             'epoch': epoch + 1,
             'model_state_dict': model.state_dict(),
@@ -546,9 +547,9 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs):
             'train_loss': epoch_train_loss,
             'val_loss': epoch_val_loss,
             'model_args': model.model_hyperparams,
-        }, model_path)
+        }, model_save_path)
         
-        print(f"Epoch {epoch+1}: Train Loss: {epoch_train_loss:.4f}, Val Loss: {epoch_val_loss:.4f} | Model saved to {model_path}")
+        print(f"Epoch {epoch+1}: Train Loss: {epoch_train_loss:.4f}, Val Loss: {epoch_val_loss:.4f} | Model saved to {model_save_path}")
     
     return train_losses, val_losses
 
