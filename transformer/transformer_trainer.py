@@ -5,6 +5,7 @@ import multiprocessing
 os.environ.pop("OMP_NUM_THREADS", None)  # Remove OMP_NUM_THREADS to avoid OpenBLAS warning
 import torch
 import torch.nn as nn
+import argparse
 
 # Import from other files
 from data_import import load_and_prepare_data
@@ -91,13 +92,18 @@ print(f"Model created with {sum(p.numel() for p in model.parameters())} paramete
 print(f"Hyperparameters:\nModel:{model_hyperparams}\nTraining:{training_hyperparams}")
 
 # Run training
+parser = argparse.ArgumentParser()
+parser.add_argument('--run_name', type=str, default='default_run', help='Unique name for this training run')
+args = parser.parse_args()
+run_name = args.run_name
 train_losses, val_losses = train_model(
     model, 
     optimizer, 
     criterion, 
     train_loader, 
     val_loader, 
-    epochs=training_hyperparams['n_epochs']
+    epochs=training_hyperparams['n_epochs'],
+    run_name=run_name
 )
 
 '''
