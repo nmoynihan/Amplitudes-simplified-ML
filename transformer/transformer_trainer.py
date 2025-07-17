@@ -1,8 +1,12 @@
 '''Script for training a transformer model on amplitude simplification'''
 # Import libraries
 import os
+os.environ["OMP_NUM_THREADS"] = "1"           # OpenMP
+os.environ["OPENBLAS_NUM_THREADS"] = "1"      # OpenBLAS
+os.environ["MKL_NUM_THREADS"] = "1"           # Intel MKL
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"    # macOS Accelerate
+os.environ["NUMEXPR_NUM_THREADS"] = "1"       # NumExpr
 import multiprocessing
-os.environ.pop("OMP_NUM_THREADS", None)  # Remove OMP_NUM_THREADS to avoid OpenBLAS warning
 import torch
 import torch.nn as nn
 import argparse

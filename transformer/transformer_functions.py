@@ -534,7 +534,7 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
         
         # Delete previous epoch's model if it exists
         if epoch > 0:
-            prev_model_path = os.path.join(output_dir, f'transformer_e{epoch}.pt')
+            prev_model_path = os.path.join(output_dir, f'model_epoch_{epoch}.pt')
             if os.path.exists(prev_model_path):
                 os.remove(prev_model_path)
         
