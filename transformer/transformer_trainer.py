@@ -17,11 +17,11 @@ from transformer_functions import create_model, train_model
 
 # Device setup
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-# Set the number of threads to the number of CPU cores
-n_threads = multiprocessing.cpu_count()
-torch.set_num_threads(n_threads)
-print(f"Using {n_threads} CPU threads for PyTorch.")
+print(f"Using device: {device}")
+if device.type == 'cpu':
+    n_threads = multiprocessing.cpu_count()
+    torch.set_num_threads(n_threads)
+    print(f"Using {n_threads} CPU threads for PyTorch.")
 
 # Specify the run hyperparameters
 filename = 'w1_short.csv'
@@ -100,7 +100,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--run_name', type=str, default='default_run', help='Unique name for this training run')
 args = parser.parse_args()
 run_name = args.run_name
-train_losses, val_losses = train_model(
+train_losses, val_losses, train_accuracies, val_accuracies= train_model(
     model, 
     optimizer, 
     criterion, 
