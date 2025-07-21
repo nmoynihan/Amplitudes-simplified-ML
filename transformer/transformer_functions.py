@@ -452,11 +452,18 @@ def train_step(model, batch, criterion, optimizer):
     # Calculate loss (ignore padding tokens)
     loss = criterion(output, tgt_output)
     
+    # Calculate accuracy (ignore padding tokens)
+    with torch.no_grad():
+        preds = torch.argmax(output, dim=-1)
+        mask = tgt_output != 0  # 0 is pad token
+        correct = (preds == tgt_output) & mask
+        accuracy = correct.sum().item() / mask.sum().item() if mask.sum().item() > 0 else 0.0
+    
     # Backward pass
     loss.backward()
     optimizer.step()
     
-    return loss.item()
+    return loss.item(), accuracy
 
 
 def validate_step(model, batch, criterion):
@@ -481,8 +488,14 @@ def validate_step(model, batch, criterion):
         
         # Calculate loss
         loss = criterion(output, tgt_output)
+        
+        # Calculate accuracy (ignore padding tokens)
+        preds = torch.argmax(output, dim=-1)
+        mask = tgt_output != 0  # 0 is pad token
+        correct = (preds == tgt_output) & mask
+        accuracy = correct.sum().item() / mask.sum().item() if mask.sum().item() > 0 else 0.0
     
-    return loss.item()
+    return loss.item(), accuracy
 
 
 def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, run_name='default_run'):
@@ -506,6 +519,7 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
             - val_losses (list[float]): Average validation loss per epoch
     """
     train_losses, val_losses = [], []
+    train_accuracies, val_accuracies = [], []
     
     # Create models directory if it doesn't exist
     output_dir = os.path.join('models', run_name)
@@ -515,22 +529,30 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
         # Training
         model.train()
         train_loss = 0
+        train_acc = 0
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]"):
-            loss = train_step(model, batch, criterion, optimizer)
+            loss, acc = train_step(model, batch, criterion, optimizer)
             train_loss += loss
+            train_acc += acc
         
         # Validation
         model.eval()
         val_loss = 0
+        val_acc = 0
         with torch.no_grad():
             for batch in tqdm(val_loader, desc=f"Epoch {epoch+1} [Val]"):
-                loss = validate_step(model, batch, criterion)
+                loss, acc = validate_step(model, batch, criterion)
                 val_loss += loss
+                val_acc += acc
         
         epoch_train_loss = train_loss / len(train_loader)
         epoch_val_loss = val_loss / len(val_loader)
+        epoch_train_acc = train_acc / len(train_loader)
+        epoch_val_acc = val_acc / len(val_loader)
         train_losses.append(epoch_train_loss)
         val_losses.append(epoch_val_loss)
+        train_accuracies.append(epoch_train_acc)
+        val_accuracies.append(epoch_val_acc)
         
         # Delete previous epoch's model if it exists
         if epoch > 0:
@@ -549,9 +571,10 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
             'model_args': model.model_hyperparams,
         }, model_save_path)
         
-        print(f"Epoch {epoch+1}: Train Loss: {epoch_train_loss:.4f}, Val Loss: {epoch_val_loss:.4f} | Model saved to {model_save_path}")
+        print(f"Epoch {epoch+1}: Train Loss: {epoch_train_loss:.4f}, Val Loss: {epoch_val_loss:.4f}, "
+              f"Train Acc: {epoch_train_acc:.4f}, Val Acc: {epoch_val_acc:.4f} | Model saved to {model_save_path}")
     
-    return train_losses, val_losses
+    return train_losses, val_losses, train_accuracies, val_accuracies
 
 
 def load_transformer_model(model_class, model_path, optimizer=None, device='cpu'):
