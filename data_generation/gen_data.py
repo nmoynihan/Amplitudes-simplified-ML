@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# gi_dataset.py 
+# gen_data.py 
 #
 # Build (simple , scrambled) training pairs for an N‑point amplitude with
 #   • p₁ , p_N    scalars
@@ -171,7 +171,7 @@ _SCRAMBLERS = [
 ]
 
 def scramble(expr:str,Ngamma:int,N:int,max_scr:int)->str:
-    n = random.randint(1,max_scr)
+    n = random.randint(0, max_scr) if max_scr > 0 else 0
     out = expr
     for _ in range(n):
         out = random.choice(_SCRAMBLERS)(out,Ngamma,N)
@@ -206,7 +206,7 @@ def tokenise_txt(inp:str,out:str,max_particles:int=8)->None:
 if __name__ == "__main__":
     N              = 5       # p_1 φ , p_2‑p_{n-1} γ , p_n φ
     NSAMPLES       = 100
-    MAX_SCRAMBLES  = 50
+    MAX_SCRAMBLES  = 5
 
     RAW = f"gi_{N}pt.txt"
     TOK = f"gi_{N}pt_tok.txt"
