@@ -17,6 +17,7 @@ from transformer_functions import create_model, train_model
 
 # Device setup
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Using device: {device}")
 
 # Set the number of threads to the number of CPU cores
 n_threads = multiprocessing.cpu_count()
@@ -100,7 +101,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--run_name', type=str, default='default_run', help='Unique name for this training run')
 args = parser.parse_args()
 run_name = args.run_name
-train_losses, val_losses = train_model(
+train_losses, val_losses, train_accuracies, val_accuracies= train_model(
     model, 
     optimizer, 
     criterion, 
