@@ -139,7 +139,7 @@ if __name__ == "__main__":
         # momentum conservation
         tot = mom.sum(axis=0)
         if not np.allclose(tot, 0.0, atol=1e-10):
-            print(colorama.Fore.RED + f"  ❌ total momentum = {tot}")
+            print(colorama.Fore.RED + f" Error: total momentum = {tot}")
         assert np.allclose(tot, 0.0, atol=1e-10)
 
         # polarisation checks
@@ -148,11 +148,11 @@ if __name__ == "__main__":
             val = eps[0]**2 - np.dot(eps[1:], eps[1:])
             assert abs(val + 1.0)        < 1e-12  # ε² = -1
 
-    print(f"\nRunning extended kinematic tests …")
+    print(f"\nRunning extended kinematic tests...")
     t0 = time.perf_counter()
     for _ in range(100):
         check_point(N=5, M=1.7)
         check_point(N=6, M=2.3)
         check_point(N=7, M=5)
     dt = time.perf_counter() - t0
-    print(colorama.Fore.GREEN + f"✓ all kinematic tests passed ({dt:.2f}s)")
+    print(colorama.Fore.GREEN + f"all kinematic tests passed ({dt:.2f}s)")
