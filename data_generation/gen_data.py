@@ -204,8 +204,8 @@ def tokenise_txt(inp:str,out:str,max_particles:int=8)->None:
 # │  Quick‑start driver                                              │
 # ╰──────────────────────────────────────────────────────────────────╯
 if __name__ == "__main__":
-    N              = 5       # p_1 φ , p_2‑p_{n-1} γ , p_n φ
-    NSAMPLES       = 100
+    N              = 8       # p_1 φ , p_2‑p_{n-1} γ , p_n φ
+    NSAMPLES       = 100000
     MAX_SCRAMBLES  = 5
 
     RAW = f"gi_{N}pt.txt"
@@ -218,6 +218,6 @@ if __name__ == "__main__":
     tokenise_txt(RAW, TOK)
     t2 = time.perf_counter()
 
-    print(f"✓ {len(pairs)} pairs → {RAW}")
+    print(f"{len(pairs)} pairs --> {RAW}")
     print(f"  generation : {(t1-t0):.2f}s")
     print(f"  write+tok  : {(t2-t1):.2f}s")
