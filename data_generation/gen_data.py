@@ -13,10 +13,10 @@
 # Output: simple<TAB>scrambled   (plus tokenised file)
 
 from __future__ import annotations
-import random, re, time, json
+import random, re, time, json, math
 from itertools import product
 from typing import List, Tuple
-import Tokenizer
+import importlib
 
 # ╭──────────────────────────────────────────────────────────────────╮
 # │  Pretty‑printing helpers                                         │
@@ -37,11 +37,13 @@ _RE_pFp    = re.compile(r"p_(\d+)\s*·\s*F_(\d+)\s*·\s*p_(\d+)")
 _RE_pFFp   = re.compile(r"p_(\d+)\s*·\s*F_(\d+)\s*·\s*F_(\d+)\s*·\s*p_(\d+)")
 _RE_Tr2    = re.compile(r"Tr\(F_(\d+)\s*·\s*F_(\d+)\)")
 _RE_Tr3    = re.compile(r"Tr\(F_(\d+)\s*·\s*F_(\d+)\s*·\s*F_(\d+)\)")
+_RE_pp     = re.compile(r"p_(\d+)\s*·\s*p_(\d+)")
 
 def _rw_pFp(i,j,k):
-    t1 = f"({dot(p(i), e(j))})*({dot(p(j), p(k))})"
-    t2 = f"({dot(p(i), p(j))})*({dot(e(j), p(k))})"
-    return f"{t1} - {t2}"
+    # p_i·F_j·p_k = (p_i·p_j)(e_j·p_k) - (p_i·e_j)(p_j·p_k)
+    a = f"({dot(p(i), p(j))})*({dot(e(j), p(k))})"
+    b = f"({dot(p(i), e(j))})*({dot(p(j), p(k))})"
+    return f"{a} - {b}"
 
 def _rw_pFFp(i,j,k,l):
     t1 = f"({dot(p(i), p(j))})*({dot(e(j), p(k))})*({dot(e(k), p(l))})"
@@ -68,7 +70,7 @@ def _rw_Tr3(j,k,l):
         term = f"({dot(b1,a2)})*({dot(b2,a3)})*({dot(a1,b3)})"
         terms.append(f"{sign}{term}")
     # join with spaces so later regexp scrambling still separates factors
-    expr = " ".join(terms).replace("  "," ")
+    expr = " ".join(terms).replace("  ", " ")
     # move leading '+' if any
     return expr.lstrip("+ ")
 
@@ -142,21 +144,89 @@ def strict_gi_monomial(N:int) -> str:
     return "*".join(factors)
 
 # ╭──────────────────────────────────────────────────────────────────╮
-# │  Scramblers (no symmetric‑dot)                                   │
+# │  Canonicalisation (lightweight, semantics‑preserving)            │
+# ╰──────────────────────────────────────────────────────────────────╯
+def _canon_Tr2(term:str) -> str:
+    m = _RE_Tr2.fullmatch(term)
+    if not m:
+        return term
+    a,b = map(int, m.groups())
+    a,b = (a,b) if a<=b else (b,a)
+    return Tr(F(a), F(b))
+
+def _canon_Tr3(term:str) -> str:
+    m = _RE_Tr3.fullmatch(term)
+    if not m:
+        return term
+    a,b,c = map(int, m.groups())
+    rotations = [(a,b,c), (b,c,a), (c,a,b)]
+    aa,bb,cc = min(rotations)
+    return Tr(F(aa), F(bb), F(cc))
+
+def _canon_pp(term:str) -> str:
+    m = _RE_pp.fullmatch(term)
+    if not m:
+        return term
+    i,j = map(int, m.groups())
+    i,j = (i,j) if i<=j else (j,i)
+    return dot(p(i), p(j))
+
+def _factor_key(term:str) -> tuple:
+    # Category order: Tr3 < Tr2 < p·F·F·p < p·F·p < p·p < other
+    if _RE_Tr3.fullmatch(term): cat = 0; norm = _canon_Tr3(term)
+    elif _RE_Tr2.fullmatch(term): cat = 1; norm = _canon_Tr2(term)
+    elif _RE_pFFp.fullmatch(term): cat = 2; norm = term
+    elif _RE_pFp.fullmatch(term):  cat = 3; norm = term
+    elif _RE_pp.fullmatch(term):   cat = 4; norm = _canon_pp(term)
+    else:                          cat = 5; norm = term
+    return (cat, norm)
+
+def _normalise_factor_str(term:str) -> str:
+    if _RE_Tr2.fullmatch(term):
+        return _canon_Tr2(term)
+    if _RE_Tr3.fullmatch(term):
+        return _canon_Tr3(term)
+    if _RE_pp.fullmatch(term):
+        return _canon_pp(term)
+    return term
+
+def canonicalise_gi_product(prod:str, strict: bool=False) -> str:
+    # prod is a top-level '*' joined product of GI factors
+    factors = prod.split("*") if prod else []
+    canon = []
+    for f in factors:
+        f = f.strip()
+        f = _normalise_factor_str(f)
+        canon.append(f)
+    if strict:
+        canon.sort(key=_normalise_factor_str)
+    else:
+        canon.sort(key=_factor_key)
+    return "*".join(canon)
+
+def canonicalise_denominator(den:str) -> str:
+    # Denominator is a '*' joined product of p·p terms
+    if not den:
+        return den
+    fs = [ _canon_pp(f.strip()) for f in den.split("*") ]
+    fs.sort(key=_factor_key)
+    return "*".join(fs)
+
+# ╭──────────────────────────────────────────────────────────────────╮
+# │  Scramblers (no symmetric‑dot)                                   |
 # ╰──────────────────────────────────────────────────────────────────╯
 def _mc_terms(idx:int,N:int) -> List[str]:
-    return [f"-{dot(p(k),p(idx))}" for k in range(1,N+1) if k!=idx]
+    return [f"{dot(p(k),p(idx))}" for k in range(1,N+1) if k!=idx]
 
 def scr_mul_by_one(expr:str,N:int)->str:
     i,j = random.sample(range(1,N+1),2)
-    numerator = " ".join(_mc_terms(i,N))
-    denominator = dot(p(i),p(j))
-    return f"({expr})*(({numerator}))/({denominator})"
+    one = f"({dot(p(i),p(j))})/({dot(p(i),p(j))})"
+    return f"({expr})*{one}"
 
 def scr_add_zero_gauge(expr:str,Ngamma:int,N:int)->str:
     i = random.randint(2,Ngamma+1)
-    rhs = " ".join(f"-{dot(e(i),p(k))}" for k in range(1,N+1) if k!=i)
-    term = f"{dot(e(i),p(i))} + ({rhs})"
+    rhs = " + ".join(dot(e(i),p(k)) for k in range(1,N+1))
+    term = f"({rhs})"
     return f"({expr}) + ({term})"
 
 def scr_Ptot_dot_pk(expr:str,N:int)->str:
@@ -170,23 +240,194 @@ _SCRAMBLERS = [
     lambda e,Ng,Nt: scr_Ptot_dot_pk(e,Nt),
 ]
 
-def scramble(expr:str,Ngamma:int,N:int,max_scr:int)->str:
+def _scramble_legacy(expr:str,Ngamma:int,N:int,max_scr:int)->str:
     n = random.randint(0, max_scr) if max_scr > 0 else 0
     out = expr
     for _ in range(n):
         out = random.choice(_SCRAMBLERS)(out,Ngamma,N)
     return out
 
+# Extra scramblers: targeted MC substitution and commutativity flips
+_RE_DOT = re.compile(r"(p_\d+|e_\d+)\s*·\s*(p_\d+|e_\d+)")
+
+def scr_mc_substitute_ei_pk(expr:str,Ngamma:int,N:int)->str:
+    i = random.randint(2,Ngamma+1)
+    k = random.randint(1,N)
+    pattern = re.escape(dot(e(i), p(k)))
+    replacement = " - (" + " + ".join(dot(e(i),p(s)) for s in range(1,N+1) if s!=k) + ")"
+    return re.sub(pattern, replacement, expr, count=1)
+
+def scr_commute_dot(expr:str,Ngamma:int,N:int)->str:
+    matches = list(_RE_DOT.finditer(expr))
+    if not matches:
+        return expr
+    m = random.choice(matches)
+    a,b = m.group(1), m.group(2)
+    return expr[:m.start()] + dot(b,a) + expr[m.end():]
+
+_SCRAMBLERS.extend([
+    lambda e,Ng,Nt: scr_mc_substitute_ei_pk(e,Ng,Nt),
+    lambda e,Ng,Nt: scr_commute_dot(e,Ng,Nt),
+])
+
+# Safety: cap output growth
+def scramble(expr:str,Ngamma:int,N:int,max_scr:int, max_len:int=4000)->str:
+    n = random.randint(0, max_scr) if max_scr > 0 else 0
+    out = expr
+    for _ in range(n):
+        cand = random.choice(_SCRAMBLERS)(out,Ngamma,N)
+        out = cand if len(cand) <= max_len else out
+    return out
+
+# Numeric evaluator (Minkowski +,−,−,−)
+def _mdot(a, b):
+    return float(a[0]*b[0] - (a[1]*b[1] + a[2]*b[2] + a[3]*b[3]))
+
+def _to_float_expr(expr:str, P:dict, E:dict) -> str:
+    def repl(m):
+        a, b = m.group(1), m.group(2)
+        va = P[a] if a.startswith('p_') else E[a]
+        vb = P[b] if b.startswith('p_') else E[b]
+        return f"({_mdot(va, vb):.17g})"
+    return _RE_DOT.sub(repl, expr)
+
+import ast
+
+class _SafeEval(ast.NodeVisitor):
+    def visit_Expression(self, node):
+        return self.visit(node.body)
+    def visit_BinOp(self, node):
+        l = self.visit(node.left)
+        r = self.visit(node.right)
+        if isinstance(node.op, ast.Add): return l + r
+        if isinstance(node.op, ast.Sub): return l - r
+        if isinstance(node.op, ast.Mult): return l * r
+        if isinstance(node.op, ast.Div): return l / r
+        if isinstance(node.op, ast.Pow): return l ** r
+        raise ValueError("disallowed operator")
+    def visit_UnaryOp(self, node):
+        v = self.visit(node.operand)
+        if isinstance(node.op, ast.UAdd): return +v
+        if isinstance(node.op, ast.USub): return -v
+        raise ValueError("disallowed unary operator")
+    def visit_Num(self, node):  # pragma: no cover
+        val = node.n
+        if isinstance(val, (int,float)):
+            return float(val)
+        raise ValueError("non-real literal")
+    def visit_Constant(self, node):
+        if isinstance(node.value, (int,float)):
+            return float(node.value)
+        raise ValueError("disallowed constant")
+    def generic_visit(self, node):
+        raise ValueError("disallowed expression")
+
+def _safe_eval_float(expr: str) -> float:
+    tree = ast.parse(expr, mode='eval')
+    return _SafeEval().visit(tree)
+
+def eval_infix_numeric(expr: str, momenta, pols) -> float:
+    N = len(momenta)
+    P = {f"p_{i}": momenta[i-1] for i in range(1,N+1)}
+    E = {f"e_{i}": pols[i-2] for i in range(2,N)}
+    expr_f = _to_float_expr(expr, P, E)
+    return float(_safe_eval_float(expr_f))
+
 # ╭──────────────────────────────────────────────────────────────────╮
 # │  Dataset construction & I/O                                      │
 # ╰──────────────────────────────────────────────────────────────────╯
-def build_dataset(N:int, num_samples:int, max_scr:int=3) -> List[Tuple[str,str]]:
+def _random_denominator(N:int, base_leg:int=1) -> str:
+    k = random.randint(1, min(3, N-1))
+    js = random.sample([j for j in range(1,N+1) if j!=base_leg], k)
+    factors = [dot(p(base_leg), p(j)) for j in js]
+    return "*".join(factors)
+
+def _gauge_denominator(N:int, style:str="shared", prefer_scalars:bool=True) -> str:
+    """
+    Build a product of (n · p_i) over photon legs i ∈ {2..N-1}.
+    style = 'shared' uses a single reference n for all photons; 'per-photon' picks one per i.
+    If prefer_scalars, choose n from {1, N} to avoid (nearly) zero denominators.
+    """
+    photons = list(range(2, N))
+    if not photons:
+        return ""
+    if prefer_scalars:
+        pool = [1, N]
+    else:
+        pool = list(range(1, N+1))
+    factors: list[str] = []
+    if style == "shared":
+        # Choose one n distinct from all photons; prefer scalars
+        cand = [x for x in pool if x not in photons]
+        nref = random.choice(cand) if cand else random.choice(pool)
+        for i in photons:
+            factors.append(dot(p(nref), p(i)))
+    else:  # per-photon
+        for i in photons:
+            cand = [x for x in pool if x != i]
+            nref = random.choice(cand) if cand else random.choice(pool)
+            factors.append(dot(p(nref), p(i)))
+    return "*".join(factors)
+
+def build_dataset(N:int, num_samples:int, max_scr:int=3, seed:int|None=None,
+                  use_denominators:bool=True, validate:bool=True,
+                  M:float=2.0, tol_rel:float=1e-8, tol_abs:float=1e-10) -> List[Tuple[str,str]]:
+    if seed is not None:
+        random.seed(seed)
     Ngamma = N-2
     data=[]
-    for _ in range(num_samples):
+    attempts=0
+    while len(data) < num_samples:
+        attempts += 1
         gi = strict_gi_monomial(N)
-        expd = "*".join(rewrite_gi(b) for b in gi.split("*"))
-        data.append((gi, scramble(expd,Ngamma,N,max_scr)))
+        # Canonicalise first to ensure label and expansion are consistent
+        simple_num = canonicalise_gi_product(gi, strict=True)
+        # Denominator assembly
+        den_parts: list[str] = []
+        if use_denominators and random.random() < 0.6:
+            den_parts.append(_random_denominator(N, base_leg=1))
+        # Always include gauge-style denominators for realism
+        den_parts.append(_gauge_denominator(N, style="shared", prefer_scalars=True))
+        den_parts = [d for d in den_parts if d]
+        if den_parts:
+            denom = "*".join(den_parts)
+            simple_den = canonicalise_denominator(denom)
+            simple = f"({simple_num})/({simple_den})"
+            expd_num = "*".join(rewrite_gi(b) for b in simple_num.split("*"))
+            expd = f"({expd_num})/({simple_den})"
+        else:
+            simple = simple_num
+            expd = "*".join(rewrite_gi(b) for b in simple_num.split("*"))
+        scrambled = scramble(expd,Ngamma,N,max_scr)
+
+        if validate:
+            ok = True
+            for _ in range(3):
+                # Lazy import to avoid static import errors when running standalone
+                try:
+                    try:
+                        from .kinematics import generate_kinematics as _gk  # type: ignore
+                    except Exception:
+                        _gk = importlib.import_module('data_generation.kinematics').generate_kinematics  # type: ignore
+                except Exception:
+                    _gk = importlib.import_module('kinematics').generate_kinematics  # type: ignore
+                momenta, pols = _gk(N, M=M)
+                try:
+                    v_simple = eval_infix_numeric(expd, momenta, pols)
+                    v_scr = eval_infix_numeric(scrambled, momenta, pols)
+                except Exception:
+                    ok = False
+                    break
+                if not (math.isfinite(v_simple) and math.isfinite(v_scr)):
+                    ok = False
+                    break
+                if not (abs(v_simple - v_scr) <= max(tol_abs, tol_rel*max(1.0, abs(v_simple)))):
+                    ok = False
+                    break
+            if not ok:
+                continue
+
+        data.append((simple, scrambled))
     return data
 
 def write_txt(pairs:List[Tuple[str,str]],path:str)->None:
@@ -194,6 +435,8 @@ def write_txt(pairs:List[Tuple[str,str]],path:str)->None:
         for s,t in pairs: f.write(f"{s}\t{t}\n")
 
 def tokenise_txt(inp:str,out:str,max_particles:int=8)->None:
+    # Lazy import to avoid hard dependency at module import time
+    import Tokenizer  # type: ignore
     tok = Tokenizer.ScatteringAmplitudeTokenizer(max_particles=max_particles)
     with open(inp,encoding="utf-8") as fi, open(out,"w",encoding="utf-8") as fo:
         for line in fi:
@@ -204,15 +447,17 @@ def tokenise_txt(inp:str,out:str,max_particles:int=8)->None:
 # │  Quick‑start driver                                              │
 # ╰──────────────────────────────────────────────────────────────────╯
 if __name__ == "__main__":
-    N              = 8       # p_1 φ , p_2‑p_{n-1} γ , p_n φ
-    NSAMPLES       = 100000
+    N              = 4       # p_1 φ , p_2‑p_{n-1} γ , p_n φ
+    NSAMPLES       = 5000
     MAX_SCRAMBLES  = 5
+    SEED           = 0
 
     RAW = f"gi_{N}pt.txt"
     TOK = f"gi_{N}pt_tok.txt"
 
     t0 = time.perf_counter()
-    pairs = build_dataset(N, num_samples=NSAMPLES, max_scr=MAX_SCRAMBLES)
+    pairs = build_dataset(N, num_samples=NSAMPLES, max_scr=MAX_SCRAMBLES, seed=SEED,
+                          use_denominators=True, validate=True)
     t1 = time.perf_counter()
     write_txt(pairs, RAW)
     tokenise_txt(RAW, TOK)
