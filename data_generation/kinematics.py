@@ -30,6 +30,8 @@ def lorentz_boost(vec4: np.ndarray, beta_vec: np.ndarray) -> np.ndarray:
       x  = x' + (γ−1)(β·x')β/β² + γ t' β
     """
     beta2 = np.dot(beta_vec, beta_vec)
+    if beta2 < 1e-18:
+        return vec4.copy()
     gamma = 1.0 / np.sqrt(1.0 - beta2)
     bp    = np.dot(beta_vec, vec4[1:])
     # time component
@@ -106,17 +108,10 @@ def generate_kinematics(N: int,
     # 4) Flip photon momenta so total momentum is zero
     photons = -photons
 
-    # 5) Photon polarisations (calculated before the flip)
-    pols = np.stack([transverse_pol(-k4, rng) for k4 in photons])  # Use flipped momenta
-
-    # 5) Assemble
-    momenta = np.vstack((p1, photons, pN))
-    return momenta, pols
-
-    # 4) Photon polarisations
+    # 5) Photon polarisations (use final photon momenta)
     pols = np.stack([transverse_pol(k4, rng) for k4 in photons])
 
-    # 5) Assemble
+    # 6) Assemble
     momenta = np.vstack((p1, photons, pN))
     return momenta, pols
 
