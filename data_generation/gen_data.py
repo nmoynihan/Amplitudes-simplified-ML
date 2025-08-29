@@ -8,12 +8,12 @@
 # “simple”  = a gauge‑invariant monomial containing each F_i exactly once
 #             (weight‑1), possibly via Tr(F·F) or Tr(F·F·F) and possibly by p.F.F.p or similar.
 # “scrambled” = that monomial rewritten into e·e/e·p/p·p and hit by
-#               1…MAX_SCRAMBLES algebraic identities.
+#               MIN_SCRAMBLES…MAX_SCRAMBLES algebraic identities.
 #
-# Output: simple<TAB>scrambled   (plus tokenised file)
+# Output: CSV with two columns: simple, scrambled (plus tokenised file)
 
 from __future__ import annotations
-import random, re, time, json, math
+import random, re, time, json, math, csv
 from itertools import product
 from typing import List, Tuple
 import importlib
@@ -271,8 +271,21 @@ _SCRAMBLERS.extend([
 ])
 
 # Safety: cap output growth
-def scramble(expr:str,Ngamma:int,N:int,max_scr:int, max_len:int=4000)->str:
-    n = random.randint(0, max_scr) if max_scr > 0 else 0
+def scramble(expr:str,Ngamma:int,N:int,min_scr:int=0,max_scr:int=0, max_len:int=4000)->str:
+    # Choose number of scrambles in [min_scr, max_scr], clamp to valid range
+    try:
+        min_scr = int(min_scr)
+        max_scr = int(max_scr)
+    except Exception:
+        min_scr = 0
+        max_scr = 0
+    if min_scr < 0:
+        min_scr = 0
+    if max_scr < 0:
+        max_scr = 0
+    if min_scr > max_scr:
+        min_scr = max_scr
+    n = random.randint(min_scr, max_scr) if max_scr > 0 else 0
     out = expr
     for _ in range(n):
         cand = random.choice(_SCRAMBLERS)(out,Ngamma,N)
@@ -369,7 +382,7 @@ def _gauge_denominator(N:int, style:str="shared", prefer_scalars:bool=True) -> s
             factors.append(dot(p(nref), p(i)))
     return "*".join(factors)
 
-def build_dataset(N:int, num_samples:int, max_scr:int=3, seed:int|None=None,
+def build_dataset(N:int, num_samples:int, max_scr:int=3, min_scr:int=0, seed:int|None=None,
                   use_denominators:bool=True, validate:bool=True,
                   M:float=2.0, tol_rel:float=1e-8, tol_abs:float=1e-10) -> List[Tuple[str,str]]:
     if seed is not None:
@@ -398,7 +411,7 @@ def build_dataset(N:int, num_samples:int, max_scr:int=3, seed:int|None=None,
         else:
             simple = simple_num
             expd = "*".join(rewrite_gi(b) for b in simple_num.split("*"))
-        scrambled = scramble(expd,Ngamma,N,max_scr)
+        scrambled = scramble(expd,Ngamma,N,min_scr,max_scr)
 
         if validate:
             ok = True
@@ -434,6 +447,14 @@ def write_txt(pairs:List[Tuple[str,str]],path:str)->None:
     with open(path,"w",encoding="utf-8") as f:
         for s,t in pairs: f.write(f"{s}\t{t}\n")
 
+# New: CSV writer
+def write_csv(pairs:List[Tuple[str,str]], path:str) -> None:
+    # Proper CSV writing with escaping; newline="" for Windows correctness
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        for s, t in pairs:
+            w.writerow([s, t])
+
 def tokenise_txt(inp:str,out:str,max_particles:int=8)->None:
     # Lazy import to avoid hard dependency at module import time
     import Tokenizer  # type: ignore
@@ -443,24 +464,40 @@ def tokenise_txt(inp:str,out:str,max_particles:int=8)->None:
             s,t = line.rstrip("\n").split("\t")
             fo.write(json.dumps(tok.encode_infix(s))+"\t"+json.dumps(tok.encode_infix(t))+"\n")
 
+# New: tokenise CSV using csv.reader/writer
+def tokenise_csv(inp:str,out:str,max_particles:int=8)->None:
+    # Lazy import to avoid hard dependency at module import time
+    import Tokenizer  # type: ignore
+    tok = Tokenizer.ScatteringAmplitudeTokenizer(max_particles=max_particles)
+    with open(inp, newline="", encoding="utf-8") as fi, open(out, "w", newline="", encoding="utf-8") as fo:
+        r = csv.reader(fi)
+        w = csv.writer(fo)
+        for row in r:
+            if not row:
+                continue
+            s = row[0]
+            t = row[1] if len(row) > 1 else ""
+            w.writerow([json.dumps(tok.encode_infix(s)), json.dumps(tok.encode_infix(t))])
+
 # ╭──────────────────────────────────────────────────────────────────╮
 # │  Quick‑start driver                                              │
 # ╰──────────────────────────────────────────────────────────────────╯
 if __name__ == "__main__":
-    N              = 4       # p_1 φ , p_2‑p_{n-1} γ , p_n φ
-    NSAMPLES       = 5000
-    MAX_SCRAMBLES  = 5
-    SEED           = 0
+    N              = 5       # p_1 φ , p_2‑p_{n-1} γ , p_n φ
+    NSAMPLES       = 10000
+    MAX_SCRAMBLES  = 8 
+    MIN_SCRAMBLES  = 0 # 0 means no scrambling, just expansion
+    SEED           = 42
 
-    RAW = f"gi_{N}pt.txt"
-    TOK = f"gi_{N}pt_tok.txt"
+    RAW = f"gi_{N}pt.csv"
+    TOK = f"gi_{N}pt_tok.csv"
 
     t0 = time.perf_counter()
-    pairs = build_dataset(N, num_samples=NSAMPLES, max_scr=MAX_SCRAMBLES, seed=SEED,
+    pairs = build_dataset(N, num_samples=NSAMPLES, max_scr=MAX_SCRAMBLES, min_scr=MIN_SCRAMBLES, seed=SEED,
                           use_denominators=True, validate=True)
     t1 = time.perf_counter()
-    write_txt(pairs, RAW)
-    tokenise_txt(RAW, TOK)
+    write_csv(pairs, RAW)
+    tokenise_csv(RAW, TOK)
     t2 = time.perf_counter()
 
     print(f"{len(pairs)} pairs --> {RAW}")

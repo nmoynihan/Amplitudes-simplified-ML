@@ -59,9 +59,9 @@ def test_single_pair(N: int = 5, seed: Optional[int] = None) -> Tuple[str, str, 
     # Expand it to e·p/p·p form
     expanded = "*".join(gd.rewrite_gi(block) for block in simple.split("*"))
     
-    # Apply exactly one scramble
+    # Apply exactly two scrambles
     Ngamma = N - 2
-    scrambled = gd.scramble(expanded, Ngamma, N, max_scr=1)
+    scrambled = gd.scramble(expanded, Ngamma, N, max_scr=2, min_scr=1)
     
     # Generate random kinematics
     mom, pol = generate_kinematics(N, M=1.7)
@@ -128,17 +128,21 @@ def test_specific_rewrite_rules():
     
     # Test cases: (input, expected_pattern)
     test_cases = [
+        ("(p_1 · F_3 · F_4 · p_1)/(p_1 · p_3*p_1 · p_4)","-e_3.e_4 + (e_3.p_1*e_4.p_2)/(p_1.p_3) + (e_3.p_2*e_4.p_1)/(p_1.p_4)"),
         ("p_1 · F_2 · p_3", "p_1.*e_2.*p_2.*p_3.*-.*p_1.*p_2.*e_2.*p_3"),
         ("Tr(F_2 · F_3)", "2.*e_2.*p_3.*p_2.*e_3.*-.*p_2.*p_3.*e_2.*e_3"),
     ]
     
     for simple_block, expected_pattern in test_cases:
-        expanded = gd.rewrite_gi(simple_block)
+        if "/" in simple_block:
+            expanded = expand_from_simple(simple_block)
+        else:
+            expanded = gd.rewrite_gi(simple_block)
         print(f"  {simple_block}")
         print(f"  → {expanded}")
         
         # Quick numerical test
-        N = 5
+        N = 4
         mom, pol = generate_kinematics(N, M=1.7, seed=123)
         
         try:
@@ -204,6 +208,9 @@ def demo_generate_and_print(num_pairs:int=20, N:int=6, seed:int=123):
     print("-"*60)
     pairs = gd.build_dataset(N, num_samples=num_pairs, max_scr=5, seed=seed,
                              use_denominators=True, validate=True)
+    passed = 0
+    failed = 0
+    failed_cases = []  # (index, diff, v1, v2)
     for i, (simple, scrambled) in enumerate(pairs, start=1):
         print(f"[{i:02d}] simple:")
         print(simple)
@@ -216,9 +223,22 @@ def demo_generate_and_print(num_pairs:int=20, N:int=6, seed:int=123):
         v2 = eval_infix(scrambled, mom, pol)
         diff = abs(v1 - v2)
         tol = max(1e-10, 1e-8*max(1.0, abs(v1)))
-        status = "OK" if diff <= tol else "FAIL"
+        ok = diff <= tol
+        if ok:
+            passed += 1
+            status = "OK"
+        else:
+            failed += 1
+            status = "FAIL"
+            failed_cases.append((i, diff, v1, v2))
         print(f"     numeric: {v1:.6e} vs {v2:.6e}  diff={diff:.3e}  [{status}]")
         print()
+    # Summary and concise failure report (if any)
+    print(f"Demo summary: {passed} PASSED, {failed} FAILED")
+    if failed_cases:
+        brief = ", ".join([f"#{idx} diff={d:.3e}" for idx, d, _, _ in failed_cases[:10]])
+        print(f"Failed cases (first {min(len(failed_cases),10)}): {brief}")
+    return passed, failed
 
 def test_scramble_length_cap():
     # If max_len is very small compared to the expression, scramble should return unchanged
@@ -248,13 +268,17 @@ if __name__ == "__main__":
     test_canonicalisation()
     # Dataset build + numeric check
     test_build_dataset_numeric()
-    # Demo pairs printer
-    demo_generate_and_print(num_pairs=20, N=6, seed=777)
-    
+    # Demo pairs printer (counted into totals)
+    demo_passed, demo_failed = demo_generate_and_print(num_pairs=20, N=6, seed=777)
+
     # Run comprehensive verification tests
-    passed, failed = run_verification_tests(num_tests=10, N=5)
-    
-    if failed == 0:
+    tests_passed, tests_failed = run_verification_tests(num_tests=10, N=5)
+
+    total_passed = demo_passed + tests_passed
+    total_failed = demo_failed + tests_failed
+    print("-" * 60)
+    print(f"TOTAL: {total_passed} PASSED, {total_failed} FAILED (including demo)")
+    if total_failed == 0:
         print("All tests passed! gen_data.py appears to be working correctly.")
     else:
-        print(f"Some tests failed. There may be issues in gen_data.py or the test setup.")
+        print("Some tests failed. See details above (demo failures and verification diffs).")
