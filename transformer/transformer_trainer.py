@@ -26,18 +26,18 @@ if device.type == 'cpu':
 # Specify the run hyperparameters
 filename = 'w1_short.csv'
 training_hyperparams = {
-    'n_epochs': 1,
-    'batch_size': 16,
+    'n_epochs': 200,
+    'batch_size': 32,
     'train_split': 0.8,
     'learning_rate': 1e-4
 }
 model_hyperparams = {
-    'embedding_dim': 256,
+    'embedding_dim': 64,
     'n_heads': 8,
-    'n_enc_layers': 6,
-    'n_dec_layers': 6,
+    'n_enc_layers': 3,
+    'n_dec_layers': 3,
     'dropout': 0.1,
-    'sinusoidal_embeddings': True,
+    'sinusoidal_embeddings': False,
     'device': device
 }
 

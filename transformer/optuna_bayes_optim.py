@@ -11,16 +11,17 @@ torch.set_num_threads(n_threads)
 print(f"Using {n_threads} CPU threads for PyTorch.")
 
 def objective(trial):
+    # Fixed hyperparameters
+    n_epochs = 20
     # Suggest hyperparameters
     embedding_dim = 2 ** trial.suggest_int('embedding_dim_exp', 6, 9)  # 64, 128, 256, 512
-    n_heads = 2 ** trial.suggest_int('n_heads_exp', 1, 4)  # 2, 4, 8, 16
+    n_heads = 2 * trial.suggest_int('n_heads_exp', 1, 5)  # 2, 4, 6, 8, 10
     n_enc_layers = trial.suggest_int('n_enc_layers', 2, 8)
     n_dec_layers = trial.suggest_int('n_dec_layers', 2, 8)
     dropout = trial.suggest_float('dropout', 0.0, 0.3)
     sinusoidal_embeddings = trial.suggest_categorical('sinusoidal_embeddings', [True, False])
     learning_rate = trial.suggest_float('learning_rate', 1e-5, 1e-3, log=True)
     batch_size = 2 ** trial.suggest_int('batch_size_exp', 3, 6)  # 8, 16, 32, 64
-    n_epochs = trial.suggest_int('n_epochs', 20, 50)
 
     # Data
     csv_file = os.path.join('data', 'w1_short.csv')
