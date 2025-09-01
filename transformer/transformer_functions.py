@@ -507,7 +507,7 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
 
     Args:
         model (torch.nn.Module): Transformer model to be trained
-        optimizer (torch.optim.Optimizer): Optimizer for training (e.g. Adam)
+        optimizer (torch.optim.Optimizer): Optimizer for training (e.g. AdamW)
         criterion (callable): Loss function (e.g. nn.CrossEntropyLoss)
         train_loader (torch.utils.data.DataLoader): Training data loader
         val_loader (torch.utils.data.DataLoader): Validation data loader

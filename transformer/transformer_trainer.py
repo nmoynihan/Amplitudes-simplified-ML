@@ -29,7 +29,8 @@ training_hyperparams = {
     'n_epochs': 200,
     'batch_size': 32,
     'train_split': 0.8,
-    'learning_rate': 1e-4
+    'learning_rate': 1e-4,
+    'weight_decay': 1e-5
 }
 model_hyperparams = {
     'embedding_dim': 64,
@@ -90,7 +91,7 @@ model = create_model(vocab_size, **model_hyperparams)
 criterion = nn.CrossEntropyLoss(ignore_index=0)  # 0 is pad token
 
 # Optimizer
-optimizer = torch.optim.Adam(model.parameters(), lr=training_hyperparams['learning_rate'])
+optimizer = torch.optim.AdamW(model.parameters(), lr=training_hyperparams['learning_rate'], weight_decay=training_hyperparams['weight_decay'])
 
 print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters.")
 print(f"Hyperparameters:\nModel:{model_hyperparams}\nTraining:{training_hyperparams}")
