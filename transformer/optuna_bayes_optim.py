@@ -23,6 +23,7 @@ def objective(trial):
     learning_rate = trial.suggest_float('learning_rate', 1e-5, 1e-3, log=True)
     weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
     batch_size = 2 ** trial.suggest_int('batch_size_exp', 3, 6)  # 8, 16, 32, 64
+    head_ff_dim = embedding_dim * trial.suggest_categorical('head_ff_dim_mult', [1, 2, 4, 8])
 
     # Data
     csv_file = os.path.join('data', 'w1_short.csv')
@@ -43,6 +44,7 @@ def objective(trial):
         'n_dec_layers': n_dec_layers,
         'dropout': dropout,
         'sinusoidal_embeddings': sinusoidal_embeddings,
+        'head_ff_dim': head_ff_dim,
         'device': device
     }
     model = create_model(vocab_size, **model_hyperparams)

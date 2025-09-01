@@ -39,6 +39,7 @@ model_hyperparams = {
     'n_dec_layers': 3,
     'dropout': 0.1,
     'sinusoidal_embeddings': False,
+    'head_ff_dim': 256,  # 4 * embedding_dim (4 * 64 = 256)
     'device': device
 }
 
