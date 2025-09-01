@@ -21,6 +21,7 @@ def objective(trial):
     dropout = trial.suggest_float('dropout', 0.0, 0.3)
     sinusoidal_embeddings = trial.suggest_categorical('sinusoidal_embeddings', [True, False])
     learning_rate = trial.suggest_float('learning_rate', 1e-5, 1e-3, log=True)
+    weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
     batch_size = 2 ** trial.suggest_int('batch_size_exp', 3, 6)  # 8, 16, 32, 64
 
     # Data
@@ -48,7 +49,7 @@ def objective(trial):
 
     # Loss and optimizer
     criterion = nn.CrossEntropyLoss(ignore_index=0)
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     # Train
     train_model(model, optimizer, criterion, train_loader, val_loader, epochs=n_epochs)
