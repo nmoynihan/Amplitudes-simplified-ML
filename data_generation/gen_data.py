@@ -452,6 +452,8 @@ def write_csv(pairs:List[Tuple[str,str]], path:str) -> None:
     # Proper CSV writing with escaping; newline="" for Windows correctness
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
+        # header
+        w.writerow(["simple", "scrambled"])
         for s, t in pairs:
             w.writerow([s, t])
 
@@ -472,9 +474,17 @@ def tokenise_csv(inp:str,out:str,max_particles:int=8)->None:
     with open(inp, newline="", encoding="utf-8") as fi, open(out, "w", newline="", encoding="utf-8") as fo:
         r = csv.reader(fi)
         w = csv.writer(fo)
+        # Write header for tokenised output
+        w.writerow(["simple", "scrambled"])
+        first = True
         for row in r:
             if not row:
                 continue
+            # Skip input header if present
+            if first and len(row) >= 2 and row[0].strip().lower() == "simple" and row[1].strip().lower() == "scrambled":
+                first = False
+                continue
+            first = False
             s = row[0]
             t = row[1] if len(row) > 1 else ""
             w.writerow([json.dumps(tok.encode_infix(s)), json.dumps(tok.encode_infix(t))])
@@ -483,8 +493,8 @@ def tokenise_csv(inp:str,out:str,max_particles:int=8)->None:
 # │  Quick‑start driver                                              │
 # ╰──────────────────────────────────────────────────────────────────╯
 if __name__ == "__main__":
-    N              = 5       # p_1 φ , p_2‑p_{n-1} γ , p_n φ
-    NSAMPLES       = 10000
+    N              = 4       # p_1 φ , p_2‑p_{n-1} γ , p_n φ
+    NSAMPLES       = 1000
     MAX_SCRAMBLES  = 8 
     MIN_SCRAMBLES  = 0 # 0 means no scrambling, just expansion
     SEED           = 42
