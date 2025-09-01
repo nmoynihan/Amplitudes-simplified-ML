@@ -63,6 +63,7 @@ class TransformerRegressor(nn.Module):
         sinusoidal_embeddings: bool = True,
         max_seq_len: int = 5000,
         pad_token_id: int = 0,
+        head_ff_dim: int = None,
         device: str = 'cpu'
     ):
         super().__init__()
@@ -75,6 +76,7 @@ class TransformerRegressor(nn.Module):
         self.sinusoidal_embeddings = sinusoidal_embeddings
         self.max_seq_len = max_seq_len
         self.pad_token_id = pad_token_id
+        self.head_ff_dim = head_ff_dim if head_ff_dim is not None else 4 * embedding_dim
         self.device = device
         self.model_hyperparams = {'vocab_size': self.vocab_size, 
                                  'embedding_dim': self.embedding_dim,
@@ -85,6 +87,7 @@ class TransformerRegressor(nn.Module):
                                  'sinusoidal_embeddings': self.sinusoidal_embeddings,
                                  'max_seq_len': self.max_seq_len,
                                  'pad_token_id': self.pad_token_id,
+                                 'head_ff_dim': self.head_ff_dim,
                                  'device': self.device,
                                  }
         
@@ -106,6 +109,7 @@ class TransformerRegressor(nn.Module):
             nhead=n_heads,
             num_encoder_layers=n_enc_layers,
             num_decoder_layers=n_dec_layers,
+            dim_feedforward=self.head_ff_dim,
             dropout=dropout,
             batch_first=True  # batch_size, seq_len, embedding_dim
         )
