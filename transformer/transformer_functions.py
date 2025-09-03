@@ -502,12 +502,14 @@ def validate_step(model, batch, criterion):
     return loss.item(), accuracy
 
 
-def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, run_name='default_run'):
-    """Trains a transformer model with automatic checkpointing after each epoch.
+def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, run_name='default_run',
+                early_stopping_patience=None, early_stopping_min_delta=1e-4):
+    """Trains a transformer model with automatic checkpointing after each epoch and optional early stopping.
 
     Performs training and validation loops for the specified number of epochs,
     saving the model after each epoch (in 'models/' directory) and deleting
     the previous epoch's checkpoint. Tracks and returns training/validation losses.
+    Optionally implements early stopping based on validation loss.
 
     Args:
         model (torch.nn.Module): Transformer model to be trained
@@ -516,14 +518,24 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
         train_loader (torch.utils.data.DataLoader): Training data loader
         val_loader (torch.utils.data.DataLoader): Validation data loader
         epochs (int): Number of complete passes through the training data
+        run_name (str): Name for this training run (for saving models)
+        early_stopping_patience (int, optional): Number of epochs with no improvement after which training will stop
+        early_stopping_min_delta (float): Minimum change to qualify as an improvement
 
     Returns:
-        tuple: Two lists containing:
+        tuple: Four lists containing:
             - train_losses (list[float]): Average training loss per epoch
             - val_losses (list[float]): Average validation loss per epoch
+            - train_accuracies (list[float]): Average training accuracy per epoch
+            - val_accuracies (list[float]): Average validation accuracy per epoch
     """
     train_losses, val_losses = [], []
     train_accuracies, val_accuracies = [], []
+    
+    # Early stopping variables
+    best_val_loss = float('inf')
+    patience_counter = 0
+    best_epoch = 0
     
     # Create models directory if it doesn't exist
     output_dir = os.path.join('models', run_name)
@@ -558,6 +570,31 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
         train_accuracies.append(epoch_train_acc)
         val_accuracies.append(epoch_val_acc)
         
+        # Early stopping logic
+        if early_stopping_patience is not None:
+            if epoch_val_loss < best_val_loss - early_stopping_min_delta:
+                best_val_loss = epoch_val_loss
+                patience_counter = 0
+                best_epoch = epoch + 1
+                # Save best model
+                best_model_path = os.path.join(output_dir, 'best_model.pt')
+                torch.save({
+                    'epoch': epoch + 1,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'train_loss': epoch_train_loss,
+                    'val_loss': epoch_val_loss,
+                    'model_args': model.model_hyperparams,
+                }, best_model_path)
+                print(f"New best model saved at epoch {epoch + 1} with val_loss: {epoch_val_loss:.4f}")
+            else:
+                patience_counter += 1
+                print(f"Early stopping patience: {patience_counter}/{early_stopping_patience}")
+                
+                if patience_counter >= early_stopping_patience:
+                    print(f"Early stopping triggered! Best model was at epoch {best_epoch} with val_loss: {best_val_loss:.4f}")
+                    break
+        
         # Delete previous epoch's model if it exists
         if epoch > 0:
             prev_model_path = os.path.join(output_dir, f'model_epoch_{epoch}.pt')
@@ -577,6 +614,10 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
         
         print(f"Epoch {epoch+1}: Train Loss: {epoch_train_loss:.4f}, Val Loss: {epoch_val_loss:.4f}, "
               f"Train Acc: {epoch_train_acc:.4f}, Val Acc: {epoch_val_acc:.4f} | Model saved to {model_save_path}")
+    
+    # Final summary
+    if early_stopping_patience is not None:
+        print(f"\nTraining completed. Best model: epoch {best_epoch}, val_loss: {best_val_loss:.4f}")
     
     return train_losses, val_losses, train_accuracies, val_accuracies
 

@@ -30,7 +30,9 @@ training_hyperparams = {
     'batch_size': 32,
     'train_split': 0.8,
     'learning_rate': 1e-4,
-    'weight_decay': 1e-5
+    'weight_decay': 1e-5,
+    'early_stopping_patience': 10,  # Stop if no improvement for 10 epochs
+    'early_stopping_min_delta': 1e-4  # Minimum change to qualify as improvement
 }
 model_hyperparams = {
     'embedding_dim': 64,
@@ -109,7 +111,9 @@ train_losses, val_losses, train_accuracies, val_accuracies= train_model(
     train_loader, 
     val_loader, 
     epochs=training_hyperparams['n_epochs'],
-    run_name=run_name
+    run_name=run_name,
+    early_stopping_patience=training_hyperparams['early_stopping_patience'],
+    early_stopping_min_delta=training_hyperparams['early_stopping_min_delta']
 )
 
 '''
