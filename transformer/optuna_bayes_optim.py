@@ -13,6 +13,10 @@ print(f"Using {n_threads} CPU threads for PyTorch.")
 def objective(trial):
     # Fixed hyperparameters
     n_epochs = 20
+    # Early stopping parameters
+    early_stopping_patience = 5  # Shorter patience for optimization
+    early_stopping_min_delta = 1e-4
+    
     # Suggest hyperparameters
     embedding_dim = 2 ** trial.suggest_int('embedding_dim_exp', 6, 9)  # 64, 128, 256, 512
     n_heads = 2 * trial.suggest_int('n_heads_exp', 1, 5)  # 2, 4, 6, 8, 10
@@ -53,27 +57,21 @@ def objective(trial):
     criterion = nn.CrossEntropyLoss(ignore_index=0)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
-    # Train
-    train_model(model, optimizer, criterion, train_loader, val_loader, epochs=n_epochs)
+    # Train with early stopping
+    train_losses, val_losses, train_accuracies, val_accuracies = train_model(
+        model, 
+        optimizer, 
+        criterion, 
+        train_loader, 
+        val_loader, 
+        epochs=n_epochs,
+        run_name=f'optuna_trial_{trial.number}',
+        early_stopping_patience=early_stopping_patience,
+        early_stopping_min_delta=early_stopping_min_delta
+    )
 
-    # Evaluate on validation set
-    model.eval()
-    val_loss = 0
-    n_batches = 0
-    with torch.no_grad():
-        for batch in val_loader:
-            src = batch['input'].to(device)
-            tgt = batch['target'].to(device)
-            tgt_input = tgt[:, :-1]
-            tgt_output = tgt[:, 1:]
-            output = model(src, tgt_input)
-            output = output.reshape(-1, output.size(-1))
-            tgt_output = tgt_output.reshape(-1)
-            loss = criterion(output, tgt_output)
-            val_loss += loss.item()
-            n_batches += 1
-    avg_val_loss = val_loss / n_batches if n_batches > 0 else float('inf')
-    return avg_val_loss
+    # Return the best (minimum) validation loss achieved during training
+    return min(val_losses)
 
 def main():
     # Create an Optuna study to minimize validation loss
