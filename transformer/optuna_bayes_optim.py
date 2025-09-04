@@ -30,7 +30,7 @@ def objective(trial):
     head_ff_dim = embedding_dim * trial.suggest_categorical('head_ff_dim_mult', [1, 2, 4, 8])
 
     # Data
-    csv_file = os.path.join('data', 'w1_short.csv')
+    csv_file = os.path.join('data', 'gi_4pt_tok.csv')
     train_loader, val_loader = load_and_prepare_data(
         csv_file,
         batch_size=batch_size,
@@ -83,6 +83,7 @@ def main():
     # Print the best trial's results
     print('Best trial:')
     trial = study.best_trial
+    print(f'  Trial Number: {trial.number}')
     print(f'  Validation Loss: {trial.value}')
     print('  Best Hyperparameters:')
     for key, value in trial.params.items():
