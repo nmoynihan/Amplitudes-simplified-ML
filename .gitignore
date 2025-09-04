@@ -5,3 +5,4 @@ tags
 venv/
 models/*
 messabout.ipynb
+data_generation/*.csv
