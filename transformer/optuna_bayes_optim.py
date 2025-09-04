@@ -30,7 +30,7 @@ def objective(trial):
     head_ff_dim = embedding_dim * trial.suggest_categorical('head_ff_dim_mult', [1, 2, 4, 8])
 
     # Data
-    csv_file = os.path.join('data', 'gi_4pt_tok.csv')
+    csv_file = os.path.join('data', 'gi_5pt_tok.csv')
     train_loader, val_loader = load_and_prepare_data(
         csv_file,
         batch_size=batch_size,
