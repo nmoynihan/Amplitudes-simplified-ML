@@ -24,24 +24,24 @@ if device.type == 'cpu':
     print(f"Using {n_threads} CPU threads for PyTorch.")
 
 # Specify the run hyperparameters
-filename = 'w1_short.csv'
+filename = 'gi_4pt_tok.csv'
 training_hyperparams = {
     'n_epochs': 200,
-    'batch_size': 32,
+    'batch_size': 8,
     'train_split': 0.8,
-    'learning_rate': 1e-4,
-    'weight_decay': 1e-5,
+    'learning_rate': 5e-5,
+    'weight_decay': 1e-6,
     'early_stopping_patience': 10,  # Stop if no improvement for 10 epochs
     'early_stopping_min_delta': 1e-4  # Minimum change to qualify as improvement
 }
 model_hyperparams = {
-    'embedding_dim': 64,
-    'n_heads': 8,
-    'n_enc_layers': 3,
-    'n_dec_layers': 3,
-    'dropout': 0.1,
-    'sinusoidal_embeddings': False,
-    'head_ff_dim': 256,  # 4 * embedding_dim (4 * 64 = 256)
+    'embedding_dim': 512,
+    'n_heads': 4,
+    'n_enc_layers': 5,
+    'n_dec_layers': 6,
+    'dropout': 0.005,
+    'sinusoidal_embeddings': True,
+    'head_ff_dim': 1024,  # 4 * embedding_dim (4 * 64 = 256)
     'device': device
 }
 
