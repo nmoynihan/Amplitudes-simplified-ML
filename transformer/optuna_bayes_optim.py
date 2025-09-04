@@ -19,7 +19,7 @@ def objective(trial):
     
     # Suggest hyperparameters
     embedding_dim = 2 ** trial.suggest_int('embedding_dim_exp', 6, 9)  # 64, 128, 256, 512
-    n_heads = 2 * trial.suggest_int('n_heads_exp', 1, 5)  # 2, 4, 6, 8, 10
+    n_heads = 2 ** trial.suggest_int('n_heads_exp', 1, 4)  # 2, 4, 8, 16
     n_enc_layers = trial.suggest_int('n_enc_layers', 2, 8)
     n_dec_layers = trial.suggest_int('n_dec_layers', 2, 8)
     dropout = trial.suggest_float('dropout', 0.0, 0.3)
@@ -30,7 +30,7 @@ def objective(trial):
     head_ff_dim = embedding_dim * trial.suggest_categorical('head_ff_dim_mult', [1, 2, 4, 8])
 
     # Data
-    csv_file = os.path.join('data', 'w1_short.csv')
+    csv_file = os.path.join('data', 'gi_5pt_tok.csv')
     train_loader, val_loader = load_and_prepare_data(
         csv_file,
         batch_size=batch_size,
@@ -83,6 +83,7 @@ def main():
     # Print the best trial's results
     print('Best trial:')
     trial = study.best_trial
+    print(f'  Trial Number: {trial.number}')
     print(f'  Validation Loss: {trial.value}')
     print('  Best Hyperparameters:')
     for key, value in trial.params.items():
