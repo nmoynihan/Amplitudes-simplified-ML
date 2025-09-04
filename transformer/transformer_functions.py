@@ -541,25 +541,32 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
     output_dir = os.path.join('models', run_name)
     os.makedirs(output_dir, exist_ok=True)
     
+    # Set up a single global progress bar across all epochs (train + val batches)
+    steps_per_epoch = len(train_loader) + (len(val_loader) if val_loader is not None else 0)
+    total_steps = epochs * steps_per_epoch
+    pbar = tqdm(total=total_steps, desc=f"Training {run_name}", unit="batch", dynamic_ncols=True)
+
     for epoch in range(epochs):
         # Training
         model.train()
         train_loss = 0
         train_acc = 0
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]"):
+        for batch in train_loader:
             loss, acc = train_step(model, batch, criterion, optimizer)
             train_loss += loss
             train_acc += acc
+            pbar.update(1)
         
         # Validation
         model.eval()
         val_loss = 0
         val_acc = 0
         with torch.no_grad():
-            for batch in tqdm(val_loader, desc=f"Epoch {epoch+1} [Val]"):
+            for batch in val_loader:
                 loss, acc = validate_step(model, batch, criterion)
                 val_loss += loss
                 val_acc += acc
+                pbar.update(1)
         
         epoch_train_loss = train_loss / len(train_loader)
         epoch_val_loss = val_loss / len(val_loader)
@@ -593,6 +600,12 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
                 
                 if patience_counter >= early_stopping_patience:
                     print(f"Early stopping triggered! Best model was at epoch {best_epoch} with val_loss: {best_val_loss:.4f}")
+                    # finalize progress bar gracefully
+                    try:
+                        pbar.total = pbar.n
+                        pbar.refresh()
+                    except Exception:
+                        pass
                     break
         
         # Delete previous epoch's model if it exists
@@ -615,6 +628,12 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
         print(f"Epoch {epoch+1}: Train Loss: {epoch_train_loss:.4f}, Val Loss: {epoch_val_loss:.4f}, "
               f"Train Acc: {epoch_train_acc:.4f}, Val Acc: {epoch_val_acc:.4f} | Model saved to {model_save_path}")
     
+    # Close global progress bar
+    try:
+        pbar.close()
+    except Exception:
+        pass
+
     # Final summary
     if early_stopping_patience is not None:
         print(f"\nTraining completed. Best model: epoch {best_epoch}, val_loss: {best_val_loss:.4f}")

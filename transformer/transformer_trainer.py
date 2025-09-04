@@ -24,7 +24,7 @@ if device.type == 'cpu':
     print(f"Using {n_threads} CPU threads for PyTorch.")
 
 # Specify the run hyperparameters
-filename = 'w1_short.csv'
+filename = 'gi_4pt_tok.csv'
 training_hyperparams = {
     'n_epochs': 200,
     'batch_size': 32,
