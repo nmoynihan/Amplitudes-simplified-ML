@@ -19,7 +19,7 @@ def objective(trial):
     
     # Suggest hyperparameters
     embedding_dim = 2 ** trial.suggest_int('embedding_dim_exp', 6, 9)  # 64, 128, 256, 512
-    n_heads = 2 * trial.suggest_int('n_heads_exp', 1, 5)  # 2, 4, 6, 8, 10
+    n_heads = 2 ** trial.suggest_int('n_heads_exp', 1, 4)  # 2, 4, 8, 16
     n_enc_layers = trial.suggest_int('n_enc_layers', 2, 8)
     n_dec_layers = trial.suggest_int('n_dec_layers', 2, 8)
     dropout = trial.suggest_float('dropout', 0.0, 0.3)
