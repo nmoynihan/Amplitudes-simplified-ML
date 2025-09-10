@@ -653,8 +653,10 @@ def load_transformer_model(model_class, model_path, optimizer=None, device='cpu'
     # Load checkpoint
     checkpoint = torch.load(model_path, map_location=device)
     
-    # Initialize model
-    model = model_class(**checkpoint['model_args']).to(device)
+    # Initialize model - override device in model_args to ensure compatibility
+    model_args = checkpoint['model_args'].copy()
+    model_args['device'] = device  # Override saved device with current device
+    model = model_class(**model_args).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     
     # Initialize optimizer if provided
