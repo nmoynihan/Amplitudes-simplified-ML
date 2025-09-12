@@ -8,21 +8,22 @@ from transformer_functions import TransformerRegressor, load_transformer_model
 from data_import import load_and_prepare_data
 
 # Settings
-model_path = os.path.join('models', 'transformer_e2.pt')  # Change as needed
-csv_file = os.path.join('data', 'gi_4pt_tok.csv')           # Change as needed
-batch_size = 16
+model_path = os.path.join('models', '5pt_model.pt')  # Change as needed
+csv_file = os.path.join('data', 'ampl00111_tok.csv')  # Change as needed
+batch_size = 1
 max_length = 100
 num_print = 5  # Number of examples to print
+inference_only = True  # Set to True for pure inference (ignore simple column), False for evaluation
+force_cpu = True # Force CPU usage (set to True to avoid CUDA/MPS device issues)
+use_mps = False # Device toggle: enable MPS explicitly (default False due to missing ops in PyTorch Transformer on MPS)
 
 # Decoding hyperparameters (set here for evaluation)
-decoding_method = 'nucleus'      # Options: 'greedy', 'beam', 'nucleus'
-beam_size = 5                   # Used for beam/nucleus search
-p_nucleus = 0.95                # Nucleus cutoff probability (for nucleus sampling)
-temperature_nucleus = 1.0       # Temperature for nucleus sampling
+decoding_method = 'beam'        # Try 'beam' instead of 'nucleus' to test non-stochastic
+beam_size = 10                   # Used for beam/nucleus search
+p_nucleus = 0.8                 # Nucleus cutoff probability (lower => more diversity)
+temperature_nucleus = 2.0       # Temperature for nucleus sampling (increased from 1.0 for more diversity)
 # For beam/nucleus evaluation: if True, count as correct if ANY beam hypothesis matches target; if False, only best hyp
 beam_match_any = True
-# Device toggle: enable MPS explicitly (default False due to missing ops in PyTorch Transformer on MPS)
-use_mps = False
 
 def decode_with_model(model, src, max_length, bos_token=2, eos_token=3, pad_token=0):
     """Decode and, for beam/nucleus, also return all beam hypotheses per example."""
@@ -70,65 +71,134 @@ def _clean_seq(arr, pad_token=0, eos_token=3):
 
 def main():
     # Resolve device and load model on it (prefer CUDA, then optional MPS, else CPU)
-    if torch.cuda.is_available():
-        preferred_device = 'cuda'
-    elif use_mps and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-        preferred_device = 'mps'
-    else:
+    if force_cpu:
         preferred_device = 'cpu'
+        print("Forcing CPU device usage")
+    else:
+        try:
+            if torch.cuda.is_available():
+                # Test if CUDA actually works by creating a small tensor
+                test_tensor = torch.zeros(1).cuda()
+                preferred_device = 'cuda'
+                print("CUDA device available and working")
+            else:
+                raise RuntimeError("CUDA not available")
+        except (RuntimeError, AssertionError) as e:
+            print(f"CUDA not working: {e}")
+            try:
+                if use_mps and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                    # Test if MPS actually works
+                    test_tensor = torch.zeros(1).to('mps')
+                    preferred_device = 'mps'
+                    print("MPS device available and working")
+                else:
+                    raise RuntimeError("MPS not available or disabled")
+            except (RuntimeError, AssertionError) as e:
+                print(f"MPS not working: {e}")
+                preferred_device = 'cpu'
+                print("Using CPU device")
+    
     loaded = load_transformer_model(TransformerRegressor, model_path, device=preferred_device)
     model = loaded['model']
     model.to(preferred_device)
     model.device = preferred_device  
     model.eval()
     device = preferred_device
-    print(f"Evaluating on device: {device}")
+    print(f"Running on device: {device}")
+    
+    if inference_only:
+        print("=== INFERENCE MODE ===")
+        print(f"Decoding method: {decoding_method}")
+        if decoding_method in ['beam', 'nucleus']:
+            print(f"Beam size: {beam_size}")
+        print()
+    else:
+        print("=== EVALUATION MODE ===")
 
-    # Load data (validation set only)
-    _, val_loader = load_and_prepare_data(csv_file, batch_size=batch_size, max_length=None, train_split=0.8)
+    # Load data - use full dataset for inference, validation only for evaluation
+    if inference_only:
+        # Load full dataset without train/validation split
+        from data_import import TransformerDataset
+        from torch.utils.data import DataLoader
+        dataset = TransformerDataset(csv_file, max_length=None)
+        data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    else:
+        # Load validation set only for evaluation
+        _, data_loader = load_and_prepare_data(csv_file, batch_size=batch_size, max_length=None, train_split=0.8)
 
     total, correct = 0, 0
     printed = 0
-    for batch in val_loader:
+    
+    for batch in data_loader:
         src = batch['input'].to(device)
         tgt = batch['target'].to(device)
+        
         # Generate predictions
         with torch.no_grad():
             decode_len = min(max_length, tgt.size(1)) if max_length is not None else tgt.size(1)
             gen, beams = decode_with_model(model, src, max_length=decode_len, bos_token=2, eos_token=3, pad_token=0)
+        
         gen = gen.cpu().numpy()
         tgt = tgt.cpu().numpy()
-        # Compare and print
+        
+        # Process each example in the batch
         for i in range(src.size(0)):
-            tgt_seq = _clean_seq(tgt[i], pad_token=0, eos_token=3)
-            gen_seq = _clean_seq(gen[i], pad_token=0, eos_token=3)
-            is_match = False
-            if beams is None:
-                # Greedy: compare best sequence only
-                is_match = (tgt_seq == gen_seq)
+            if inference_only:
+                # INFERENCE MODE: Just print predictions
+                src_seq = src[i].cpu().numpy().tolist()
+                gen_seq = _clean_seq(gen[i], pad_token=0, eos_token=3)
+                
+                print(f"Input:     {src_seq}")
+                if decoding_method == 'greedy':
+                    print(f"Predicted: {gen_seq}")
+                else:  # beam or nucleus
+                    print(f"Best prediction: {gen_seq}")
+                    if beams and i < len(beams):
+                        print(f"All {beam_size} beam hypotheses:")
+                        for j, hyp_seq in enumerate(beams[i][:beam_size]):
+                            clean_hyp = _clean_seq(hyp_seq, pad_token=0, eos_token=3)
+                            print(f"  Beam {j+1}: {clean_hyp}")
+                print()
+                total += 1
+                
             else:
-                # Beam/nucleus: either any-beam match or best-only match
-                if not beam_match_any:
+                # EVALUATION MODE: Compare with targets
+                tgt_seq = _clean_seq(tgt[i], pad_token=0, eos_token=3)
+                gen_seq = _clean_seq(gen[i], pad_token=0, eos_token=3)
+                is_match = False
+                
+                if beams is None:
+                    # Greedy: compare best sequence only
                     is_match = (tgt_seq == gen_seq)
                 else:
-                    beam_list = beams[i] if i < len(beams) else []
-                    if len(beam_list) == 0:
+                    # Beam/nucleus: either any-beam match or best-only match
+                    if not beam_match_any:
                         is_match = (tgt_seq == gen_seq)
                     else:
-                        for hyp_seq in beam_list:
-                            if _clean_seq(hyp_seq, pad_token=0, eos_token=3) == tgt_seq:
-                                is_match = True
-                                break
-            if is_match:
-                correct += 1
-            total += 1
-            if printed < num_print:
-                print(f"Input:    {src[i].cpu().numpy().tolist()}")
-                print(f"Target:   {tgt_seq}")
-                print(f"Generated:{gen_seq}\n")
-                printed += 1
-    acc = 100.0 * correct / total if total > 0 else 0.0
-    print(f"\nExact match accuracy: {acc:.2f}% ({correct}/{total})")
+                        beam_list = beams[i] if i < len(beams) else []
+                        if len(beam_list) == 0:
+                            is_match = (tgt_seq == gen_seq)
+                        else:
+                            for hyp_seq in beam_list:
+                                if _clean_seq(hyp_seq, pad_token=0, eos_token=3) == tgt_seq:
+                                    is_match = True
+                                    break
+                
+                if is_match:
+                    correct += 1
+                total += 1
+                
+                if printed < num_print:
+                    print(f"Input:    {src[i].cpu().numpy().tolist()}")
+                    print(f"Target:   {tgt_seq}")
+                    print(f"Generated:{gen_seq}\n")
+                    printed += 1
+
+    if inference_only:
+        print(f"Processed {total} examples for inference.")
+    else:
+        acc = 100.0 * correct / total if total > 0 else 0.0
+        print(f"\nExact match accuracy: {acc:.2f}% ({correct}/{total})")
 
 if __name__ == "__main__":
     main()
