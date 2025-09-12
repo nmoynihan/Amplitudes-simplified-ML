@@ -97,7 +97,7 @@ class ScatteringAmplitudeTokenizer:
         return " ".join(self.id_to_token[i] for i in ids if i != self.vocab["<PAD>"])
 
     def decode_infix(self, ids: List[int]) -> str:
-        toks = [self.id_to_token[i] for i in ids if i != self.vocab["<PAD>"]]
+        toks = [self.id_to_token[i] for i in ids if i not in {self.vocab["<PAD>"], self.vocab["<BOS>"], self.vocab["<EOS>"]}]
 
         def _needs_parens(expr: str, parent_prec: int) -> bool:
             """Check if an expression needs parentheses based on its content"""
