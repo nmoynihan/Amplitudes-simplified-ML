@@ -302,7 +302,14 @@ def _to_float_expr(expr:str, P:dict, E:dict) -> str:
         va = P[a] if a.startswith('p_') else E[a]
         vb = P[b] if b.startswith('p_') else E[b]
         return f"({_mdot(va, vb):.17g})"
-    return _RE_DOT.sub(repl, expr)
+    # Replace all p/e dot products by their numeric Minkowski inner product.
+    expr_num = _RE_DOT.sub(repl, expr)
+    # Our tokeniser uses '^' for exponentiation; Python's AST treats '^' as bitwise XOR.
+    # Convert caret powers into Python '**' so the safe evaluator recognises them as ast.Pow.
+    # This is a simple textual replacement because '^' is not otherwise used in our grammar.
+    if '^' in expr_num:
+        expr_num = expr_num.replace('^', '**')
+    return expr_num
 
 import ast
 
@@ -343,7 +350,34 @@ def eval_infix_numeric(expr: str, momenta, pols) -> float:
     N = len(momenta)
     P = {f"p_{i}": momenta[i-1] for i in range(1,N+1)}
     E = {f"e_{i}": pols[i-2] for i in range(2,N)}
-    expr_f = _to_float_expr(expr, P, E)
+    # --- Trace / field‑strength expansion ---------------------------------
+    # decode_infix may yield expressions containing Tr((F_i·F_j)) or Tr((F_i·F_j·F_k)).
+    # Expand these into p/e dot products using the same algebraic identities
+    # as the dataset generator so numeric evaluation only sees p_*/e_* tokens.
+    def _expand_traces(s: str) -> str:
+        # Normalise inner spacing & remove double parentheses like (F_2·F_3)
+        changed = True
+        while changed:
+            changed = False
+            # Tr of two F
+            def rep2(m):
+                nonlocal changed
+                changed = True
+                j,k = map(int, m.groups())
+                return _rw_Tr2(j,k)  # defined above
+            # Allow optional parentheses around the F chain
+            s_new = re.sub(r"Tr\(\(?F_(\d+)\s*·\s*F_(\d+)\)?\)", rep2, s)
+            # Tr of three F
+            def rep3(m):
+                nonlocal changed
+                changed = True
+                j,k,l = map(int, m.groups())
+                return _rw_Tr3(j,k,l)
+            s_new = re.sub(r"Tr\(\(?F_(\d+)\s*·\s*F_(\d+)\s*·\s*F_(\d+)\)?\)", rep3, s_new)
+            s = s_new
+        return s
+    expr_expanded = _expand_traces(expr)
+    expr_f = _to_float_expr(expr_expanded, P, E)
     return float(_safe_eval_float(expr_f))
 
 # ╭──────────────────────────────────────────────────────────────────╮
@@ -493,9 +527,9 @@ def tokenise_csv(inp:str,out:str,max_particles:int=8)->None:
 # │  Quick‑start driver                                              │
 # ╰──────────────────────────────────────────────────────────────────╯
 if __name__ == "__main__":
-    N              = 4       # p_1 φ , p_2‑p_{n-1} γ , p_n φ
+    N              = 5       # p_1 φ , p_2‑p_{n-1} γ , p_n φ
     NSAMPLES       = 1000
-    MAX_SCRAMBLES  = 8 
+    MAX_SCRAMBLES  = 4 
     MIN_SCRAMBLES  = 0 # 0 means no scrambling, just expansion
     SEED           = 42
 

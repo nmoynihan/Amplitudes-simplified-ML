@@ -1,5 +1,5 @@
 import re
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Any
 
 
 class ScatteringAmplitudeTokenizer:
@@ -235,7 +235,7 @@ class ScatteringAmplitudeTokenizer:
         out.extend(reversed(stack))           # drain
         return out[::-1]                      # postfix → prefix
 
-    def debug_tokenization(self, expr: str) -> Dict[str, any]:
+    def debug_tokenization(self, expr: str) -> Dict[str, Any]:
         """Debug method to see all tokenization steps"""
         raw_tokens = self._tokenise(expr)
         with_implicit_mul = self._insert_implicit_mul(raw_tokens)
@@ -253,6 +253,156 @@ class ScatteringAmplitudeTokenizer:
             "unknown_tokens": unknown_tokens,
             "vocab_keys": list(self.vocab.keys())
         }
+
+
+# ──────────────────────────────────────────────────────────────────── #
+# Numerical equivalence helper                                        #
+# ──────────────────────────────────────────────────────────────────── #
+def numerically_equivalent(
+    tokenizer: ScatteringAmplitudeTokenizer,
+    a_tokens,
+    b_tokens,
+    N: int,
+    *,
+    samples: int = 3,
+    M: float = 2.0,
+    tol_abs: float = 1e-12,
+    tol_rel: float = 1e-10,
+    seed: int | None = None,
+    return_details: bool = False,
+):
+    """Compare two (tokenised) expressions for numerical equivalence.
+
+    Parameters
+    ----------
+    tokenizer : ScatteringAmplitudeTokenizer
+        Instance used to decode the token id streams back to infix.
+    a_tokens , b_tokens : sequence[int] | str
+        Either
+          * a list/tuple of integer token ids, OR
+          * a whitespace separated string of token *lexemes* (e.g. "p_1 · p_2 + p_3 · p_4"), OR
+          * an infix expression itself (heuristically detected).
+        In all cases the arguments are decoded to an infix expression that can be
+        numerically evaluated.
+    N : int
+        Total number of external legs (needed to generate kinematics).
+    samples : int, default 3
+        How many random phase–space points to test over.
+    M : float, default 2.0
+        Mass of legs p_1 and p_N passed to the kinematics generator.
+    tol_abs : float, default 1e-12
+        Absolute tolerance threshold.
+    tol_rel : float, default 1e-10
+        Relative tolerance threshold (compared against max(|a|,|b|,1)).
+    seed : int | None
+        Optional base RNG seed for reproducibility; each sample uses seed+idx.
+    return_details : bool, default False
+        If True, also return a details dict with per-sample values & diffs.
+
+    Returns
+    -------
+    bool | (bool, dict)
+        True if all sampled evaluations agree within tolerances; otherwise False.
+        If return_details=True returns (result, details_dict).
+
+    Notes
+    -----
+    This function lazily imports `gen_data` and `kinematics` to avoid any
+    potential circular import during module initialisation.
+    """
+    # Lazy, robust imports (works whether run as a module or script)
+    import importlib, importlib.util, os, sys
+
+    def _lazy_local_import(mod_name: str):
+        try:
+            return importlib.import_module(mod_name)
+        except ModuleNotFoundError:  # fall back to same-directory file import
+            here = os.path.dirname(__file__)
+            candidate = os.path.join(here, f"{mod_name}.py")
+            if not os.path.isfile(candidate):
+                raise
+            spec = importlib.util.spec_from_file_location(mod_name, candidate)
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[mod_name] = module
+                spec.loader.exec_module(module)  # type: ignore[attr-defined]
+                return module
+            raise
+
+    _gd = _lazy_local_import("gen_data")  # type: ignore
+    _km = _lazy_local_import("kinematics")  # type: ignore
+
+    def _coerce(expr_like):
+        # If already a list/tuple of ints assume token ids
+        if isinstance(expr_like, (list, tuple)) and all(isinstance(x, int) for x in expr_like):
+            return tokenizer.decode_infix(list(expr_like))
+        # If it's a string we try several interpretations
+        if isinstance(expr_like, str):
+            s = expr_like.strip()
+            # Heuristic: if it contains "p_" or "e_" or operators typical of infix, treat directly
+            if any(sym in s for sym in ["p_", "e_", "F_", "Tr", "·", "+", "-", "*", "/", "^"]):
+                return s
+            # Else treat as space separated tokens -> map to IDs -> decode
+            toks = s.split()
+            ids = []
+            for t in toks:
+                if t in tokenizer.vocab:
+                    ids.append(tokenizer.vocab[t])
+                else:
+                    raise ValueError(f"Unknown token '{t}' in token sequence: {expr_like}")
+            return tokenizer.decode_infix(ids)
+        raise TypeError("Unsupported token input type; expected list[int] or str")
+
+    expr_a = _coerce(a_tokens)
+    expr_b = _coerce(b_tokens)
+
+    # Determine the maximum particle / photon index referenced so we do not
+    # generate insufficient kinematics (which would otherwise cause KeyError).
+    import re as _re
+    used_indices = [int(m.group(1)) for m in _re.finditer(r'[pPeEfF]_(\d+)', expr_a + " " + expr_b)]
+    max_used = max(used_indices) if used_indices else N
+    N_eff = max(N, max_used)
+    if N_eff != N:
+        # We silently upgrade N; record in details for transparency.
+        # (Could raise ValueError instead; auto-upgrade is more convenient for ad-hoc tests.)
+        pass
+
+    details = {
+        "expr_a": expr_a,
+        "expr_b": expr_b,
+        "N_requested": N,
+        "N_effective": N_eff,
+        "samples": [],  # list of dicts with values & diffs
+        "tol_abs": tol_abs,
+        "tol_rel": tol_rel,
+    }
+
+    ok = True
+    for i in range(samples):
+        sample_seed = None if seed is None else seed + i
+        mom, pol = _km.generate_kinematics(N_eff, M=M, seed=sample_seed)
+        val_a = _gd.eval_infix_numeric(expr_a, mom, pol)
+        val_b = _gd.eval_infix_numeric(expr_b, mom, pol)
+        diff = abs(val_a - val_b)
+        scale = max(abs(val_a), abs(val_b), 1.0)
+        rel = diff / scale
+        passed = (diff <= tol_abs) or (rel <= tol_rel)
+        if not passed:
+            ok = False
+        details["samples"].append({
+            "index": i,
+            "value_a": val_a,
+            "value_b": val_b,
+            "abs_diff": diff,
+            "rel_diff": rel,
+            "passed": passed,
+            "seed": sample_seed,
+        })
+        if not ok:
+            # Early exit if a failure is detected to save time
+            break
+
+    return (ok, details) if return_details else ok
 
 
 if __name__ == "__main__":

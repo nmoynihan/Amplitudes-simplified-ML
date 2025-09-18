@@ -8,8 +8,8 @@ from transformer_functions import TransformerRegressor, load_transformer_model
 from data_import import load_and_prepare_data
 
 # Settings
-model_path = os.path.join('models', '5pt_model.pt')  # Change as needed
-csv_file = os.path.join('data', 'ampl00111_tok.csv')  # Change as needed
+model_path = os.path.join('models', '4pt_model.pt')  # Change as needed
+csv_file = os.path.join('data', 'draft_4pt.csv')  # Change as needed
 batch_size = 1
 max_length = 100
 num_print = 5  # Number of examples to print
