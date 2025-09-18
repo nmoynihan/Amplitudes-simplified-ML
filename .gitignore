@@ -3,6 +3,7 @@ tags
 **/__pycache__
 **/.ipynb_checkpoints
 venv/
+**.venv/
 models/*
 messabout.ipynb
 data_generation/*.csv
