@@ -99,15 +99,10 @@ class ScatteringAmplitudeTokenizer:
     def decode_infix(self, ids: List[int]) -> str:
         toks = [self.id_to_token[i] for i in ids if i not in {self.vocab["<PAD>"], self.vocab["<BOS>"], self.vocab["<EOS>"]}]
 
-        def _needs_parens(expr: str, parent_prec: int) -> bool:
-            """Check if an expression needs parentheses based on its content"""
-            # Simple heuristic: if it contains operators with lower precedence
-            for op in ['+', '-']:
-                if op in expr and self._prec[op] < parent_prec:
-                    return True
-            return False
-
-        def _parse(idx: int, parent_prec: int = 0, is_right: bool = False) -> Tuple[str, int]:
+        # Return a tuple (expr, next_index, my_prec) where my_prec is the precedence of the
+        # outermost operator for this subexpression (higher means tighter binding). Leaves get
+        # a very high precedence so their parents rarely need to add parentheses.
+        def _parse(idx: int, parent_prec: int = 0, is_right: bool = False) -> Tuple[str, int, int]:
             if idx >= len(toks):
                 raise ValueError("Malformed prefix tokens: ran out of tokens.")
 
@@ -115,31 +110,63 @@ class ScatteringAmplitudeTokenizer:
             
             # operators --------------------------------------------------- #
             if tok == "Tr":                     # unary trace operator
-                child, nxt = _parse(idx + 1, self._prec[tok])
-                return f"Tr({child})", nxt
+                child, nxt, cprec = _parse(idx + 1, self._prec[tok])
+                # avoid double parens: Tr((F_i·F_j)) -> Tr(F_i·F_j)
+                if child.startswith("(") and child.endswith(")"):
+                    child = child[1:-1]
+                return f"Tr({child})", nxt, self._prec[tok]
             elif tok == 'u-':                   # unary minus
-                child, nxt = _parse(idx + 1, self._prec[tok])
-                # Only add parentheses if child has lower precedence
-                if _needs_parens(child, self._prec[tok]):
-                    return f"-({child})", nxt
+                child, nxt, cprec = _parse(idx + 1, self._prec[tok])
+                # Parenthesize if child's precedence is lower than unary minus
+                if cprec < self._prec[tok]:
+                    return f"-({child})", nxt, self._prec[tok]
                 else:
-                    return f"-{child}", nxt
+                    return f"-{child}", nxt, self._prec[tok]
             elif tok in self._arity:            # binary operators
-                left, nxt = _parse(idx + 1, self._prec[tok], False)
-                right, nxt = _parse(nxt, self._prec[tok], True)
-                
-                # Determine if we need parentheses around the whole expression
+                l_str, nxt, l_prec = _parse(idx + 1, self._prec[tok], False)
+                r_str, nxt, r_prec = _parse(nxt, self._prec[tok], True)
+
                 current_prec = self._prec[tok]
-                needs_parens = (current_prec < parent_prec or 
-                               (current_prec == parent_prec and is_right and tok in ['-', '/', '^']))
-                
+
+                # Decide if children need parentheses based on precedence/associativity
+                # General rule: wrap child if its precedence is lower than current.
+                l_needs = l_prec < current_prec
+                r_needs = r_prec < current_prec
+                # Non-associative/asymmetric adjustments:
+                if tok == '/':
+                    # a/(b op c) must be a/(...) for any op with precedence <= '/'
+                    # also wrap numerator to keep consistent grouping like (num)/(den)
+                    l_needs = True
+                    if r_prec <= current_prec:
+                        r_needs = True
+                elif tok == '-':
+                    # a-(b op c) must be a-(...) for any op with precedence <= '-'
+                    if r_prec <= current_prec:
+                        r_needs = True
+                elif tok == '^':
+                    # Right-associative: a^(b^c) is fine without parens only if child is a power
+                    # To be safe, wrap right if precedence <= current.
+                    if r_prec <= current_prec:
+                        r_needs = True
+
+                if l_needs:
+                    l_str = f"({l_str})"
+                if r_needs:
+                    r_str = f"({r_str})"
+
+                # Determine if we need parentheses around the whole expression relative to parent
+                needs_parens = (
+                    current_prec < parent_prec or
+                    (current_prec == parent_prec and is_right and tok in ['-', '/', '^'])
+                )
+
                 # Format with appropriate spacing
                 if tok in ['+', '-']:  # Binary + and - get spaces
-                    expr = f"{left} {tok} {right}"
+                    expr = f"{l_str} {tok} {r_str}"
                 else:  # All other operators (*, /, ^, ·) get no spaces
-                    expr = f"{left}{tok}{right}"
-                
-                return f"({expr})" if needs_parens else expr, nxt
+                    expr = f"{l_str}{tok}{r_str}"
+
+                return (f"({expr})" if needs_parens else expr), nxt, current_prec
 
             # leaf (maybe part of a multi-digit constant) ---------------- #
             if tok.endswith(":") and tok[:-1].isdigit():
@@ -150,13 +177,38 @@ class ScatteringAmplitudeTokenizer:
                        and toks[j][:-1].isdigit()):
                     digits.append(toks[j][:-1])
                     j += 1
-                return "".join(digits), j
-            return tok, idx + 1
+                return "".join(digits), j, 1000
+            return tok, idx + 1, 1000
 
-        expr, final_idx = _parse(0)
+        expr, final_idx, _ = _parse(0)
         if final_idx != len(toks):
             raise ValueError(f"Prefix stream not fully consumed: stopped at {final_idx}")
-        return expr[1:-1] if expr.startswith("(") and expr.endswith(")") else expr
+        # Normalise redundant outer parens and stray double parens that can be introduced
+        expr_norm = expr
+        if expr_norm.startswith("(") and expr_norm.endswith(")"):
+            # strip one layer if the outermost wraps the whole expression
+            expr_norm = expr_norm[1:-1]
+        # Final safety: balance parentheses to avoid dangling syntax
+        def _balance_parens(s: str) -> str:
+            out = []
+            bal = 0
+            for ch in s:
+                if ch == '(':
+                    bal += 1
+                    out.append(ch)
+                elif ch == ')':
+                    if bal > 0:
+                        bal -= 1
+                        out.append(ch)
+                    else:
+                        # drop unmatched closing
+                        continue
+                else:
+                    out.append(ch)
+            if bal > 0:
+                out.append(')' * bal)
+            return ''.join(out)
+        return _balance_parens(expr_norm)
 
     # ──────────────────────────────────────────────────────────────────── #
     # internals: infix → prefix

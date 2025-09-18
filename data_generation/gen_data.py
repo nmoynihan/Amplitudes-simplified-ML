@@ -43,19 +43,19 @@ def _rw_pFp(i,j,k):
     # p_i·F_j·p_k = (p_i·p_j)(e_j·p_k) - (p_i·e_j)(p_j·p_k)
     a = f"({dot(p(i), p(j))})*({dot(e(j), p(k))})"
     b = f"({dot(p(i), e(j))})*({dot(p(j), p(k))})"
-    return f"{a} - {b}"
+    return f"({a} - {b})"
 
 def _rw_pFFp(i,j,k,l):
     t1 = f"({dot(p(i), p(j))})*({dot(e(j), p(k))})*({dot(e(k), p(l))})"
     t2 = f"({dot(p(i), p(j))})*({dot(e(j), e(k))})*({dot(p(k), p(l))})"
     t3 = f"({dot(p(i), e(j))})*({dot(p(j), p(k))})*({dot(e(k), p(l))})"
     t4 = f"({dot(p(i), e(j))})*({dot(p(j), e(k))})*({dot(p(k), p(l))})"
-    return f"{t1} - {t2} - {t3} + {t4}"
+    return f"({t1} - {t2} - {t3} + {t4})"
 
 def _rw_Tr2(j,k):
     a = f"({dot(p(j), p(k))})*({dot(e(j), e(k))})"
     b = f"({dot(e(j), p(k))})*({dot(p(j), e(k))})"
-    return f"2*({b} - {a})"
+    return f"(2*({b} - {a}))"
 
 def _rw_Tr3(j,k,l):
     """
@@ -72,7 +72,7 @@ def _rw_Tr3(j,k,l):
     # join with spaces so later regexp scrambling still separates factors
     expr = " ".join(terms).replace("  ", " ")
     # move leading '+' if any
-    return expr.lstrip("+ ")
+    return f"({expr.lstrip('+ ')})"
 
 # Quick test of the rewriting rules
 #print(_rw_Tr3(1,2,3))
@@ -350,9 +350,10 @@ def eval_infix_numeric(expr: str, momenta, pols) -> float:
     N = len(momenta)
     P = {f"p_{i}": momenta[i-1] for i in range(1,N+1)}
     E = {f"e_{i}": pols[i-2] for i in range(2,N)}
-    # --- Trace / field‑strength expansion ---------------------------------
-    # decode_infix may yield expressions containing Tr((F_i·F_j)) or Tr((F_i·F_j·F_k)).
-    # Expand these into p/e dot products using the same algebraic identities
+    # --- Field‑strength expansions -----------------------------------------
+    # decode_infix may yield expressions containing Tr((F_i·F_j)), Tr((F_i·F_j·F_k)),
+    # and also GI blocks like p_i·F_j·p_k or p_i·F_j·F_k·p_l.
+    # Expand all of these into p/e dot products using the same algebraic identities
     # as the dataset generator so numeric evaluation only sees p_*/e_* tokens.
     def _expand_traces(s: str) -> str:
         # Normalise inner spacing & remove double parentheses like (F_2·F_3)
@@ -376,9 +377,125 @@ def eval_infix_numeric(expr: str, momenta, pols) -> float:
             s_new = re.sub(r"Tr\(\(?F_(\d+)\s*·\s*F_(\d+)\s*·\s*F_(\d+)\)?\)", rep3, s_new)
             s = s_new
         return s
+
+    def _expand_gi_blocks(s: str) -> str:
+        changed = True
+        while changed:
+            changed = False
+            # p_i · F_j · p_k
+            def rep_pfp(m):
+                nonlocal changed
+                changed = True
+                i, j, k = map(int, m.groups())
+                return _rw_pFp(i, j, k)
+            s_new = re.sub(r"p_(\d+)\s*·\s*F_(\d+)\s*·\s*p_(\d+)", rep_pfp, s)
+
+            # p_i · F_j · F_k · p_l
+            def rep_pffp(m):
+                nonlocal changed
+                changed = True
+                i, j, k, l = map(int, m.groups())
+                return _rw_pFFp(i, j, k, l)
+            s_new = re.sub(r"p_(\d+)\s*·\s*F_(\d+)\s*·\s*F_(\d+)\s*·\s*p_(\d+)", rep_pffp, s_new)
+            s = s_new
+        return s
+
     expr_expanded = _expand_traces(expr)
+    expr_expanded = _expand_gi_blocks(expr_expanded)
     expr_f = _to_float_expr(expr_expanded, P, E)
+    # Final safety: balance any stray parentheses to avoid SyntaxError
+    def _balance_parens_str(s: str) -> str:
+        out = []
+        bal = 0
+        for ch in s:
+            if ch == '(':
+                bal += 1
+                out.append(ch)
+            elif ch == ')':
+                if bal > 0:
+                    bal -= 1
+                    out.append(ch)
+                else:
+                    # drop unmatched closing
+                    continue
+            else:
+                out.append(ch)
+        if bal > 0:
+            out.append(')' * bal)
+        return ''.join(out)
+    expr_f = _balance_parens_str(expr_f)
     return float(_safe_eval_float(expr_f))
+
+# Debug helper: return the numeric-ready string after all expansions and substitutions
+def to_numeric_string(expr: str, momenta, pols) -> str:
+    N = len(momenta)
+    P = {f"p_{i}": momenta[i-1] for i in range(1,N+1)}
+    E = {f"e_{i}": pols[i-2] for i in range(2,N)}
+
+    def _expand_traces(s: str) -> str:
+        changed = True
+        while changed:
+            changed = False
+            def rep2(m):
+                nonlocal changed
+                changed = True
+                j,k = map(int, m.groups())
+                return _rw_Tr2(j,k)
+            s_new = re.sub(r"Tr\(\(?F_(\d+)\s*·\s*F_(\d+)\)?\)", rep2, s)
+            def rep3(m):
+                nonlocal changed
+                changed = True
+                j,k,l = map(int, m.groups())
+                return _rw_Tr3(j,k,l)
+            s_new = re.sub(r"Tr\(\(?F_(\d+)\s*·\s*F_(\d+)\s*·\s*F_(\d+)\)?\)", rep3, s_new)
+            s = s_new
+        return s
+
+    def _expand_gi_blocks(s: str) -> str:
+        changed = True
+        while changed:
+            changed = False
+            def rep_pfp(m):
+                nonlocal changed
+                changed = True
+                i, j, k = map(int, m.groups())
+                return _rw_pFp(i, j, k)
+            s_new = re.sub(r"p_(\d+)\s*·\s*F_(\d+)\s*·\s*p_(\d+)", rep_pfp, s)
+            def rep_pffp(m):
+                nonlocal changed
+                changed = True
+                i, j, k, l = map(int, m.groups())
+                return _rw_pFFp(i, j, k, l)
+            s_new = re.sub(r"p_(\d+)\s*·\s*F_(\d+)\s*·\s*F_(\d+)\s*·\s*p_(\d+)", rep_pffp, s_new)
+            s = s_new
+        return s
+
+    expr_expanded = _expand_traces(expr)
+    expr_expanded = _expand_gi_blocks(expr_expanded)
+    expr_f = _to_float_expr(expr_expanded, P, E)
+    # Balance for debug visibility
+    def _balance_parens_str(s: str) -> str:
+        out = []
+        bal = 0
+        for ch in s:
+            if ch == '(':
+                bal += 1
+                out.append(ch)
+            elif ch == ')':
+                if bal > 0:
+                    bal -= 1
+                    out.append(ch)
+                else:
+                    continue
+            else:
+                out.append(ch)
+        if bal > 0:
+            out.append(')' * bal)
+        return ''.join(out)
+    expr_f = _balance_parens_str(expr_f)
+    if '^' in expr_f:
+        expr_f = expr_f.replace('^', '**')
+    return expr_f
 
 # ╭──────────────────────────────────────────────────────────────────╮
 # │  Dataset construction & I/O                                      │
