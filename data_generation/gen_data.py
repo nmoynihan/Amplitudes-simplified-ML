@@ -491,6 +491,41 @@ def write_csv(pairs:List[Tuple[str,str]], path:str) -> None:
         for s, t in pairs:
             w.writerow([s, t])
 
+# New: In-memory deduplication of (simple, scrambled) pairs
+def dedupe_pairs(pairs: List[Tuple[str, str]], keep: str = "first") -> tuple[List[Tuple[str, str]], int]:
+    """
+    Remove exact duplicate pairs. By default keeps the first occurrence.
+
+    keep: 'first' | 'last'
+    Returns: (deduped_pairs, removed_count)
+    """
+    if keep not in ("first", "last"):
+        raise ValueError("keep must be 'first' or 'last'")
+    if not pairs:
+        return pairs, 0
+
+    if keep == "first":
+        seen: set[Tuple[str, str]] = set()
+        out: list[Tuple[str, str]] = []
+        for item in pairs:
+            if item in seen:
+                continue
+            seen.add(item)
+            out.append(item)
+        removed = len(pairs) - len(out)
+        return out, removed
+    else:
+        # keep == 'last': record last index of each pair
+        last_idx: dict[Tuple[str, str], int] = {}
+        for i, item in enumerate(pairs):
+            last_idx[item] = i
+        out: list[Tuple[str, str]] = []
+        for i, item in enumerate(pairs):
+            if last_idx[item] == i:
+                out.append(item)
+        removed = len(pairs) - len(out)
+        return out, removed
+
 def tokenise_txt(inp:str,out:str,max_particles:int=8)->None:
     # Lazy import to avoid hard dependency at module import time
     import Tokenizer  # type: ignore
@@ -528,7 +563,7 @@ def tokenise_csv(inp:str,out:str,max_particles:int=8)->None:
 # ╰──────────────────────────────────────────────────────────────────╯
 if __name__ == "__main__":
     N              = 5       # p_1 φ , p_2‑p_{n-1} γ , p_n φ
-    NSAMPLES       = 1000
+    NSAMPLES       = 10000
     MAX_SCRAMBLES  = 4 
     MIN_SCRAMBLES  = 0 # 0 means no scrambling, just expansion
     SEED           = 42
@@ -537,13 +572,27 @@ if __name__ == "__main__":
     TOK = f"gi_{N}pt_tok.csv"
 
     t0 = time.perf_counter()
-    pairs = build_dataset(N, num_samples=NSAMPLES, max_scr=MAX_SCRAMBLES, min_scr=MIN_SCRAMBLES, seed=SEED,
+    # Oversample by +20% to compensate for duplicates
+    target = NSAMPLES
+    oversampled = int(round(target * 1.2))
+    pairs = build_dataset(N, num_samples=oversampled, max_scr=MAX_SCRAMBLES, min_scr=MIN_SCRAMBLES, seed=SEED,
                           use_denominators=True, validate=True)
     t1 = time.perf_counter()
+    # Deduplicate in-memory before writing; keep first occurrences
+    before = len(pairs)
+    pairs, removed = dedupe_pairs(pairs, keep="first")
+    after = len(pairs)
+    # Truncate to target size after dedupe
+    if len(pairs) > target:
+        pairs = pairs[:target]
+    final = len(pairs)
     write_csv(pairs, RAW)
     tokenise_csv(RAW, TOK)
     t2 = time.perf_counter()
 
     print(f"{len(pairs)} pairs --> {RAW}")
     print(f"  generation : {(t1-t0):.2f}s")
+    print(f"  oversample : requested {target}, generated {oversampled}")
+    print(f"  dedupe     : removed {removed} duplicates ({before} -> {after})")
+    print(f"  truncate   : final {final} rows written")
     print(f"  write+tok  : {(t2-t1):.2f}s")
