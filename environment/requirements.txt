@@ -5,3 +5,4 @@ pandas
 matplotlib
 sympy
 h5py
+numpy
