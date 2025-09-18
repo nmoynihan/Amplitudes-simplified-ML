@@ -1,5 +1,5 @@
 import re
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Any, Optional
 
 
 class ScatteringAmplitudeTokenizer:
@@ -268,7 +268,7 @@ def numerically_equivalent(
     M: float = 2.0,
     tol_abs: float = 1e-12,
     tol_rel: float = 1e-10,
-    seed: int | None = None,
+    seed: Optional[int] = None,
     return_details: bool = False,
 ):
     """Compare two (tokenised) expressions for numerical equivalence.

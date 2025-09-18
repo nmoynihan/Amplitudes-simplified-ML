@@ -4,7 +4,7 @@ import torch
 n_threads = int(os.environ.get('OMP_NUM_THREADS', torch.get_num_threads()))
 torch.set_num_threads(n_threads)
 print(f"Using {n_threads} CPU threads for PyTorch.")
-from transformer_functions import TransformerRegressor, load_transformer_model
+from transformer_functions import TransformerRegressor, load_transformer_model, decode_with_model, clean_seq
 from data_import import load_and_prepare_data
 
 # Settings
@@ -24,50 +24,6 @@ p_nucleus = 0.8                 # Nucleus cutoff probability (lower => more dive
 temperature_nucleus = 2.0       # Temperature for nucleus sampling (increased from 1.0 for more diversity)
 # For beam/nucleus evaluation: if True, count as correct if ANY beam hypothesis matches target; if False, only best hyp
 beam_match_any = True
-
-def decode_with_model(model, src, max_length, bos_token=2, eos_token=3, pad_token=0):
-    """Decode and, for beam/nucleus, also return all beam hypotheses per example."""
-    if decoding_method == 'greedy':
-        out = model.generate(src, max_length=max_length, bos_token=bos_token, eos_token=eos_token, pad_token=pad_token)
-        return out, None
-    elif decoding_method in ['beam', 'nucleus']:
-        stochastic = (decoding_method == 'nucleus')
-        decoded, tgt_len, generated_hyps = model.generate_beam(
-            src,
-            beam_size=beam_size,
-            length_penalty=1.0,
-            early_stopping=True,
-            max_length=max_length,
-            stochastic=stochastic,
-            nucl_p=p_nucleus,
-            temperature=temperature_nucleus,
-            bos_token=bos_token,
-            eos_token=eos_token,
-            pad_token=pad_token
-        )
-        # Prepare list of all hypotheses per sample (append EOS for fair comparison)
-        all_beams = []
-        for hyps in generated_hyps:
-            hyps_for_sample = []
-            for score, hyp in hyps.hyp:
-                seq = hyp.tolist() + [eos_token]
-                hyps_for_sample.append(seq)
-            all_beams.append(hyps_for_sample)
-        # Return in same shape as greedy for compatibility, plus beams
-        return decoded.transpose(0, 1), all_beams
-    else:
-        raise ValueError(f"Unknown decoding method: {decoding_method}")
-
-def _clean_seq(arr, pad_token=0, eos_token=3):
-    """Remove PAD and truncate at first EOS (inclusive) for fair comparison/printing."""
-    out = []
-    for x in arr:
-        if x == pad_token:
-            continue
-        out.append(int(x))
-        if x == eos_token:
-            break
-    return out
 
 def main():
     # Resolve device and load model on it (prefer CUDA, then optional MPS, else CPU)
@@ -136,7 +92,14 @@ def main():
         # Generate predictions
         with torch.no_grad():
             decode_len = min(max_length, tgt.size(1)) if max_length is not None else tgt.size(1)
-            gen, beams = decode_with_model(model, src, max_length=decode_len, bos_token=2, eos_token=3, pad_token=0)
+            gen, beams = decode_with_model(
+                model, src, max_length=decode_len, 
+                decoding_method=decoding_method,
+                beam_size=beam_size,
+                p_nucleus=p_nucleus,
+                temperature_nucleus=temperature_nucleus,
+                bos_token=2, eos_token=3, pad_token=0
+            )
         
         gen = gen.cpu().numpy()
         tgt = tgt.cpu().numpy()
@@ -146,7 +109,7 @@ def main():
             if inference_only:
                 # INFERENCE MODE: Just print predictions
                 src_seq = src[i].cpu().numpy().tolist()
-                gen_seq = _clean_seq(gen[i], pad_token=0, eos_token=3)
+                gen_seq = clean_seq(gen[i], pad_token=0, eos_token=3)
                 
                 print(f"Input:     {src_seq}")
                 if decoding_method == 'greedy':
@@ -156,15 +119,15 @@ def main():
                     if beams and i < len(beams):
                         print(f"All {beam_size} beam hypotheses:")
                         for j, hyp_seq in enumerate(beams[i][:beam_size]):
-                            clean_hyp = _clean_seq(hyp_seq, pad_token=0, eos_token=3)
+                            clean_hyp = clean_seq(hyp_seq, pad_token=0, eos_token=3)
                             print(f"  Beam {j+1}: {clean_hyp}")
                 print()
                 total += 1
                 
             else:
                 # EVALUATION MODE: Compare with targets
-                tgt_seq = _clean_seq(tgt[i], pad_token=0, eos_token=3)
-                gen_seq = _clean_seq(gen[i], pad_token=0, eos_token=3)
+                tgt_seq = clean_seq(tgt[i], pad_token=0, eos_token=3)
+                gen_seq = clean_seq(gen[i], pad_token=0, eos_token=3)
                 is_match = False
                 
                 if beams is None:
@@ -180,7 +143,7 @@ def main():
                             is_match = (tgt_seq == gen_seq)
                         else:
                             for hyp_seq in beam_list:
-                                if _clean_seq(hyp_seq, pad_token=0, eos_token=3) == tgt_seq:
+                                if clean_seq(hyp_seq, pad_token=0, eos_token=3) == tgt_seq:
                                     is_match = True
                                     break
                 

@@ -1,4 +1,4 @@
-from data_generation.Tokenizer import ScatteringAmplitudeTokenizer,numerically_equivalent
+from data_generation.Tokenizer import ScatteringAmplitudeTokenizer, numerically_equivalent
 tok = ScatteringAmplitudeTokenizer(max_particles=8)
 '''
 Input:     [2, 7, 6, 24, 13, 4, 4, 22, 6, 22, 6, 22, 36, 37, 26, 28, 26, 29, 22, 6, 22, 6, 22, 36, 26, 37, 27, 26, 29, 22, 6, 22, 6, 22, 36, 27, 37, 26, 26, 28, 22, 6, 22, 26, 28, 26, 29, 3]
@@ -31,7 +31,7 @@ ok, details = numerically_equivalent(
     tokenizer=tok,
     a_tokens=unscrambled,   # or unscrambled_expr
     b_tokens=scrambled,     # or scrambled_expr
-    N=4,                        # total external legs
+    N=5,                        # total external legs
     samples=5,                  # number of random phase‑space points
     M=2.0,                      # scalar mass
     tol_abs=1e-12,

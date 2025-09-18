@@ -694,3 +694,75 @@ def load_transformer_model(model_class, model_path, optimizer=None, device='cpu'
         'train_loss': train_loss,
         'val_loss': val_loss
     }
+
+
+def decode_with_model(model, src, max_length, decoding_method='greedy', beam_size=5, 
+                     p_nucleus=0.9, temperature_nucleus=1.0, bos_token=2, eos_token=3, pad_token=0):
+    """
+    Decode sequences using various decoding methods.
+    
+    Args:
+        model: Transformer model
+        src: Source sequences [batch_size, seq_len]
+        max_length: Maximum generation length
+        decoding_method: 'greedy', 'beam', or 'nucleus'
+        beam_size: Number of beams for beam/nucleus search
+        p_nucleus: Nucleus probability cutoff
+        temperature_nucleus: Temperature for nucleus sampling
+        bos_token, eos_token, pad_token: Special tokens
+        
+    Returns:
+        tuple: (decoded_sequences, beam_hypotheses_or_None)
+    """
+    if decoding_method == 'greedy':
+        out = model.generate(src, max_length=max_length, bos_token=bos_token, eos_token=eos_token, pad_token=pad_token)
+        return out, None
+    elif decoding_method in ['beam', 'nucleus']:
+        stochastic = (decoding_method == 'nucleus')
+        decoded, tgt_len, generated_hyps = model.generate_beam(
+            src,
+            beam_size=beam_size,
+            length_penalty=1.0,
+            early_stopping=True,
+            max_length=max_length,
+            stochastic=stochastic,
+            nucl_p=p_nucleus,
+            temperature=temperature_nucleus,
+            bos_token=bos_token,
+            eos_token=eos_token,
+            pad_token=pad_token
+        )
+        # Prepare list of all hypotheses per sample (append EOS for fair comparison)
+        all_beams = []
+        for hyps in generated_hyps:
+            hyps_for_sample = []
+            for score, hyp in hyps.hyp:
+                seq = hyp.tolist() + [eos_token]
+                hyps_for_sample.append(seq)
+            all_beams.append(hyps_for_sample)
+        # Return in same shape as greedy for compatibility, plus beams
+        return decoded.transpose(0, 1), all_beams
+    else:
+        raise ValueError(f"Unknown decoding method: {decoding_method}")
+
+
+def clean_seq(arr, pad_token=0, eos_token=3):
+    """
+    Remove PAD tokens and truncate at first EOS (inclusive) for fair comparison/printing.
+    
+    Args:
+        arr: Token sequence
+        pad_token: Padding token to remove
+        eos_token: End-of-sequence token to stop at
+        
+    Returns:
+        list: Cleaned token sequence
+    """
+    out = []
+    for x in arr:
+        if x == pad_token:
+            continue
+        out.append(int(x))
+        if x == eos_token:
+            break
+    return out
