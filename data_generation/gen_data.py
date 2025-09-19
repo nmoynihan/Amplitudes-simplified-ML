@@ -679,7 +679,7 @@ def tokenise_csv(inp:str,out:str,max_particles:int=8)->None:
 # │  Quick‑start driver                                              │
 # ╰──────────────────────────────────────────────────────────────────╯
 if __name__ == "__main__":
-    N              = 5       # p_1 φ , p_2‑p_{n-1} γ , p_n φ
+    N              = 4       # p_1 φ , p_2‑p_{n-1} γ , p_n φ
     NSAMPLES       = 10000
     MAX_SCRAMBLES  = 4 
     MIN_SCRAMBLES  = 0 # 0 means no scrambling, just expansion
