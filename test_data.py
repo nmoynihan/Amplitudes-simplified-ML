@@ -5,7 +5,7 @@ import ast
 
 num_pts = 4
 # Load CSV file
-fpath = '/Users/ed/Documents/Projects/Amplitudes/sturdy-couscous/data/'
+fpath = './data/'
 df = pd.read_csv(fpath+f"gi_{num_pts}pt_tok.csv")
 
 '''
