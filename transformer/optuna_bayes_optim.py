@@ -82,7 +82,7 @@ def main():
     study = optuna.create_study(direction='minimize')
     
     # Run optimization for a specified number of trials
-    study.optimize(objective, n_trials=20)
+    study.optimize(objective, n_trials=200)
     
     # Print the best trial's results
     print('Best trial:')
