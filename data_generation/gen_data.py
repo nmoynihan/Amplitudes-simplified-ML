@@ -13,7 +13,7 @@
 # Output: CSV with two columns: simple, scrambled (plus tokenised file)
 
 from __future__ import annotations
-import random, re, time, json, math, csv
+import random, re, time, json, math, csv, sys
 from itertools import product
 from typing import List, Tuple
 import importlib
@@ -844,7 +844,7 @@ def tokenise_csv(inp:str,out:str,max_particles:int=8)->None:
 # │  Quick‑start driver                                              │
 # ╰──────────────────────────────────────────────────────────────────╯
 if __name__ == "__main__":
-    N              = 4       # p_1 φ , p_2‑p_{n-1} γ , p_n φ
+    N              = int(sys.argv[1]) if len(sys.argv) > 1 else 4  # p_1 φ , p_2‑p_{n-1} γ , p_n φ
     NSAMPLES       = 50000
     MAX_SCRAMBLES  = 5 
     MIN_SCRAMBLES  = 0 # 0 means no scrambling, just expansion
