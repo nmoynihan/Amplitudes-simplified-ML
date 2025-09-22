@@ -14,6 +14,9 @@ print(f"Using {n_threads} CPU threads for PyTorch.")
 # Set number of particles N from command line argument or default to 4
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 4
 
+# Configuration: Save models during trials (default: False to avoid creating directories/files)
+SAVE_MODELS = False
+
 def objective(trial):
     # Fixed hyperparameters
     n_epochs = 20
@@ -62,6 +65,8 @@ def objective(trial):
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     # Train with early stopping
+    # Only pass run_name if SAVE_MODELS is True to avoid creating directories
+    run_name = f'optuna_trial_{trial.number}' if SAVE_MODELS else None
     train_losses, val_losses, train_accuracies, val_accuracies = train_model(
         model, 
         optimizer, 
@@ -69,7 +74,7 @@ def objective(trial):
         train_loader, 
         val_loader, 
         epochs=n_epochs,
-        run_name=f'optuna_trial_{trial.number}',
+        run_name=run_name,
         early_stopping_patience=early_stopping_patience,
         early_stopping_min_delta=early_stopping_min_delta
     )
