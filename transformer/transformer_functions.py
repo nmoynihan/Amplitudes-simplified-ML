@@ -503,11 +503,11 @@ def validate_step(model, batch, criterion):
 
 
 def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, run_name='default_run',
-                early_stopping_patience=None, early_stopping_min_delta=1e-4):
-    """Trains a transformer model with automatic checkpointing after each epoch and optional early stopping.
+                early_stopping_patience=None, early_stopping_min_delta=1e-4, save_models=True):
+    """Trains a transformer model with optional checkpointing after each epoch and optional early stopping.
 
     Performs training and validation loops for the specified number of epochs,
-    saving the model after each epoch (in 'models/' directory) and deleting
+    optionally saving the model after each epoch (in 'models/' directory) and deleting
     the previous epoch's checkpoint. Tracks and returns training/validation losses.
     Optionally implements early stopping based on validation loss.
 
@@ -521,6 +521,7 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
         run_name (str): Name for this training run (for saving models)
         early_stopping_patience (int, optional): Number of epochs with no improvement after which training will stop
         early_stopping_min_delta (float): Minimum change to qualify as an improvement
+        save_models (bool): Whether to save model checkpoints during training
 
     Returns:
         tuple: Four lists containing:
@@ -537,9 +538,10 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
     patience_counter = 0
     best_epoch = 0
     
-    # Create models directory if it doesn't exist
-    output_dir = os.path.join('models', run_name)
-    os.makedirs(output_dir, exist_ok=True)
+    # Create models directory if saving is enabled
+    if save_models:
+        output_dir = os.path.join('models', run_name)
+        os.makedirs(output_dir, exist_ok=True)
     
     # Set up a single global progress bar across all epochs (train + val batches)
     steps_per_epoch = len(train_loader) + (len(val_loader) if val_loader is not None else 0)
@@ -583,17 +585,20 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
                 best_val_loss = epoch_val_loss
                 patience_counter = 0
                 best_epoch = epoch + 1
-                # Save best model
-                best_model_path = os.path.join(output_dir, 'best_model.pt')
-                torch.save({
-                    'epoch': epoch + 1,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'train_loss': epoch_train_loss,
-                    'val_loss': epoch_val_loss,
-                    'model_args': model.model_hyperparams,
-                }, best_model_path)
-                print(f"New best model saved at epoch {epoch + 1} with val_loss: {epoch_val_loss:.4f}")
+                # Save best model (only if saving is enabled)
+                if save_models:
+                    best_model_path = os.path.join(output_dir, 'best_model.pt')
+                    torch.save({
+                        'epoch': epoch + 1,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'train_loss': epoch_train_loss,
+                        'val_loss': epoch_val_loss,
+                        'model_args': model.model_hyperparams,
+                    }, best_model_path)
+                    print(f"New best model saved at epoch {epoch + 1} with val_loss: {epoch_val_loss:.4f}")
+                else:
+                    print(f"New best validation loss at epoch {epoch + 1}: {epoch_val_loss:.4f} (model not saved)")
             else:
                 patience_counter += 1
                 print(f"Early stopping patience: {patience_counter}/{early_stopping_patience}")
@@ -608,25 +613,30 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
                         pass
                     break
         
-        # Delete previous epoch's model if it exists
-        if epoch > 0:
-            prev_model_path = os.path.join(output_dir, f'model_epoch_{epoch}.pt')
-            if os.path.exists(prev_model_path):
-                os.remove(prev_model_path)
-        
-        # Save current model
-        model_save_path = os.path.join(output_dir, f'model_epoch_{epoch+1}.pt')
-        torch.save({
-            'epoch': epoch + 1,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'train_loss': epoch_train_loss,
-            'val_loss': epoch_val_loss,
-            'model_args': model.model_hyperparams,
-        }, model_save_path)
-        
-        print(f"Epoch {epoch+1}: Train Loss: {epoch_train_loss:.4f}, Val Loss: {epoch_val_loss:.4f}, "
-              f"Train Acc: {epoch_train_acc:.4f}, Val Acc: {epoch_val_acc:.4f} | Model saved to {model_save_path}")
+        # Delete previous epoch's model and save current model (only if saving is enabled)
+        if save_models:
+            # Delete previous epoch's model if it exists
+            if epoch > 0:
+                prev_model_path = os.path.join(output_dir, f'model_epoch_{epoch}.pt')
+                if os.path.exists(prev_model_path):
+                    os.remove(prev_model_path)
+            
+            # Save current model
+            model_save_path = os.path.join(output_dir, f'model_epoch_{epoch+1}.pt')
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'train_loss': epoch_train_loss,
+                'val_loss': epoch_val_loss,
+                'model_args': model.model_hyperparams,
+            }, model_save_path)
+            
+            print(f"Epoch {epoch+1}: Train Loss: {epoch_train_loss:.4f}, Val Loss: {epoch_val_loss:.4f}, "
+                  f"Train Acc: {epoch_train_acc:.4f}, Val Acc: {epoch_val_acc:.4f} | Model saved to {model_save_path}")
+        else:
+            print(f"Epoch {epoch+1}: Train Loss: {epoch_train_loss:.4f}, Val Loss: {epoch_val_loss:.4f}, "
+                  f"Train Acc: {epoch_train_acc:.4f}, Val Acc: {epoch_val_acc:.4f}")
     
     # Close global progress bar
     try:

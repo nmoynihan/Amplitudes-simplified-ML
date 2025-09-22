@@ -65,8 +65,6 @@ def objective(trial):
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     # Train with early stopping
-    # Only pass run_name if SAVE_MODELS is True to avoid creating directories
-    run_name = f'optuna_trial_{trial.number}' if SAVE_MODELS else None
     train_losses, val_losses, train_accuracies, val_accuracies = train_model(
         model, 
         optimizer, 
@@ -74,9 +72,10 @@ def objective(trial):
         train_loader, 
         val_loader, 
         epochs=n_epochs,
-        run_name=run_name,
+        run_name=f'optuna_trial_{trial.number}' if SAVE_MODELS else 'temp_trial',
         early_stopping_patience=early_stopping_patience,
-        early_stopping_min_delta=early_stopping_min_delta
+        early_stopping_min_delta=early_stopping_min_delta,
+        save_models=SAVE_MODELS
     )
 
     # Return the best (minimum) validation loss achieved during training
