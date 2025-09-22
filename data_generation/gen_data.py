@@ -13,11 +13,7 @@
 # Output: CSV with two columns: simple, scrambled (plus tokenised file)
 
 from __future__ import annotations
-<<<<<<< HEAD
-import random, re, time, json, math, csv, os
-=======
-import random, re, time, json, math, csv, sys
->>>>>>> 63366dc2fb8bc6c22649b02a78353fc35a87dc01
+import random, re, time, json, math, csv
 from itertools import product
 from typing import List, Tuple
 import importlib
@@ -542,10 +538,7 @@ def build_dataset(N:int, num_samples:int, max_scr:int=3, min_scr:int=0, seed:int
                   M:float=2.0, tol_rel:float=1e-8, tol_abs:float=1e-10,
                   min_terms:int=1, max_terms:int=1,
                   log_path:str|None=None,
-                  log_examples:int=5,
-                  parity_checks:int=1,
-                  scramble_checks:int=1,
-                  progress_cb=None) -> List[Tuple[str,str]]:
+                  log_examples:int=5) -> List[Tuple[str,str]]:
     """
     Build dataset of (simple, scrambled) expression pairs.
 
@@ -691,7 +684,7 @@ def build_dataset(N:int, num_samples:int, max_scr:int=3, min_scr:int=0, seed:int
         if validate:
             ok_parity = True
             parity_reason = ''
-            for _ in range(max(0, int(parity_checks))):
+            for _ in range(2):  # a couple of random kinematic samples are usually enough
                 try:
                     try:
                         from .kinematics import generate_kinematics as _gk  # type: ignore
@@ -724,7 +717,7 @@ def build_dataset(N:int, num_samples:int, max_scr:int=3, min_scr:int=0, seed:int
         if validate:
             ok_scramble = True
             scramble_reason = ''
-            for _ in range(max(0, int(scramble_checks))):
+            for _ in range(3):
                 try:
                     try:
                         from .kinematics import generate_kinematics as _gk  # type: ignore
@@ -752,11 +745,6 @@ def build_dataset(N:int, num_samples:int, max_scr:int=3, min_scr:int=0, seed:int
                 continue
 
         data.append((simple_poly, scrambled))
-        if progress_cb:
-            try:
-                progress_cb(len(data))
-            except Exception:
-                pass
     if log_path:
         with open(log_path, 'a', encoding='utf-8') as lf:
             lf.write(f"# SUMMARY\n")
@@ -770,86 +758,6 @@ def build_dataset(N:int, num_samples:int, max_scr:int=3, min_scr:int=0, seed:int
                 for e,sc,r in scramble_examples:
                     lf.write(f"reason={r}\nEXPANDED={e}\nSCRAMBLED={sc}\n---\n")
     return data
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Parallel generation utilities
-# ──────────────────────────────────────────────────────────────────────────────
-def _init_worker(seed_base:int):  # per-process seeding
-    try:
-        random.seed(seed_base + os.getpid())
-    except Exception:
-        random.seed()
-
-def _batch_worker(batch_size:int, N:int, cfg:dict):
-    out: list[Tuple[str,str]] = []
-    # local lightweight wrapper around build_dataset inner loop using existing function
-    # We call build_dataset with small num_samples=batch_size and validation params.
-    pairs = build_dataset(
-        N=N,
-        num_samples=batch_size,
-        max_scr=cfg['max_scr'],
-        min_scr=cfg['min_scr'],
-        seed=None,  # already seeded per process
-        use_denominators=cfg['use_denominators'],
-        validate=cfg['validate'],
-        M=cfg['M'], tol_rel=cfg['tol_rel'], tol_abs=cfg['tol_abs'],
-        min_terms=cfg['min_terms'], max_terms=cfg['max_terms'],
-        log_path=None, log_examples=0,
-        parity_checks=cfg['parity_checks'], scramble_checks=cfg['scramble_checks'],
-        progress_cb=None
-    )
-    out.extend(pairs)
-    return out
-
-def build_dataset_parallel(N:int, target:int, workers:int=4, batch_size:int=200, **kwargs) -> List[Tuple[str,str]]:
-    from concurrent.futures import ProcessPoolExecutor, as_completed
-    pbar = None
-    try:  # optional tqdm
-        from tqdm import tqdm  # type: ignore
-        pbar = tqdm(total=target, desc='Generating', unit='pair')
-    except Exception:
-        pbar = None
-    cfg = dict(
-        max_scr=kwargs.get('max_scr',3),
-        min_scr=kwargs.get('min_scr',0),
-        use_denominators=kwargs.get('use_denominators',True),
-        validate=kwargs.get('validate',True),
-        M=kwargs.get('M',2.0), tol_rel=kwargs.get('tol_rel',1e-8), tol_abs=kwargs.get('tol_abs',1e-10),
-        min_terms=kwargs.get('min_terms',1), max_terms=kwargs.get('max_terms',1),
-        parity_checks=kwargs.get('parity_checks',1), scramble_checks=kwargs.get('scramble_checks',1),
-    )
-    seed = kwargs.get('seed', None) or int(time.time())
-    results: list[Tuple[str,str]] = []
-    seen: set[Tuple[str,str]] = set()
-    # pbar already initialised if tqdm available
-    with ProcessPoolExecutor(max_workers=workers, initializer=_init_worker, initargs=(seed,)) as ex:
-        futures = {ex.submit(_batch_worker, batch_size, N, cfg): 0 for _ in range(workers)}
-        while futures and len(results) < target:
-            for fut in as_completed(list(futures.keys())):
-                try:
-                    batch = fut.result()
-                except Exception:
-                    batch = []
-                added = 0
-                for pair in batch:
-                    if pair in seen:
-                        continue
-                    seen.add(pair)
-                    results.append(pair)
-                    added += 1
-                    if len(results) >= target:
-                        break
-                if pbar and added:
-                    pbar.update(added)
-                # replace completed future if still need more
-                futures.pop(fut, None)
-                if len(results) < target:
-                    futures[ex.submit(_batch_worker, batch_size, N, cfg)] = 0
-                if len(results) >= target:
-                    break
-    if pbar is not None:
-        pbar.close()
-    return results[:target]
 
 def write_txt(pairs:List[Tuple[str,str]],path:str)->None:
     with open(path,"w",encoding="utf-8") as f:
@@ -936,26 +844,7 @@ def tokenise_csv(inp:str,out:str,max_particles:int=8)->None:
 # │  Quick‑start driver                                              │
 # ╰──────────────────────────────────────────────────────────────────╯
 if __name__ == "__main__":
-<<<<<<< HEAD
-    import argparse
-    parser = argparse.ArgumentParser(description="Generate (simple,scrambled) amplitude expression pairs.")
-    parser.add_argument('-N', type=int, default=4, help='Total legs (2 scalars + photons + scalar)')
-    parser.add_argument('-n', '--nsamples', type=int, default=50000, help='Target number of pairs')
-    parser.add_argument('--min-terms', type=int, default=1)
-    parser.add_argument('--max-terms', type=int, default=6)
-    parser.add_argument('--max-scrambles', type=int, default=5)
-    parser.add_argument('--min-scrambles', type=int, default=0)
-    parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--workers', type=int, default=1, help='>1 enables multiprocessing')
-    parser.add_argument('--batch-size', type=int, default=250, help='Batch size per worker submission')
-    parser.add_argument('--parity-checks', type=int, default=1, help='Numeric parity validation samples per expression')
-    parser.add_argument('--scramble-checks', type=int, default=1, help='Numeric validation samples for scrambled equality')
-    parser.add_argument('--no-validate', action='store_true', help='Disable numeric validation entirely')
-    parser.add_argument('--no-denominators', action='store_true', help='Disable random denominators')
-    parser.add_argument('--output-prefix', default='gi', help='Output file prefix base')
-    args = parser.parse_args()
-=======
-    N              = int(sys.argv[1]) if len(sys.argv) > 1 else 4  # p_1 φ , p_2‑p_{n-1} γ , p_n φ
+    N              = 4       # p_1 φ , p_2‑p_{n-1} γ , p_n φ
     NSAMPLES       = 50000
     MAX_SCRAMBLES  = 5 
     MIN_SCRAMBLES  = 0 # 0 means no scrambling, just expansion
@@ -963,73 +852,36 @@ if __name__ == "__main__":
     MIN_TERMS      = 1  # =1 recovers legacy single-monomial behaviour
     MAX_TERMS      = 6  # choose >1 to enable polynomial generation
     SEED           = 42
->>>>>>> 63366dc2fb8bc6c22649b02a78353fc35a87dc01
 
-    N = args.N
-    NSAMPLES = args.nsamples
-    MAX_SCRAMBLES = args.max_scrambles
-    MIN_SCRAMBLES = args.min_scrambles
-    MIN_TERMS = args.min_terms
-    MAX_TERMS = args.max_terms
-    SEED = args.seed
-
-    RAW = f"{args.output_prefix}_{N}pt.csv"
-    TOK = f"{args.output_prefix}_{N}pt_tok.csv"
-    LOG = f"gen_data_{N}pt.log"
+    RAW = f"gi_{N}pt.csv"
+    TOK = f"gi_{N}pt_tok.csv"
 
     t0 = time.perf_counter()
-    if args.workers > 1:
-        pairs = build_dataset_parallel(
-            N=N, target=NSAMPLES, workers=args.workers, batch_size=args.batch_size,
-            max_scr=MAX_SCRAMBLES, min_scr=MIN_SCRAMBLES, seed=SEED,
-            use_denominators=not args.no_denominators, validate=not args.no_validate,
-            min_terms=MIN_TERMS, max_terms=MAX_TERMS,
-            parity_checks=args.parity_checks, scramble_checks=args.scramble_checks
-        )
-    else:
-        # Sequential path with tqdm progress if available
-        pbar = None
-        def _noop_progress(n: int) -> None:
-            return None
-        _prog = _noop_progress
-        try:
-            from tqdm import tqdm  # type: ignore
-            pbar = tqdm(total=NSAMPLES, desc='Generating', unit='pair')
-            def _prog(n: int) -> None:  # type: ignore
-                if pbar is not None:
-                    pbar.n = n
-                    pbar.refresh()
-        except Exception:
-            pbar = None
-        oversampled = NSAMPLES  # oversampling less necessary with progress feedback
-        pairs = build_dataset(
-            N, num_samples=oversampled, max_scr=MAX_SCRAMBLES, min_scr=MIN_SCRAMBLES, seed=SEED,
-            use_denominators=not args.no_denominators, validate=not args.no_validate,
-            min_terms=MIN_TERMS, max_terms=MAX_TERMS,
-            log_path=LOG, log_examples=5,
-            parity_checks=args.parity_checks, scramble_checks=args.scramble_checks,
-            progress_cb=_prog
-        )
-        if pbar is not None:
-            pbar.close()
+    # Oversample by +20% to compensate for duplicates
+    target = NSAMPLES
+    oversampled = int(round(target * 1.2))
+    LOG = f"gen_data_{N}pt.log"
+    pairs = build_dataset(N, num_samples=oversampled, max_scr=MAX_SCRAMBLES, min_scr=MIN_SCRAMBLES, seed=SEED,
+                          use_denominators=True, validate=True,
+                          min_terms=MIN_TERMS, max_terms=MAX_TERMS,
+                          log_path=LOG, log_examples=5)
     t1 = time.perf_counter()
-
+    # Deduplicate in-memory before writing; keep first occurrences
     before = len(pairs)
     pairs, removed = dedupe_pairs(pairs, keep="first")
-    if len(pairs) > NSAMPLES:
-        pairs = pairs[:NSAMPLES]
+    after = len(pairs)
+    # Truncate to target size after dedupe
+    if len(pairs) > target:
+        pairs = pairs[:target]
     final = len(pairs)
     write_csv(pairs, RAW)
     tokenise_csv(RAW, TOK)
     t2 = time.perf_counter()
 
-    print(f"{final} pairs --> {RAW}")
+    print(f"{len(pairs)} pairs --> {RAW}")
     print(f"  generation : {(t1-t0):.2f}s")
-    if args.workers > 1:
-        print(f"  mode       : multiprocessing ({args.workers} workers, batch={args.batch_size})")
-    else:
-        print(f"  mode       : sequential")
-    print(f"  dedupe     : removed {removed} duplicates (before={before})")
+    print(f"  oversample : requested {target}, generated {oversampled}")
+    print(f"  dedupe     : removed {removed} duplicates ({before} -> {after})")
+    print(f"  truncate   : final {final} rows written")
     print(f"  write+tok  : {(t2-t1):.2f}s")
-    if not args.workers > 1:
-        print(f"  log file   : {LOG}")
+    print(f"  log file   : {LOG}")
