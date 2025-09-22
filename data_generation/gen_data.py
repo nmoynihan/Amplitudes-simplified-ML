@@ -535,39 +535,156 @@ def _gauge_denominator(N:int, style:str="shared", prefer_scalars:bool=True) -> s
 
 def build_dataset(N:int, num_samples:int, max_scr:int=3, min_scr:int=0, seed:int|None=None,
                   use_denominators:bool=True, validate:bool=True,
-                  M:float=2.0, tol_rel:float=1e-8, tol_abs:float=1e-10) -> List[Tuple[str,str]]:
+                  M:float=2.0, tol_rel:float=1e-8, tol_abs:float=1e-10,
+                  min_terms:int=1, max_terms:int=1,
+                  log_path:str|None=None,
+                  log_examples:int=5) -> List[Tuple[str,str]]:
+    """
+    Build dataset of (simple, scrambled) expression pairs.
+
+    New (polynomial) behaviour:
+      When min_terms or max_terms > 1 a polynomial with T terms is generated where
+        T ~ Uniform{min_terms..max_terms}.
+      Each term is an independently generated GI monomial (legacy behaviour) possibly
+      with its own denominator. All terms are constrained to have the same "mass dimension"
+      proxy, implemented as TWO constraints:
+          (A) Denominator matching: either all terms have a denominator or none do, AND
+              the number of p·p factors in each denominator is identical (length match).
+          (B) Numerator factor-type signature match: For each numerator we build a 5‑tuple
+              (#Tr3, #Tr2, #p·F·F·p, #p·F·p, #p·p_extra). Here #p·p_extra counts only the
+              explicit scalar p·p factors appended during generation, not those inside GI blocks.
+              All terms in the polynomial must share this signature. After a bounded number of
+              attempts (30) the constraint is relaxed to avoid infinite loops.
+      (If after several attempts a matching term is not found, we relax the constraint to
+       avoid infinite loops.)
+
+    Coefficients: Each term receives a random integer coefficient c in [-100,100] excluding 0.
+      Formatting rules:
+          • Coefficient 1 is omitted ("A" not "1*A").
+          • Coefficient -1 is rendered as a leading minus ("-A").
+          • Other coefficients appear as "c*A".
+          • Polynomial is joined by ' + ' and ' - ' with minimal parentheses.
+      Scrambling is applied once to the fully expanded (rewritten) polynomial.
+    """
+    # Clamp & sanity for terms
+    try:
+        min_terms = int(min_terms)
+        max_terms = int(max_terms)
+    except Exception:
+        min_terms = max_terms = 1
+    if min_terms < 1: min_terms = 1
+    if max_terms < min_terms: max_terms = min_terms
     if seed is not None:
         random.seed(seed)
     Ngamma = N-2
     data=[]
     attempts=0
+    parity_fail = 0
+    scramble_fail = 0
+    parity_examples: list[tuple[str,str,str]] = []  # (simple, expanded, reason)
+    scramble_examples: list[tuple[str,str,str]] = []
+    if log_path:
+        # Initialise / truncate log file
+        with open(log_path, 'w', encoding='utf-8') as lf:
+            lf.write(f"# gen_data log for N={N}\n")
+            lf.write(f"# target_samples={num_samples} min_terms={min_terms} max_terms={max_terms} max_scr={max_scr} min_scr={min_scr} seed={seed}\n")
     while len(data) < num_samples:
         attempts += 1
-        gi = strict_gi_monomial(N)
-        # Canonicalise first to ensure label and expansion are consistent
-        simple_num = canonicalise_gi_product(gi, strict=True)
-        # Denominator assembly
-        den_parts: list[str] = []
-        if use_denominators and random.random() < 0.6:
-            den_parts.append(_random_denominator(N, base_leg=1))
-        # Always include gauge-style denominators for realism
-        den_parts.append(_gauge_denominator(N, style="shared", prefer_scalars=True))
-        den_parts = [d for d in den_parts if d]
-        if den_parts:
-            denom = "*".join(den_parts)
-            simple_den = canonicalise_denominator(denom)
-            simple = f"({simple_num})/({simple_den})"
-            expd_num = "*".join(rewrite_gi(b) for b in simple_num.split("*"))
-            expd = f"({expd_num})/({simple_den})"
-        else:
-            simple = simple_num
-            expd = "*".join(rewrite_gi(b) for b in simple_num.split("*"))
-        scrambled = scramble(expd,Ngamma,N,min_scr,max_scr)
+        # Decide how many terms this sample will have
+        T = random.randint(min_terms, max_terms)
 
+        def _numerator_signature(simple_num: str) -> tuple[int,int,int,int,int]:
+            """Compute factor-type signature for the GI numerator product.
+            Categories (order fixed): Tr3, Tr2, pFFp, pFp, scalar_pp.
+            """
+            if not simple_num:
+                return (0,0,0,0,0)
+            tr3=tr2=pffp=pfp=pp=0
+            for f in simple_num.split('*'):
+                f=f.strip()
+                if _RE_Tr3.fullmatch(f): tr3+=1; continue
+                if _RE_Tr2.fullmatch(f): tr2+=1; continue
+                if _RE_pFFp.fullmatch(f): pffp+=1; continue
+                if _RE_pFp.fullmatch(f): pfp+=1; continue
+                if _RE_pp.fullmatch(f): pp+=1; continue
+            return (tr3,tr2,pffp,pfp,pp)
+
+        def _generate_monomial() -> tuple[str,str,int,bool,tuple[int,int,int,int,int]]:
+            """Return (simple_term, expanded_term, denom_len, has_denom, signature)."""
+            gi = strict_gi_monomial(N)
+            simple_num = canonicalise_gi_product(gi, strict=True)
+            den_parts: list[str] = []
+            if use_denominators and random.random() < 0.6:
+                den_parts.append(_random_denominator(N, base_leg=1))
+            den_parts.append(_gauge_denominator(N, style="shared", prefer_scalars=True))
+            den_parts = [d for d in den_parts if d]
+            if den_parts:
+                denom = "*".join(den_parts)
+                simple_den = canonicalise_denominator(denom)
+                simple_term = f"({simple_num})/({simple_den})"
+                expd_num = "*".join(rewrite_gi(b) for b in simple_num.split("*"))
+                expd_term = f"({expd_num})/({simple_den})"
+                denom_len = len(simple_den.split('*'))
+                has_denom = True
+            else:
+                simple_term = simple_num
+                expd_term = "*".join(rewrite_gi(b) for b in simple_num.split("*"))
+                denom_len = 0
+                has_denom = False
+            sig = _numerator_signature(simple_num)
+            return simple_term, expd_term, denom_len, has_denom, sig
+
+        terms_simple: list[str] = []
+        terms_expanded: list[str] = []
+        coeffs: list[int] = []
+
+        # Generate first term unconditionally
+        s0, e0, denom_len_ref, has_denom_ref, sig_ref = _generate_monomial()
+        terms_simple.append(s0)
+        terms_expanded.append(e0)
+        coeffs.append(random.choice([c for c in range(-9,10) if c != 0]))
+
+        # Subsequent terms: enforce same denominator length & presence (proxy for mass dimension)
+        for _ in range(T-1):
+            sx = ex = None  # type: ignore
+            dlen = 0; hden = False; sig_cur = None
+            for attempt in range(30):  # bounded attempts to find structurally matching term
+                sx_try, ex_try, dlen_try, hden_try, sig_try = _generate_monomial()
+                sx, ex, dlen, hden, sig_cur = sx_try, ex_try, dlen_try, hden_try, sig_try
+                if (hden == has_denom_ref and dlen == denom_len_ref and sig_cur == sig_ref):
+                    break
+            if sx is None or ex is None:  # fallback (shouldn't happen)
+                sx, ex, dlen, hden, sig_cur = _generate_monomial()
+            terms_simple.append(sx)
+            terms_expanded.append(ex)
+            coeffs.append(random.choice([c for c in range(-100,101) if c != 0]))
+
+        def _format_poly(terms: list[str], coeffs: list[int]) -> str:
+            out_parts: list[str] = []
+            for i, (t, c) in enumerate(zip(terms, coeffs)):
+                abs_c = abs(c)
+                sign = '-' if c < 0 else '+'
+                if abs_c == 1:
+                    core = t
+                else:
+                    core = f"{abs_c}*{t}"
+                if i == 0:
+                    if sign == '-':
+                        out_parts.append(f"-{core}")
+                    else:
+                        out_parts.append(core)
+                else:
+                    out_parts.append(f" {sign} {core}")
+            return ''.join(out_parts)
+
+        simple_poly = _format_poly(terms_simple, coeffs)
+        expanded_poly = _format_poly(terms_expanded, coeffs)
+
+        # (NEW) Parity validation: ensure GI simple polynomial numerically matches expanded form
         if validate:
-            ok = True
-            for _ in range(3):
-                # Lazy import to avoid static import errors when running standalone
+            ok_parity = True
+            parity_reason = ''
+            for _ in range(2):  # a couple of random kinematic samples are usually enough
                 try:
                     try:
                         from .kinematics import generate_kinematics as _gk  # type: ignore
@@ -577,21 +694,69 @@ def build_dataset(N:int, num_samples:int, max_scr:int=3, min_scr:int=0, seed:int
                     _gk = importlib.import_module('kinematics').generate_kinematics  # type: ignore
                 momenta, pols = _gk(N, M=M)
                 try:
-                    v_simple = eval_infix_numeric(expd, momenta, pols)
-                    v_scr = eval_infix_numeric(scrambled, momenta, pols)
-                except Exception:
-                    ok = False
-                    break
-                if not (math.isfinite(v_simple) and math.isfinite(v_scr)):
-                    ok = False
-                    break
-                if not (abs(v_simple - v_scr) <= max(tol_abs, tol_rel*max(1.0, abs(v_simple)))):
-                    ok = False
-                    break
-            if not ok:
+                    v_simple_gi   = eval_infix_numeric(simple_poly,   momenta, pols)
+                    v_expanded    = eval_infix_numeric(expanded_poly, momenta, pols)
+                except Exception as ex_par:
+                    ok_parity = False
+                    parity_reason = f"exception:{ex_par}"; break
+                if not (math.isfinite(v_simple_gi) and math.isfinite(v_expanded)):
+                    ok_parity = False
+                    parity_reason = 'non-finite'; break
+                if not (abs(v_simple_gi - v_expanded) <= max(tol_abs, tol_rel*max(1.0, abs(v_expanded)))):
+                    ok_parity = False
+                    parity_reason = f"mismatch|Δ={abs(v_simple_gi - v_expanded):.3e}"; break
+            if not ok_parity:
+                parity_fail += 1
+                if log_path and len(parity_examples) < log_examples:
+                    parity_examples.append((simple_poly, expanded_poly, parity_reason))
                 continue
 
-        data.append((simple, scrambled))
+        # Scramble AFTER confirming parity (scrambled only depends on expanded_poly)
+        scrambled = scramble(expanded_poly, Ngamma, N, min_scr, max_scr)
+
+        if validate:
+            ok_scramble = True
+            scramble_reason = ''
+            for _ in range(3):
+                try:
+                    try:
+                        from .kinematics import generate_kinematics as _gk  # type: ignore
+                    except Exception:
+                        _gk = importlib.import_module('data_generation.kinematics').generate_kinematics  # type: ignore
+                except Exception:
+                    _gk = importlib.import_module('kinematics').generate_kinematics  # type: ignore
+                momenta, pols = _gk(N, M=M)
+                try:
+                    v_expanded = eval_infix_numeric(expanded_poly, momenta, pols)
+                    v_scr      = eval_infix_numeric(scrambled,     momenta, pols)
+                except Exception as ex_scr:
+                    ok_scramble = False
+                    scramble_reason = f"exception:{ex_scr}"; break
+                if not (math.isfinite(v_expanded) and math.isfinite(v_scr)):
+                    ok_scramble = False
+                    scramble_reason = 'non-finite'; break
+                if not (abs(v_expanded - v_scr) <= max(tol_abs, tol_rel*max(1.0, abs(v_expanded)))):
+                    ok_scramble = False
+                    scramble_reason = f"mismatch|Δ={abs(v_expanded - v_scr):.3e}"; break
+            if not ok_scramble:
+                scramble_fail += 1
+                if log_path and len(scramble_examples) < log_examples:
+                    scramble_examples.append((expanded_poly, scrambled, scramble_reason))
+                continue
+
+        data.append((simple_poly, scrambled))
+    if log_path:
+        with open(log_path, 'a', encoding='utf-8') as lf:
+            lf.write(f"# SUMMARY\n")
+            lf.write(f"accepted={len(data)} parity_fail={parity_fail} scramble_fail={scramble_fail} attempts={attempts}\n")
+            if parity_examples:
+                lf.write("# PARITY_FAIL_EXAMPLES\n")
+                for s,e,r in parity_examples:
+                    lf.write(f"reason={r}\nSIMPLE={s}\nEXPANDED={e}\n---\n")
+            if scramble_examples:
+                lf.write("# SCRAMBLE_FAIL_EXAMPLES\n")
+                for e,sc,r in scramble_examples:
+                    lf.write(f"reason={r}\nEXPANDED={e}\nSCRAMBLED={sc}\n---\n")
     return data
 
 def write_txt(pairs:List[Tuple[str,str]],path:str)->None:
@@ -680,9 +845,12 @@ def tokenise_csv(inp:str,out:str,max_particles:int=8)->None:
 # ╰──────────────────────────────────────────────────────────────────╯
 if __name__ == "__main__":
     N              = 4       # p_1 φ , p_2‑p_{n-1} γ , p_n φ
-    NSAMPLES       = 10000
-    MAX_SCRAMBLES  = 4 
+    NSAMPLES       = 1000
+    MAX_SCRAMBLES  = 5 
     MIN_SCRAMBLES  = 0 # 0 means no scrambling, just expansion
+    # --- New polynomial controls -------------------------------------------------
+    MIN_TERMS      = 1  # =1 recovers legacy single-monomial behaviour
+    MAX_TERMS      = 6  # choose >1 to enable polynomial generation
     SEED           = 42
 
     RAW = f"gi_{N}pt.csv"
@@ -692,8 +860,11 @@ if __name__ == "__main__":
     # Oversample by +20% to compensate for duplicates
     target = NSAMPLES
     oversampled = int(round(target * 1.2))
+    LOG = f"gen_data_{N}pt.log"
     pairs = build_dataset(N, num_samples=oversampled, max_scr=MAX_SCRAMBLES, min_scr=MIN_SCRAMBLES, seed=SEED,
-                          use_denominators=True, validate=True)
+                          use_denominators=True, validate=True,
+                          min_terms=MIN_TERMS, max_terms=MAX_TERMS,
+                          log_path=LOG, log_examples=5)
     t1 = time.perf_counter()
     # Deduplicate in-memory before writing; keep first occurrences
     before = len(pairs)
@@ -713,3 +884,4 @@ if __name__ == "__main__":
     print(f"  dedupe     : removed {removed} duplicates ({before} -> {after})")
     print(f"  truncate   : final {final} rows written")
     print(f"  write+tok  : {(t2-t1):.2f}s")
+    print(f"  log file   : {LOG}")
