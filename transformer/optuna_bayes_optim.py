@@ -79,10 +79,12 @@ def objective(trial):
 
 def main():
     # Create an Optuna study to minimize validation loss
-    study = optuna.create_study(direction='minimize')
+    # TPE sampler with explicit n_startup_trials
+    sampler = optuna.samplers.TPESampler(n_startup_trials=20)
+    study = optuna.create_study(direction='minimize', sampler=sampler)
     
     # Run optimization for a specified number of trials
-    study.optimize(objective, n_trials=200)
+    study.optimize(objective, n_trials=50)
     
     # Print the best trial's results
     print('Best trial:')
