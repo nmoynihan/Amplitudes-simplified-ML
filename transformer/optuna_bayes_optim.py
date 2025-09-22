@@ -1,4 +1,5 @@
 import os
+import sys
 import torch
 import torch.nn as nn
 import optuna
@@ -9,6 +10,9 @@ from data_import import load_and_prepare_data
 n_threads = int(os.environ.get('OMP_NUM_THREADS', torch.get_num_threads()))
 torch.set_num_threads(n_threads)
 print(f"Using {n_threads} CPU threads for PyTorch.")
+
+# Set number of particles N from command line argument or default to 4
+N = int(sys.argv[1]) if len(sys.argv) > 1 else 4
 
 def objective(trial):
     # Fixed hyperparameters
@@ -30,7 +34,7 @@ def objective(trial):
     head_ff_dim = embedding_dim * trial.suggest_categorical('head_ff_dim_mult', [1, 2, 4, 8])
 
     # Data
-    csv_file = os.path.join('data', 'gi_5pt_tok.csv')
+    csv_file = os.path.join('data', f'gi_{N}pt_tok.csv')
     train_loader, val_loader = load_and_prepare_data(
         csv_file,
         batch_size=batch_size,
