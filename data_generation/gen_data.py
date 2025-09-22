@@ -13,7 +13,11 @@
 # Output: CSV with two columns: simple, scrambled (plus tokenised file)
 
 from __future__ import annotations
+<<<<<<< HEAD
 import random, re, time, json, math, csv, os
+=======
+import random, re, time, json, math, csv, sys
+>>>>>>> 63366dc2fb8bc6c22649b02a78353fc35a87dc01
 from itertools import product
 from typing import List, Tuple
 import importlib
@@ -932,6 +936,7 @@ def tokenise_csv(inp:str,out:str,max_particles:int=8)->None:
 # │  Quick‑start driver                                              │
 # ╰──────────────────────────────────────────────────────────────────╯
 if __name__ == "__main__":
+<<<<<<< HEAD
     import argparse
     parser = argparse.ArgumentParser(description="Generate (simple,scrambled) amplitude expression pairs.")
     parser.add_argument('-N', type=int, default=4, help='Total legs (2 scalars + photons + scalar)')
@@ -949,6 +954,16 @@ if __name__ == "__main__":
     parser.add_argument('--no-denominators', action='store_true', help='Disable random denominators')
     parser.add_argument('--output-prefix', default='gi', help='Output file prefix base')
     args = parser.parse_args()
+=======
+    N              = int(sys.argv[1]) if len(sys.argv) > 1 else 4  # p_1 φ , p_2‑p_{n-1} γ , p_n φ
+    NSAMPLES       = 50000
+    MAX_SCRAMBLES  = 5 
+    MIN_SCRAMBLES  = 0 # 0 means no scrambling, just expansion
+    # --- New polynomial controls -------------------------------------------------
+    MIN_TERMS      = 1  # =1 recovers legacy single-monomial behaviour
+    MAX_TERMS      = 6  # choose >1 to enable polynomial generation
+    SEED           = 42
+>>>>>>> 63366dc2fb8bc6c22649b02a78353fc35a87dc01
 
     N = args.N
     NSAMPLES = args.nsamples
