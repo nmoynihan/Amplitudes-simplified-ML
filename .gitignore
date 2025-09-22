@@ -7,3 +7,4 @@ venv/
 models/*
 messabout.ipynb
 data_generation/*.csv
+final_models/**
