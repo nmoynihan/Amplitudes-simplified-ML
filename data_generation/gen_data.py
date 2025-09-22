@@ -845,7 +845,7 @@ def tokenise_csv(inp:str,out:str,max_particles:int=8)->None:
 # ╰──────────────────────────────────────────────────────────────────╯
 if __name__ == "__main__":
     N              = 4       # p_1 φ , p_2‑p_{n-1} γ , p_n φ
-    NSAMPLES       = 1000
+    NSAMPLES       = 50000
     MAX_SCRAMBLES  = 5 
     MIN_SCRAMBLES  = 0 # 0 means no scrambling, just expansion
     # --- New polynomial controls -------------------------------------------------
