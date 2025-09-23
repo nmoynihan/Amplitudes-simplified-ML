@@ -1,4 +1,5 @@
 import os
+import sys
 import torch
 import torch.nn as nn
 import optuna
@@ -9,6 +10,12 @@ from data_import import load_and_prepare_data
 n_threads = int(os.environ.get('OMP_NUM_THREADS', torch.get_num_threads()))
 torch.set_num_threads(n_threads)
 print(f"Using {n_threads} CPU threads for PyTorch.")
+
+# Set number of particles N from command line argument or default to 4
+N = int(sys.argv[1]) if len(sys.argv) > 1 else 4
+
+# Configuration: Save models during trials (default: False to avoid creating directories/files)
+SAVE_MODELS = False
 
 def objective(trial):
     # Fixed hyperparameters
@@ -30,7 +37,7 @@ def objective(trial):
     head_ff_dim = embedding_dim * trial.suggest_categorical('head_ff_dim_mult', [1, 2, 4, 8])
 
     # Data
-    csv_file = os.path.join('data', 'gi_5pt_tok.csv')
+    csv_file = os.path.join('data', f'gi_{N}pt_tok.csv')
     train_loader, val_loader = load_and_prepare_data(
         csv_file,
         batch_size=batch_size,
@@ -65,9 +72,10 @@ def objective(trial):
         train_loader, 
         val_loader, 
         epochs=n_epochs,
-        run_name=f'optuna_trial_{trial.number}',
+        run_name=f'optuna_trial_{trial.number}' if SAVE_MODELS else 'temp_trial',
         early_stopping_patience=early_stopping_patience,
-        early_stopping_min_delta=early_stopping_min_delta
+        early_stopping_min_delta=early_stopping_min_delta,
+        save_models=SAVE_MODELS
     )
 
     # Return the best (minimum) validation loss achieved during training
@@ -75,10 +83,12 @@ def objective(trial):
 
 def main():
     # Create an Optuna study to minimize validation loss
-    study = optuna.create_study(direction='minimize')
+    # TPE sampler with explicit n_startup_trials
+    sampler = optuna.samplers.TPESampler(n_startup_trials=20)
+    study = optuna.create_study(direction='minimize', sampler=sampler)
     
     # Run optimization for a specified number of trials
-    study.optimize(objective, n_trials=20)
+    study.optimize(objective, n_trials=50)
     
     # Print the best trial's results
     print('Best trial:')
