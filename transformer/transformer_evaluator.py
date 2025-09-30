@@ -210,39 +210,47 @@ def main():
                 is_numerical_match = False
                 is_malformed = False
                 
-                try:
-                    # Try to decode both sequences to infix expressions
-                    tgt_infix = tokenizer.decode_infix(tgt_seq)
-                    gen_infix = tokenizer.decode_infix(gen_seq)
-                    
-                    # Check numerical equivalence                  
-                    is_numerical_match = numerically_equivalent(
-                        tokenizer, tgt_seq, gen_seq, N_particles, 
-                        samples=3, seed=42, return_details=False
-                    )
-                    
-                except Exception as e:
-                    # If detokenization or numerical evaluation fails, mark as malformed
-                    is_malformed = True
-                    if printed < num_print:
-                        print(f"Warning: Failed to evaluate numerical equivalence: {e}")
-                        print(f"  Target sequence: {tgt_seq}")
-                        print(f"  Generated sequence: {gen_seq}")
-                        try:
-                            tgt_infix = tokenizer.decode_infix(tgt_seq)
-                            print(f"  Target infix: {tgt_infix}")
-                        except Exception as e2:
-                            print(f"  Target decode failed: {e2}")
-                        try:
-                            gen_infix = tokenizer.decode_infix(gen_seq)
-                            print(f"  Generated infix: {gen_infix}")
-                        except Exception as e3:
-                            print(f"  Generated decode failed: {e3}")
-                        print()
+                # First, if sequences are exactly the same, they're numerically equivalent
+                if is_exact_match:
+                    is_numerical_match = True
+                else:
+                    # Only check numerical equivalence for non-exact matches
+                    try:
+                        # Try to decode both sequences to infix expressions
+                        tgt_infix = tokenizer.decode_infix(tgt_seq)
+                        gen_infix = tokenizer.decode_infix(gen_seq)
+                        
+                        # Check numerical equivalence                       
+                        is_numerical_match = numerically_equivalent(
+                            tokenizer, tgt_seq, gen_seq, N_particles, 
+                            samples=3, seed=42, return_details=False
+                        )
+                        
+                    except Exception as e:
+                        # If detokenization or numerical evaluation fails, mark as malformed
+                        is_malformed = True
+                        if printed < num_print:
+                            print(f"Warning: Failed to evaluate numerical equivalence: {e}")
+                            print(f"  Target sequence: {tgt_seq}")
+                            print(f"  Generated sequence: {gen_seq}")
+                            try:
+                                tgt_infix = tokenizer.decode_infix(tgt_seq)
+                                print(f"  Target infix: {tgt_infix}")
+                            except Exception as e2:
+                                print(f"  Target decode failed: {e2}")
+                            try:
+                                gen_infix = tokenizer.decode_infix(gen_seq)
+                                print(f"  Generated infix: {gen_infix}")
+                            except Exception as e3:
+                                print(f"  Generated decode failed: {e3}")
+                            print()
                 
                 if is_numerical_match:
                     numerical_correct += 1
-                if is_malformed:
+                
+                # Only count as malformed if we can't decode AND it's not an exact match
+                # (exact matches can't be malformed since target sequences are valid)
+                if is_malformed and not is_exact_match:
                     malformed_count += 1
                 
                 total += 1
@@ -268,10 +276,11 @@ def main():
         
         print(f"\n=== EVALUATION RESULTS ===")
         print(f"Total examples: {total}")
-        print(f"Exact sequence match accuracy: {exact_acc:.2f}% ({exact_correct}/{total})")
-        print(f"Token-level accuracy: {token_acc:.2f}% ({token_correct}/{token_total})")
-        print(f"Numerical equivalence accuracy: {numerical_acc:.2f}% ({numerical_correct}/{total})")
         print(f"Malformed expressions: {malformed_prop:.2f}% ({malformed_count}/{total})")
+        print(f"Numerical equivalence accuracy: {numerical_acc:.2f}% ({numerical_correct}/{total})")
+        print(f"Token-level accuracy: {token_acc:.2f}% ({token_correct}/{token_total})")
+        print(f"Exact sequence match accuracy: {exact_acc:.2f}% ({exact_correct}/{total})")
+
 
 if __name__ == "__main__":
     main()
