@@ -13,9 +13,10 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'data_generation')
 from Tokenizer import ScatteringAmplitudeTokenizer, numerically_equivalent
 
 # Settings
-model_path = os.path.join('models', 'model_4pt.pt')  # Path to the trained model
-csv_file = os.path.join('data/10k_set', 'gi_4pt_tok.csv')  # Path to the test dataset
-batch_size = 8  
+N_particles = 4 
+model_path = os.path.join('models', f'model_{N_particles}pt.pt')  # Path to the trained model
+csv_file = os.path.join('data/10k_set', f'gi_{N_particles}pt_tok.csv')  # Path to the test dataset
+batch_size = 64  
 max_datasize = None  # Max number of examples to evaluate (None = use whole file)
 num_print = 0  # Disable example printing for cleaner output
 inference_only = False  # Set to True for pure inference (ignore simple column), False for evaluation
@@ -214,16 +215,7 @@ def main():
                     tgt_infix = tokenizer.decode_infix(tgt_seq)
                     gen_infix = tokenizer.decode_infix(gen_seq)
                     
-                    # Check numerical equivalence (infer N from model path)
-                    N_particles = 4  # default
-                    if '4pt' in model_path:
-                        N_particles = 4
-                    elif '5pt' in model_path:
-                        N_particles = 5
-                    elif '6pt' in model_path:
-                        N_particles = 6
-                    # Add more as needed
-                    
+                    # Check numerical equivalence                  
                     is_numerical_match = numerically_equivalent(
                         tokenizer, tgt_seq, gen_seq, N_particles, 
                         samples=3, seed=42, return_details=False
