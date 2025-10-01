@@ -200,36 +200,83 @@ def main():
                 if is_exact_match:
                     is_numerical_match = True
                 else:
-                    # Only check numerical equivalence for non-exact matches
-                    try:
-                        # Try to decode both sequences to infix expressions
-                        tgt_infix = tokenizer.decode_infix(tgt_seq)
-                        gen_infix = tokenizer.decode_infix(gen_seq)
-                        
-                        # Check numerical equivalence                       
-                        is_numerical_match = numerically_equivalent(
-                            tokenizer, tgt_seq, gen_seq, N_particles, 
-                            samples=3, M=2.0, seed=42, return_details=False
-                        )
-                        
-                    except Exception as e:
-                        # If detokenization or numerical evaluation fails, mark as malformed
-                        is_malformed = True
-                        if printed < num_print:
-                            print(f"Warning: Failed to evaluate numerical equivalence: {e}")
-                            print(f"  Target sequence: {tgt_seq}")
-                            print(f"  Generated sequence: {gen_seq}")
+                    # Check numerical equivalence
+                    if beams is None or not beam_match_any:
+                        # Greedy or best-only beam: check only the best prediction
+                        try:
+                            # Try to decode both sequences to infix expressions
+                            tgt_infix = tokenizer.decode_infix(tgt_seq)
+                            gen_infix = tokenizer.decode_infix(gen_seq)
+                            
+                            # Check numerical equivalence                       
+                            is_numerical_match = numerically_equivalent(
+                                tokenizer, tgt_seq, gen_seq, N_particles, 
+                                samples=3, M=2.0, seed=42, return_details=False
+                            )
+                            
+                        except Exception as e:
+                            # If detokenization or numerical evaluation fails, mark as malformed
+                            is_malformed = True
+                            if printed < num_print:
+                                print(f"Warning: Failed to evaluate numerical equivalence: {e}")
+                                print(f"  Target sequence: {tgt_seq}")
+                                print(f"  Generated sequence: {gen_seq}")
+                                try:
+                                    tgt_infix = tokenizer.decode_infix(tgt_seq)
+                                    print(f"  Target infix: {tgt_infix}")
+                                except Exception as e2:
+                                    print(f"  Target decode failed: {e2}")
+                                try:
+                                    gen_infix = tokenizer.decode_infix(gen_seq)
+                                    print(f"  Generated infix: {gen_infix}")
+                                except Exception as e3:
+                                    print(f"  Generated decode failed: {e3}")
+                                print()
+                    else:
+                        # Beam search with any-beam matching: check all beam hypotheses
+                        beam_list = beams[i] if i < len(beams) else []
+                        if len(beam_list) == 0:
+                            # Fallback to best prediction if no beams available
                             try:
                                 tgt_infix = tokenizer.decode_infix(tgt_seq)
-                                print(f"  Target infix: {tgt_infix}")
-                            except Exception as e2:
-                                print(f"  Target decode failed: {e2}")
-                            try:
                                 gen_infix = tokenizer.decode_infix(gen_seq)
-                                print(f"  Generated infix: {gen_infix}")
-                            except Exception as e3:
-                                print(f"  Generated decode failed: {e3}")
-                            print()
+                                is_numerical_match = numerically_equivalent(
+                                    tokenizer, tgt_seq, gen_seq, N_particles, 
+                                    samples=3, M=2.0, seed=42, return_details=False
+                                )
+                            except Exception as e:
+                                is_malformed = True
+                        else:
+                            # Check each beam hypothesis for numerical equivalence
+                            for hyp_seq in beam_list:
+                                try:
+                                    clean_hyp = clean_seq(hyp_seq, pad_token=0, eos_token=3)
+                                    tgt_infix = tokenizer.decode_infix(tgt_seq)
+                                    hyp_infix = tokenizer.decode_infix(clean_hyp)
+                                    
+                                    if numerically_equivalent(
+                                        tokenizer, tgt_seq, clean_hyp, N_particles, 
+                                        samples=3, M=2.0, seed=42, return_details=False
+                                    ):
+                                        is_numerical_match = True
+                                        break
+                                except Exception as e:
+                                    # Continue to next beam if this one fails
+                                    continue
+                            
+                            # If no beam matched and we had decoding errors, mark as malformed
+                            if not is_numerical_match:
+                                try:
+                                    # Test if we can at least decode the target and best prediction
+                                    tgt_infix = tokenizer.decode_infix(tgt_seq)
+                                    gen_infix = tokenizer.decode_infix(gen_seq)
+                                except Exception as e:
+                                    is_malformed = True
+                                    if printed < num_print:
+                                        print(f"Warning: Failed to evaluate numerical equivalence: {e}")
+                                        print(f"  Target sequence: {tgt_seq}")
+                                        print(f"  Generated sequence: {gen_seq}")
+                                        print()
                 
                 if is_numerical_match:
                     numerical_correct += 1
