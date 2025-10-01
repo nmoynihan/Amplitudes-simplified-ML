@@ -6,7 +6,6 @@ n_threads = int(os.environ.get('OMP_NUM_THREADS', torch.get_num_threads()))
 torch.set_num_threads(n_threads)
 print(f"Using {n_threads} CPU threads for PyTorch.")
 from transformer_functions import TransformerRegressor, load_transformer_model, decode_with_model, clean_seq
-from data_import import load_and_prepare_data
 
 # Add data_generation to path for imports
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'data_generation'))
@@ -16,11 +15,11 @@ from Tokenizer import ScatteringAmplitudeTokenizer, numerically_equivalent
 N_particles = 4 
 model_path = os.path.join('models', f'model_{N_particles}pt.pt')  # Path to the trained model
 csv_file = os.path.join('data/10k_set', f'gi_{N_particles}pt_tok.csv')  # Path to the test dataset
-batch_size = 64  
-max_datasize = None  # Max number of examples to evaluate (None = use whole file)
+batch_size = 8  
+max_datasize = 16  # Max number of examples to evaluate (None = use whole file)
 num_print = 0  # Disable example printing for cleaner output
 inference_only = False  # Set to True for pure inference (ignore simple column), False for evaluation
-force_cpu = False # Force CPU usage (set to True to avoid CUDA/MPS device issues, good for local testing)
+force_cpu = True ## # Force CPU usage (set to True to avoid CUDA/MPS device issues, good for local testing)
 use_mps = False # Device toggle: enable MPS explicitly (default False due to missing ops in PyTorch Transformer on MPS)
 
 # Decoding hyperparameters (set here for evaluation)
@@ -84,31 +83,19 @@ def main():
     # Initialize tokenizer for numerical equivalence checking
     tokenizer = ScatteringAmplitudeTokenizer(max_particles=8)
     
-    # Load data - use full dataset for inference, validation only for evaluation
-    if inference_only:
-        # Load full dataset without train/validation split
-        from data_import import TransformerDataset
-        from torch.utils.data import DataLoader, Subset
-        dataset = TransformerDataset(csv_file, max_length=None)
-        
-        # Apply max_datasize limit if specified
-        if max_datasize is not None and max_datasize < len(dataset):
-            dataset = Subset(dataset, range(max_datasize))
-            print(f"Limited dataset to {max_datasize} examples for inference")
-        
-        data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-    else:
-        # Load validation set only for evaluation
-        _, data_loader = load_and_prepare_data(csv_file, batch_size=batch_size, max_length=None, train_split=0.8)
-        
-        # Apply max_datasize limit to validation set if specified
-        if max_datasize is not None:
-            val_dataset = data_loader.dataset
-            if max_datasize < len(val_dataset):
-                from torch.utils.data import Subset, DataLoader
-                limited_dataset = Subset(val_dataset, range(max_datasize))
-                data_loader = DataLoader(limited_dataset, batch_size=batch_size, shuffle=False)
-                print(f"Limited validation dataset to {max_datasize} examples for evaluation")
+    # Load full test dataset for both inference and evaluation modes
+    from data_import import TransformerDataset
+    from torch.utils.data import DataLoader, Subset
+    
+    dataset = TransformerDataset(csv_file, max_length=None)
+    
+    # Apply max_datasize limit if specified
+    if max_datasize is not None and max_datasize < len(dataset):
+        dataset = Subset(dataset, range(max_datasize))
+        print(f"Limited dataset to {max_datasize} examples")
+    
+    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    print(f"Using full test dataset: {len(dataset)} examples")
 
     # Tracking metrics for evaluation mode
     total = 0
@@ -139,7 +126,6 @@ def main():
         
         # Generate predictions
         with torch.no_grad():
-            # Use maximum possible length to avoid truncation
             decode_len = tgt.size(1) * 2  # Allow sequences to be up to 2x target length
             gen, beams = decode_with_model(
                 model, src, max_length=decode_len, 
@@ -223,7 +209,7 @@ def main():
                         # Check numerical equivalence                       
                         is_numerical_match = numerically_equivalent(
                             tokenizer, tgt_seq, gen_seq, N_particles, 
-                            samples=3, seed=42, return_details=False
+                            samples=3, M=2.0, seed=42, return_details=False
                         )
                         
                     except Exception as e:
