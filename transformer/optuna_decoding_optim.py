@@ -213,7 +213,7 @@ def main():
     beam_match_any = beam_match_any_str in ['true', '1', 'yes', 't', 'y']
     n_startup_trials = int(sys.argv[6]) if len(sys.argv) > 6 else min(20, n_trials // 3)
     force_cpu = False  # Conservative default for compatibility
-    
+
     if decoding_method not in ['greedy', 'beam', 'nucleus']:
         print(f"Error: decoding_method must be 'greedy', 'beam', or 'nucleus', got '{decoding_method}'")
         sys.exit(1)
@@ -305,7 +305,7 @@ def main():
         show_progress_bar=True
     )
     
-    # Print results in style similar to optuna_bayes_optim.py
+    # Print results in style similar to optuna_training_optim.py
     print('Best trial:')
     trial = study.best_trial
     print(f'  Trial Number: {trial.number}')
