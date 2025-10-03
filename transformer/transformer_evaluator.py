@@ -14,12 +14,12 @@ from Tokenizer import ScatteringAmplitudeTokenizer, numerically_equivalent
 # Settings
 N_particles = 4 
 model_path = os.path.join('models', f'model_{N_particles}pt.pt')  # Path to the trained model
-csv_file = os.path.join('data/10k_set', f'gi_{N_particles}pt_tok.csv')  # Path to the test dataset
-batch_size = 8  
-max_datasize = 16  # Max number of examples to evaluate (None = use whole file)
+csv_file = os.path.join('data/test_set', f'gi_{N_particles}pt_tok.csv')  # Path to the test dataset
+batch_size = 64  
+max_datasize = None  # Max number of examples to evaluate (None = use whole file)
 num_print = 0  # Disable example printing for cleaner output
 inference_only = False  # Set to True for pure inference (ignore simple column), False for evaluation
-force_cpu = True ## # Force CPU usage (set to True to avoid CUDA/MPS device issues, good for local testing)
+force_cpu = True # Force CPU usage (set to True to avoid CUDA/MPS device issues, good for local testing)
 use_mps = False # Device toggle: enable MPS explicitly (default False due to missing ops in PyTorch Transformer on MPS)
 
 # Decoding hyperparameters (set here for evaluation)
