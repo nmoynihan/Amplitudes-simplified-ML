@@ -200,7 +200,7 @@ def main():
         print("  decoding_method: 'greedy', 'beam', or 'nucleus'")
         print("  N_particles: Number of particles (default: 4)")
         print("  n_trials: Number of Optuna trials (default: 50)")
-        print("  max_datasize: Max examples to evaluate per trial (default: 1000)")
+        print("  max_datasize: Max examples to evaluate per trial (default: full dataset)")
         print("  beam_match_any: Whether to match any beam hypothesis - 'true' or 'false' (default: true)")
         print("  n_startup_trials: Number of random trials before TPE (default: 20)")
         sys.exit(1)
@@ -208,7 +208,7 @@ def main():
     decoding_method = sys.argv[1]
     N_particles = int(sys.argv[2]) if len(sys.argv) > 2 else 4
     n_trials = int(sys.argv[3]) if len(sys.argv) > 3 else 50
-    max_datasize = int(sys.argv[4]) if len(sys.argv) > 4 else 1000
+    max_datasize = int(sys.argv[4]) if len(sys.argv) > 4 else None
     beam_match_any_str = sys.argv[5].lower() if len(sys.argv) > 5 else 'true'
     beam_match_any = beam_match_any_str in ['true', '1', 'yes', 't', 'y']
     n_startup_trials = int(sys.argv[6]) if len(sys.argv) > 6 else min(20, n_trials // 3)
