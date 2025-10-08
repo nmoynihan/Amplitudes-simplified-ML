@@ -15,7 +15,7 @@ space-separated integer IDs that the tokenizer returned.
 
 Usage
 -----
-    python tokenise_csv.py input.csv output.csv [--max-particles 8]
+    python tokenize_data.py input.csv output.csv [--max-particles 8]
 
 `--max-particles` lets you keep the script in step with any future change in the
 vocabulary size you decide to make.
