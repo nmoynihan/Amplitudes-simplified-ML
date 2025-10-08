@@ -17,6 +17,10 @@ N = int(sys.argv[1]) if len(sys.argv) > 1 else 4
 # Configuration: Save models during trials (default: False to avoid creating directories/files)
 SAVE_MODELS = False
 
+# Optuna hyperparameters
+n_trials = 50
+n_startup_trials = 20
+
 def objective(trial):
     # Fixed hyperparameters
     n_epochs = 20
@@ -82,13 +86,16 @@ def objective(trial):
     return min(val_losses)
 
 def main():
+    # Ensure n_trials is greater than n_startup_trials
+    assert n_trials > n_startup_trials, f"n_trials ({n_trials}) must be greater than n_startup_trials ({n_startup_trials})"
+    
     # Create an Optuna study to minimize validation loss
     # TPE sampler with explicit n_startup_trials
-    sampler = optuna.samplers.TPESampler(n_startup_trials=20)
+    sampler = optuna.samplers.TPESampler(n_startup_trials=n_startup_trials)
     study = optuna.create_study(direction='minimize', sampler=sampler)
     
     # Run optimization for a specified number of trials
-    study.optimize(objective, n_trials=50)
+    study.optimize(objective, n_trials=n_trials)
     
     # Print the best trial's results
     print('Best trial:')

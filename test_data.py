@@ -4,9 +4,17 @@ import numpy as np
 import ast
 
 num_pts = 4
+num_samples = None  # Number of samples to use from CSV. If None, use all samples
 # Load CSV file
-fpath = './data/'
+fpath = './data/10k_set/'
 df = pd.read_csv(fpath+f"gi_{num_pts}pt_tok.csv")
+
+# Limit the number of samples if specified
+if num_samples is not None:
+    df = df.head(num_samples)
+    print(f"Using {len(df)} samples from CSV file (limited by num_samples={num_samples})")
+else:
+    print(f"Using all {len(df)} samples from CSV file")
 
 '''
 # Parse the string representation of lists into actual Python lists
@@ -68,8 +76,8 @@ for d_idx in range(len(df)):
             a_tokens=a_tokens,   # Python list, no padding
             b_tokens=b_tokens,   # Python list, no padding
             N=num_pts,           # total external legs
-            samples=5,           # number of random phase‑space points
-            M=2.0,               # scalar mass
+            samples=3,           # number of random phase‑space points
+            M=1.0,               # scalar mass
             tol_abs=1e-8,
             tol_rel=1e-8,
             seed=123,
