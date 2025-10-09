@@ -12,22 +12,23 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'data_generation')
 from Tokenizer import ScatteringAmplitudeTokenizer, numerically_equivalent
 
 # Settings
-N_particles = 4 
+N_particles = 5 
 model_path = os.path.join('models', f'model_{N_particles}pt.pt')  # Path to the trained model
 csv_file = os.path.join('data/test_set', f'gi_{N_particles}pt_tok.csv')  # Path to the test dataset
+#csv_file = os.path.join('data/_old', f'ampl00111_tok.csv') # Path the Feyman rues data
 batch_size = 64  
 max_datasize = None  # Max number of examples to evaluate (None = use whole file)
 num_print = 0  # Disable example printing for cleaner output
 inference_only = False  # Set to True for pure inference (ignore simple column), False for evaluation
-force_cpu = True # Force CPU usage (set to True to avoid CUDA/MPS device issues, good for local testing)
+force_cpu = False # Force CPU usage (set to True to avoid CUDA/MPS device issues, good for local testing)
 use_mps = False # Device toggle: enable MPS explicitly (default False due to missing ops in PyTorch Transformer on MPS)
 
 # Decoding hyperparameters (set here for evaluation)
-decoding_method = 'greedy'  # Use greedy for deterministic, teacher-forcing-like behavior
+decoding_method = 'nucleus'  # Use greedy for deterministic, teacher-forcing-like behavior
 max_length = None           # Length limit for generation (None = no limit)
-beam_size = 10              # Number of beams for beam/nucleus search
-p_nucleus = 0.95            # Nucleus cutoff probability (lower => more diversity)
-temperature_nucleus = 1.3   # Lower temperature for more deterministic output
+beam_size = 4              # Number of beams for beam/nucleus search
+p_nucleus = 0.99            # Nucleus cutoff probability (lower => more diversity)
+temperature_nucleus = 1.96   # Lower temperature for more deterministic output
 # For beam/nucleus evaluation: if True, count as correct if ANY beam hypothesis matches target; if False, only best hyp
 beam_match_any = True
 
@@ -142,20 +143,50 @@ def main():
         # Process each example in the batch
         for i in range(src.size(0)):
             if inference_only:
-                # INFERENCE MODE: Just print predictions
+                # INFERENCE MODE: Just print predictions with numerical equivalence checks
                 src_seq = src[i].cpu().numpy().tolist()
                 gen_seq = clean_seq(gen[i], pad_token=0, eos_token=3)
                 
                 print(f"Input:     {src_seq}")
                 if decoding_method == 'greedy':
-                    print(f"Predicted: {gen_seq}")
+                    # Check numerical equivalence between input and output
+                    try:
+                        is_num_equiv = numerically_equivalent(
+                            tokenizer, src_seq, gen_seq, N_particles,
+                            samples=3, M=2.0, seed=42, return_details=False
+                        )
+                        print(f"Predicted: {gen_seq}")
+                        print(f"  Numerically equivalent to input: {is_num_equiv}")
+                    except Exception as e:
+                        print(f"Predicted: {gen_seq}")
+                        print(f"  Numerically equivalent to input: Error - {e}")
                 else:  # beam or nucleus
                     print(f"Best prediction: {gen_seq}")
+                    # Check numerical equivalence for best prediction
+                    try:
+                        is_num_equiv = numerically_equivalent(
+                            tokenizer, src_seq, gen_seq, N_particles,
+                            samples=3, M=2.0, seed=42, return_details=False
+                        )
+                        print(f"  Numerically equivalent to input: {is_num_equiv}")
+                    except Exception as e:
+                        print(f"  Numerically equivalent to input: Error - {e}")
+                    
                     if beams and i < len(beams):
                         print(f"All {beam_size} beam hypotheses:")
                         for j, hyp_seq in enumerate(beams[i][:beam_size]):
                             clean_hyp = clean_seq(hyp_seq, pad_token=0, eos_token=3)
-                            print(f"  Beam {j+1}: {clean_hyp}")
+                            # Check numerical equivalence for each beam
+                            try:
+                                is_num_equiv = numerically_equivalent(
+                                    tokenizer, src_seq, clean_hyp, N_particles,
+                                    samples=3, M=2.0, seed=42, return_details=False
+                                )
+                                print(f"  Beam {j+1}: {clean_hyp}")
+                                print(f"    Numerically equivalent to input: {is_num_equiv}")
+                            except Exception as e:
+                                print(f"  Beam {j+1}: {clean_hyp}")
+                                print(f"    Numerically equivalent to input: Error - {e}")
                 print()
                 total += 1
                 
