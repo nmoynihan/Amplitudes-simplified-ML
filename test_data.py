@@ -3,16 +3,18 @@ import pandas as pd
 import numpy as np
 import ast
 
-num_pts = 4
-num_samples = None  # Number of samples to use from CSV. If None, use all samples
+num_pts = 5
+num_samples = 3  # Number of samples to use from CSV. If None, use all samples
 # Load CSV file
-fpath = './data/10k_set/'
+# fpath = './data/10k_set/'
+fpath = './data/'
 df = pd.read_csv(fpath+f"gi_{num_pts}pt_tok.csv")
 
 # Limit the number of samples if specified
 if num_samples is not None:
     df = df.head(num_samples)
     print(f"Using {len(df)} samples from CSV file (limited by num_samples={num_samples})")
+    print(df)
 else:
     print(f"Using all {len(df)} samples from CSV file")
 
