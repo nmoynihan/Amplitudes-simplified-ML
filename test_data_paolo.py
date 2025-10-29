@@ -44,14 +44,17 @@ def num_check_csv(input_csv: pathlib.Path,num_pts: int,num_samples: int|None) ->
         try:
             a_tokens = ast.literal_eval(row["simple"])
             b_tokens = ast.literal_eval(row["scrambled"])
+            
             ok, _ = numerically_equivalent(
                 tokenizer=tok, a_tokens=a_tokens, b_tokens=b_tokens,
                 N=num_pts, samples=3, M=1.0, tol_abs=1e-8, tol_rel=1e-8,
                 seed=123, return_details=True
             )
+            
             if ok: matches += 1
             else:  unmatch_idxs.append(i)
         except Exception as e:
+            print(f"Error at row {i}: {e}")
             if "disallowed expression" in str(e).lower():
                 disallowed_count += 1
             else:

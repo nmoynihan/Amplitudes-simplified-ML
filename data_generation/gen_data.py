@@ -52,6 +52,48 @@ def _rw_pFFp(i,j,k,l):
     t4 = f"({dot(p(i), e(j))})*({dot(p(j), e(k))})*({dot(p(k), p(l))})"
     return f"({t1} - {t2} - {t3} + {t4})"
 
+def _rw_pFPRODp(*idxs):
+    """
+    Expand p_i · F_{j1} · F_{j2} · ... · F_{jn} · p_k
+    where F_m = p_m ⊗ e_m − e_m ⊗ p_m, and 'dot' contracts consecutive vectors.
+
+    Args: (i, j1, j2, ..., jn, k)
+    """
+    assert len(idxs) >= 3, "Need (i, j1, ..., jn, k)"
+    i, *Fs, k = idxs
+    n = len(Fs)
+
+    def vec(tag, t):
+        return p(t) if tag == 'p' else e(t)
+
+    terms = []
+    for mask in range(1 << n):
+        # sign = (-1)^{# of 'swap' choices}  (i.e. how many times we take -e⊗p)
+        minus = (mask.bit_count() % 2) == 1
+        factors = []
+        prev = ('p', i)
+
+        for bit, j in enumerate(Fs):
+            choose_swap = (mask >> bit) & 1  # 0 -> (p_j, e_j), 1 -> (e_j, p_j)
+            L = ('e', j) if choose_swap else ('p', j)
+            R = ('p', j) if choose_swap else ('e', j)
+            factors.append(f"({dot(vec(*prev), vec(*L))})")
+            prev = R
+
+        factors.append(f"({dot(vec(*prev), p(k))})")
+        term = "*".join(factors)
+        terms.append((-1 if minus else 1, term))
+
+    # Assemble with signs to match your style: (t1 - t2 - t3 + t4)
+    pieces = []
+    for sgn, t in terms:
+        if not pieces:
+            pieces.append(t if sgn > 0 else f"-{t}")
+        else:
+            pieces.append(("+ " if sgn > 0 else "- ") + t)
+
+    return "(" + " ".join(pieces) + ")"
+
 def _rw_Tr2(j,k):
     a = f"({dot(p(j), p(k))})*({dot(e(j), e(k))})"
     b = f"({dot(e(j), p(k))})*({dot(p(j), e(k))})"
@@ -346,6 +388,49 @@ def _safe_eval_float(expr: str) -> float:
     tree = ast.parse(expr, mode='eval')
     return _SafeEval().visit(tree)
 
+# Paolo: function below is inside eval_infix_numeric but I copied it here so I can call it from testing code
+def _expand_gi_blocks(s: str) -> str:
+        changed = True
+        while changed:
+            changed = False
+            # p_i · F_j · p_k
+            def rep_pfp(m):
+                nonlocal changed
+                changed = True
+                i, j, k = map(int, m.groups())
+                return _rw_pFp(i, j, k)
+            s_new = re.sub(r"p_(\d+)\s*·\s*F_(\d+)\s*·\s*p_(\d+)", rep_pfp, s)
+
+            # p_i · F_j · F_k · p_l
+            def rep_pffp(m):
+                nonlocal changed
+                changed = True
+                i, j, k, l = map(int, m.groups())
+                return _rw_pFFp(i, j, k, l)
+            s_new = re.sub(r"p_(\d+)\s*·\s*F_(\d+)\s*·\s*F_(\d+)\s*·\s*p_(\d+)", rep_pffp, s_new)
+
+            # --- general n ≥ 3 ---
+            # n ≥ 3: capture the whole chain once, then extract all F indices
+            def rep_pf_chain(m):
+                nonlocal changed
+                changed = True
+                i = int(m.group(1))
+                chain = m.group(2)           # the whole "· F_x · F_y · F_z ..." substring
+                k = int(m.group(4))
+                Fs = list(map(int, re.findall(r"F_(\d+)", chain)))
+                # Guard (should be ≥3 by pattern, but harmless):
+                if len(Fs) < 3:
+                    return m.group(0)
+                return _rw_pFPRODp(i, *Fs, k)
+
+            # Match any length ≥ 3 in one shot
+            pattern_n_ge_3 = r"p_(\d+)((?:\s*·\s*F_(\d+)){3,})\s*·\s*p_(\d+)"
+            s_new = re.sub(pattern_n_ge_3, rep_pf_chain, s_new)
+
+            s = s_new
+            
+        return s
+
 def eval_infix_numeric(expr: str, momenta, pols) -> float:
     N = len(momenta)
     P = {f"p_{i}": momenta[i-1] for i in range(1,N+1)}
@@ -397,11 +482,33 @@ def eval_infix_numeric(expr: str, momenta, pols) -> float:
                 i, j, k, l = map(int, m.groups())
                 return _rw_pFFp(i, j, k, l)
             s_new = re.sub(r"p_(\d+)\s*·\s*F_(\d+)\s*·\s*F_(\d+)\s*·\s*p_(\d+)", rep_pffp, s_new)
+
+            # --- general n ≥ 3 ---
+            # n ≥ 3: capture the whole chain once, then extract all F indices
+            def rep_pf_chain(m):
+                nonlocal changed
+                changed = True
+                i = int(m.group(1))
+                chain = m.group(2)           # the whole "· F_x · F_y · F_z ..." substring
+                k = int(m.group(4))
+                Fs = list(map(int, re.findall(r"F_(\d+)", chain)))
+                # Guard (should be ≥3 by pattern, but harmless):
+                if len(Fs) < 3:
+                    return m.group(0)
+                return _rw_pFPRODp(i, *Fs, k)
+
+            # Match any length ≥ 3 in one shot
+            pattern_n_ge_3 = r"p_(\d+)((?:\s*·\s*F_(\d+)){3,})\s*·\s*p_(\d+)"
+            s_new = re.sub(pattern_n_ge_3, rep_pf_chain, s_new)
+
             s = s_new
+            
         return s
 
+    # print(f"Unexpanded expression: {expr}")
     expr_expanded = _expand_traces(expr)
     expr_expanded = _expand_gi_blocks(expr_expanded)
+    # print(f"Expanded expression: {expr_expanded}")
     expr_f = _to_float_expr(expr_expanded, P, E)
     # Final safety: balance any stray parentheses to avoid SyntaxError
     def _balance_parens_str(s: str) -> str:
