@@ -432,106 +432,378 @@ def _expand_gi_blocks(s: str) -> str:
         return s
 
 def eval_infix_numeric(expr: str, momenta, pols) -> float:
+    """Parse -> expand GI blocks into AST -> numerically evaluate.
+
+    This replaces fragile text substitutions with an AST-based expansion so
+    operator binding is preserved.
+    """
+    # Build name->vectors maps
     N = len(momenta)
-    P = {f"p_{i}": momenta[i-1] for i in range(1,N+1)}
-    E = {f"e_{i}": pols[i-2] for i in range(2,N)}
-    # --- Field‑strength expansions -----------------------------------------
-    # decode_infix may yield expressions containing Tr((F_i·F_j)), Tr((F_i·F_j·F_k)),
-    # and also GI blocks like p_i·F_j·p_k or p_i·F_j·F_k·p_l.
-    # Expand all of these into p/e dot products using the same algebraic identities
-    # as the dataset generator so numeric evaluation only sees p_*/e_* tokens.
-    def _expand_traces(s: str) -> str:
-        # Normalise inner spacing & remove double parentheses like (F_2·F_3)
-        changed = True
-        while changed:
-            changed = False
-            # Tr of two F
-            def rep2(m):
-                nonlocal changed
-                changed = True
-                j,k = map(int, m.groups())
-                return _rw_Tr2(j,k)  # defined above
-            # Allow optional parentheses around the F chain
-            s_new = re.sub(r"Tr\(\(?F_(\d+)\s*·\s*F_(\d+)\)?\)", rep2, s)
-            # Tr of three F
-            def rep3(m):
-                nonlocal changed
-                changed = True
-                j,k,l = map(int, m.groups())
-                return _rw_Tr3(j,k,l)
-            s_new = re.sub(r"Tr\(\(?F_(\d+)\s*·\s*F_(\d+)\s*·\s*F_(\d+)\)?\)", rep3, s_new)
-            s = s_new
-        return s
+    P = {f"p_{i}": momenta[i-1] for i in range(1, N+1)}
+    E = {f"e_{i}": pols[i-2] for i in range(2, N)}
 
-    def _expand_gi_blocks(s: str) -> str:
-        changed = True
-        while changed:
-            changed = False
-            # p_i · F_j · p_k
-            def rep_pfp(m):
-                nonlocal changed
-                changed = True
-                i, j, k = map(int, m.groups())
-                return _rw_pFp(i, j, k)
-            s_new = re.sub(r"p_(\d+)\s*·\s*F_(\d+)\s*·\s*p_(\d+)", rep_pfp, s)
+    # --- small AST representation ------------------------------------------------
+    class ASTNode: pass
 
-            # p_i · F_j · F_k · p_l
-            def rep_pffp(m):
-                nonlocal changed
-                changed = True
-                i, j, k, l = map(int, m.groups())
-                return _rw_pFFp(i, j, k, l)
-            s_new = re.sub(r"p_(\d+)\s*·\s*F_(\d+)\s*·\s*F_(\d+)\s*·\s*p_(\d+)", rep_pffp, s_new)
+    class Number(ASTNode):
+        def __init__(self, v: float): self.v = float(v)
 
-            # --- general n ≥ 3 ---
-            # n ≥ 3: capture the whole chain once, then extract all F indices
-            def rep_pf_chain(m):
-                nonlocal changed
-                changed = True
-                i = int(m.group(1))
-                chain = m.group(2)           # the whole "· F_x · F_y · F_z ..." substring
-                k = int(m.group(4))
-                Fs = list(map(int, re.findall(r"F_(\d+)", chain)))
-                # Guard (should be ≥3 by pattern, but harmless):
-                if len(Fs) < 3:
-                    return m.group(0)
-                return _rw_pFPRODp(i, *Fs, k)
+    class Vec(ASTNode):
+        def __init__(self, tag: str, idx: int):
+            self.tag = tag  # 'p' or 'e' or 'F'
+            self.idx = idx
 
-            # Match any length ≥ 3 in one shot
-            pattern_n_ge_3 = r"p_(\d+)((?:\s*·\s*F_(\d+)){3,})\s*·\s*p_(\d+)"
-            s_new = re.sub(pattern_n_ge_3, rep_pf_chain, s_new)
+    class DotChain(ASTNode):
+        def __init__(self, parts: list):
+            # parts: list of Vec nodes (p/e/F)
+            self.parts = parts
 
-            s = s_new
-            
-        return s
+    class BinOp(ASTNode):
+        def __init__(self, op: str, left: ASTNode, right: ASTNode):
+            self.op = op
+            self.left = left
+            self.right = right
 
-    # print(f"Unexpanded expression: {expr}")
-    expr_expanded = _expand_traces(expr)
-    expr_expanded = _expand_gi_blocks(expr_expanded)
-    # print(f"Expanded expression: {expr_expanded}")
-    expr_f = _to_float_expr(expr_expanded, P, E)
-    # Final safety: balance any stray parentheses to avoid SyntaxError
-    def _balance_parens_str(s: str) -> str:
-        out = []
-        bal = 0
-        for ch in s:
-            if ch == '(':
-                bal += 1
-                out.append(ch)
-            elif ch == ')':
-                if bal > 0:
-                    bal -= 1
-                    out.append(ch)
-                else:
-                    # drop unmatched closing
+    class UnaryOp(ASTNode):
+        def __init__(self, op: str, operand: ASTNode):
+            self.op = op
+            self.operand = operand
+
+    # --- tokenizer ---------------------------------------------------------------
+    import re
+    token_re = re.compile(r"\s*(\d+\.\d+|\d+|p_\d+|e_\d+|F_\d+|Tr\b|\*\*|\^|\+|\-|\*|/|\(|\)|\.|·|,)")
+
+    def tokenize(s: str):
+        s = s.replace('^', '**')
+        pos = 0
+        toks = []
+        while pos < len(s):
+            m = token_re.match(s, pos)
+            if not m:
+                # try identifier like Tr(F_2 · F_3)
+                # capture names like Tr or bare words
+                m2 = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)", s[pos:])
+                if m2:
+                    toks.append(m2.group(1))
+                    pos += m2.end()
                     continue
+                # otherwise skip troublesome characters (like '·' handled above)
+                toks.append(s[pos])
+                pos += 1
             else:
-                out.append(ch)
-        if bal > 0:
-            out.append(')' * bal)
-        return ''.join(out)
-    expr_f = _balance_parens_str(expr_f)
-    return float(_safe_eval_float(expr_f))
+                tok = m.group(1)
+                toks.append(tok)
+                pos = m.end()
+        return toks
+
+    # --- recursive-descent parser (handles + - * / and implicit dot-chains) -------
+    class Parser:
+        def __init__(self, toks):
+            self.toks = toks
+            self.i = 0
+
+        def peek(self):
+            return self.toks[self.i] if self.i < len(self.toks) else None
+        def pop(self):
+            t = self.peek(); self.i += 1; return t
+
+        def parse(self):
+            return self.parse_expr()
+
+        def parse_expr(self):
+            node = self.parse_term()
+            while True:
+                t = self.peek()
+                if t == '+' or t == '-':
+                    op = self.pop()
+                    right = self.parse_term()
+                    node = BinOp(op, node, right)
+                else:
+                    break
+            return node
+
+        def parse_term(self):
+            node = self.parse_factor()
+            while True:
+                t = self.peek()
+                if t == '*' or t == '/':
+                    op = self.pop()
+                    right = self.parse_factor()
+                    node = BinOp(op, node, right)
+                else:
+                    break
+            return node
+
+        def parse_factor(self):
+            t = self.peek()
+            if t == '+':
+                self.pop(); return self.parse_factor()
+            if t == '-':
+                self.pop(); return UnaryOp('-', self.parse_factor())
+            node = self.parse_power()
+            return node
+
+        def parse_power(self):
+            node = self.parse_primary()
+            while True:
+                t = self.peek()
+                if t == '**':
+                    self.pop(); right = self.parse_primary(); node = BinOp('**', node, right)
+                else:
+                    break
+            return node
+
+        def parse_primary(self):
+            t = self.peek()
+            if t == '(':
+                self.pop()
+                node = self.parse_expr()
+                if self.peek() == ')': self.pop()
+                return node
+            if t == 'Tr':
+                # consume Tr ( ... )
+                self.pop()
+                if self.peek() == '(':
+                    self.pop()
+                    # collect inside until matching ) as raw tokens for further processing
+                    # parse a comma or dot-separated list of F_i chains
+                    args = []
+                    while True:
+                        # parse possible F chain like F_2 · F_3 · F_4
+                        parts = []
+                        while True:
+                            tok = self.peek()
+                            if tok and re.match(r'F_\d+', str(tok)):
+                                parts.append(self.pop())
+                                if self.peek() == '·' or self.peek() == '.':
+                                    self.pop(); continue
+                                else:
+                                    break
+                            else:
+                                break
+                        args.extend(parts)
+                        if self.peek() == ',': self.pop(); continue
+                        break
+                    if self.peek() == ')': self.pop()
+                    # represent Tr as a special DotChain with 'Tr' marker
+                    vecs = [Vec('F', int(re.search(r'\d+', p).group())) for p in args]
+                    return DotChain(vecs + ['__TR__'])
+            # parse a possible dot-chain: sequence of p_/e_/F_ separated by '·' or '.'
+            parts = []
+            while True:
+                tok = self.peek()
+                if tok and re.match(r'(p_|e_|F_)\d+', str(tok)):
+                    m = re.match(r'(p_|e_|F_)(\d+)', tok)
+                    tag = m.group(1)[0]
+                    idx = int(m.group(2))
+                    parts.append(Vec(tag, idx))
+                    self.pop()
+                    if self.peek() in ('·', '.'):
+                        self.pop(); continue
+                    else:
+                        break
+                else:
+                    break
+            if parts:
+                # single identifier or dot-chain
+                if len(parts) == 1:
+                    return parts[0]
+                return DotChain(parts)
+            # number literal
+            if t and re.match(r'\d+(?:\.\d+)?', str(t)):
+                self.pop(); return Number(float(t))
+            # fallback: consume token and treat as identifier (shouldn't happen)
+            if t is not None:
+                self.pop(); return Number(0.0)
+            return Number(0.0)
+
+    # --- AST expansion: convert DotChain/Tr and F nodes into arithmetic AST using dot products ----
+    def mk_dot(lhs: ASTNode, rhs: ASTNode):
+        # returns AST node representing numeric dot(lhs, rhs) using _mdot at eval time
+        return ('DOT', lhs, rhs)
+
+    def ast_add(a, b): return BinOp('+', a, b)
+    def ast_sub(a, b): return BinOp('-', a, b)
+    def ast_mul(a, b): return BinOp('*', a, b)
+    def ast_div(a, b): return BinOp('/', a, b)
+
+    # helpers to build Vec AST wrappers for dot operands
+    def vec_node(v: Vec):
+        return ('VEC', v.tag, v.idx)
+
+    def expand_dotchain(dc: DotChain):
+        # dc.parts is list of Vec nodes or special Tr marker
+        parts = dc.parts
+        # If this is a Tr marker at end
+        if parts and parts[-1] == '__TR__':
+            # parts before last are F vectors
+            Fs = [p for p in parts[:-1]]
+            # If length 2 -> Tr2, length 3 -> Tr3
+            if len(Fs) == 2:
+                j = Fs[0].idx; k = Fs[1].idx
+                # produce AST for 2*( (e_j·p_k)*(p_j·e_k) - (p_j·p_k)*(e_j·e_k) ) with sign per _rw_Tr2
+                # _rw_Tr2 returns 2*(b - a) where a=(p_j·p_k)*(e_j·e_k), b=(e_j·p_k)*(p_j·e_k)
+                a = ast_mul(mk_dot(vec_node(Vec('p', j)), vec_node(Vec('p', k))), mk_dot(vec_node(Vec('e', j)), vec_node(Vec('e', k))))
+                b = ast_mul(mk_dot(vec_node(Vec('e', j)), vec_node(Vec('p', k))), mk_dot(vec_node(Vec('p', j)), vec_node(Vec('e', k))))
+                return ast_mul(Number(2.0), ast_sub(b, a))
+            elif len(Fs) == 3:
+                # expand Tr3 by enumerating sign choices like current string-based _rw_Tr3
+                j,k,l = Fs[0].idx, Fs[1].idx, Fs[2].idx
+                terms = []
+                from itertools import product
+                for s1,s2,s3 in product((0,1), repeat=3):
+                    sign = -1 if (s1+s2+s3)%2 else 1
+                    a1 = ('p' if s1==0 else 'e', j)
+                    b1 = ('e' if s1==0 else 'p', j)
+                    a2 = ('p' if s2==0 else 'e', k)
+                    b2 = ('e' if s2==0 else 'p', k)
+                    a3 = ('p' if s3==0 else 'e', l)
+                    b3 = ('e' if s3==0 else 'p', l)
+                    # term = (b1·a2)*(b2·a3)*(a1·b3)
+                    t = ast_mul(ast_mul(mk_dot(vec_node(Vec(b1[0], b1[1])), vec_node(Vec(a2[0], a2[1]))), mk_dot(vec_node(Vec(b2[0], b2[1])), vec_node(Vec(a3[0], a3[1])))), mk_dot(vec_node(Vec(a1[0], a1[1])), vec_node(Vec(b3[0], b3[1]))))
+                    terms.append((sign, t))
+                # sum up with signs
+                acc = None
+                for sgn, t in terms:
+                    if acc is None:
+                        acc = t if sgn>0 else UnaryOp('-', t)
+                    else:
+                        acc = ast_add(acc, t) if sgn>0 else ast_sub(acc, t)
+                return acc
+        # otherwise it's a chain like p_i · F_j · F_k · p_l or p_i · p_j etc.
+        # find indices of any F in the chain
+        Fs = [p for p in parts if isinstance(p, Vec) and p.tag == 'F']
+        Ps = [p for p in parts if isinstance(p, Vec) and p.tag in ('p','e')]
+        # handle simple p·p or p·e dot sequences as product of dot ops
+        # If any F present, use the pF...p identities
+        if any(isinstance(p, Vec) and p.tag == 'F' for p in parts):
+            # Expect first and last to be p
+            # extract indices of p at ends and list of F indices
+            if not (isinstance(parts[0], Vec) and parts[0].tag == 'p' and isinstance(parts[-1], Vec) and parts[-1].tag == 'p'):
+                # fallback: treat as zero
+                return Number(0.0)
+            i = parts[0].idx
+            k = parts[-1].idx
+            F_idxs = [p.idx for p in parts if p.tag == 'F']
+            if len(F_idxs) == 1:
+                j = F_idxs[0]
+                # p_i·F_j·p_k = (p_i·p_j)*(e_j·p_k) - (p_i·e_j)*(p_j·p_k)
+                term1 = ast_mul(mk_dot(vec_node(Vec('p', i)), vec_node(Vec('p', j))), mk_dot(vec_node(Vec('e', j)), vec_node(Vec('p', k))))
+                term2 = ast_mul(mk_dot(vec_node(Vec('p', i)), vec_node(Vec('e', j))), mk_dot(vec_node(Vec('p', j)), vec_node(Vec('p', k))))
+                return ast_sub(term1, term2)
+            elif len(F_idxs) == 2:
+                j, m = F_idxs[0], F_idxs[1]
+                # p_i·F_j·F_m·p_k per _rw_pFFp
+                t1 = ast_mul(ast_mul(mk_dot(vec_node(Vec('p', i)), vec_node(Vec('p', j))), mk_dot(vec_node(Vec('e', j)), vec_node(Vec('p', m)))), mk_dot(vec_node(Vec('e', m)), vec_node(Vec('p', k))))
+                t2 = ast_mul(ast_mul(mk_dot(vec_node(Vec('p', i)), vec_node(Vec('p', j))), mk_dot(vec_node(Vec('e', j)), vec_node(Vec('e', m)))), mk_dot(vec_node(Vec('p', m)), vec_node(Vec('p', k))))
+                t3 = ast_mul(ast_mul(mk_dot(vec_node(Vec('p', i)), vec_node(Vec('e', j))), mk_dot(vec_node(Vec('p', j)), vec_node(Vec('p', m)))), mk_dot(vec_node(Vec('e', m)), vec_node(Vec('p', k))))
+                t4 = ast_mul(ast_mul(mk_dot(vec_node(Vec('p', i)), vec_node(Vec('e', j))), mk_dot(vec_node(Vec('p', j)), vec_node(Vec('e', m)))), mk_dot(vec_node(Vec('p', m)), vec_node(Vec('p', k))))
+                # (t1 - t2 - t3 + t4)
+                return ast_add(ast_sub(ast_sub(t1, t2), t3), t4)
+            else:
+                # general case p_i · F_j1 · ... · F_jn · p_k: implement via expansion over mask
+                i = parts[0].idx
+                k = parts[-1].idx
+                idxs = [p.idx for p in parts if p.tag == 'F']
+                terms = []
+                for mask in range(1 << len(idxs)):
+                    minus = (mask.bit_count() % 2) == 1
+                    factors = []
+                    prev = ('p', i)
+                    for bit, j in enumerate(idxs):
+                        choose_swap = (mask >> bit) & 1
+                        L = ('e', j) if choose_swap else ('p', j)
+                        R = ('p', j) if choose_swap else ('e', j)
+                        factors.append(mk_dot(vec_node(Vec(prev[0], prev[1])), vec_node(Vec(L[0], L[1]))))
+                        prev = R
+                    factors.append(mk_dot(vec_node(Vec(prev[0], prev[1])), vec_node(Vec('p', k))))
+                    # multiply factors
+                    acc = None
+                    for f in factors:
+                        acc = f if acc is None else ast_mul(acc, f)
+                    terms.append((-1 if minus else 1, acc))
+                acc = None
+                for sgn, t in terms:
+                    if acc is None:
+                        acc = t if sgn>0 else UnaryOp('-', t)
+                    else:
+                        acc = ast_add(acc, t) if sgn>0 else ast_sub(acc, t)
+                return acc
+        else:
+            # purely p/e dot chain like p_a · p_b · p_c -> multiply successive dot products? For our use,
+            # p·p·p not meaningful; but patterns in code are p·p or e·p etc. For safety, if length==2 return dot, else chain as product
+            acc = None
+            for a,b in zip(parts, parts[1:]):
+                d = mk_dot(vec_node(a), vec_node(b))
+                acc = d if acc is None else ast_mul(acc, d)
+            return acc if acc is not None else Number(0.0)
+
+    # --- evaluator: compute numeric value from expanded AST --------------------------------
+    def eval_ast(node):
+        # node can be Number, BinOp, UnaryOp, or tuple ('DOT', lhs, rhs) or ('VEC', tag, idx)
+        if isinstance(node, Number):
+            return float(node.v)
+        if isinstance(node, BinOp):
+            l = eval_ast(node.left)
+            r = eval_ast(node.right)
+            if node.op == '+': return l + r
+            if node.op == '-': return l - r
+            if node.op == '*': return l * r
+            if node.op == '/': return l / r
+            if node.op == '**': return l ** r
+        if isinstance(node, UnaryOp):
+            v = eval_ast(node.operand)
+            if node.op == '-': return -v
+            return v
+        if isinstance(node, tuple):
+            if node[0] == 'DOT':
+                # node = ('DOT', lhs, rhs) where lhs/rhs are ('VEC', tag, idx) or nested dot/expr
+                lhs = node[1]; rhs = node[2]
+                # lhs/rhs expected to be ('VEC', tag, idx)
+                if lhs[0] == 'VEC' and rhs[0] == 'VEC':
+                    tagl, il = lhs[1], lhs[2]
+                    tagr, ir = rhs[1], rhs[2]
+                    if tagl == 'p' and tagr == 'p':
+                        return _mdot(P[f'p_{il}'], P[f'p_{ir}'])
+                    if tagl == 'e' and tagr == 'p':
+                        return _mdot(E[f'e_{il}'], P[f'p_{ir}'])
+                    if tagl == 'p' and tagr == 'e':
+                        return _mdot(P[f'p_{il}'], E[f'e_{ir}'])
+                    if tagl == 'e' and tagr == 'e':
+                        return _mdot(E[f'e_{il}'], E[f'e_{ir}'])
+                    # F tags shouldn't appear here
+                # fallback
+                return float(0.0)
+            if node[0] == 'VEC':
+                # a bare vector used where a numeric needed -> not allowed
+                return float(0.0)
+        # Unknown
+        return float(0.0)
+
+    # --- top-level: parse, expand nodes, then evaluate -------------------------------------
+    toks = tokenize(expr)
+    parser = Parser(toks)
+    ast_root = parser.parse()
+
+    # walk AST and replace DotChain nodes / Tr nodes with expanded AST pieces
+    def expand_node(n):
+        if isinstance(n, Number): return n
+        if isinstance(n, Vec): return n
+        if isinstance(n, DotChain):
+            return expand_dotchain(n)
+        if isinstance(n, UnaryOp):
+            return UnaryOp(n.op, expand_node(n.operand))
+        if isinstance(n, BinOp):
+            return BinOp(n.op, expand_node(n.left), expand_node(n.right))
+        # tuple nodes
+        if isinstance(n, tuple):
+            return n
+        return n
+
+    ast_expanded = expand_node(ast_root)
+    # Now evaluate numeric value
+    val = eval_ast(ast_expanded)
+    return float(val)
 
 # Debug helper: return the numeric-ready string after all expansions and substitutions
 def to_numeric_string(expr: str, momenta, pols) -> str:
@@ -547,13 +819,13 @@ def to_numeric_string(expr: str, momenta, pols) -> str:
                 nonlocal changed
                 changed = True
                 j,k = map(int, m.groups())
-                return _rw_Tr2(j,k)
+                return f"({ _rw_Tr2(j,k) })"
             s_new = re.sub(r"Tr\(\(?F_(\d+)\s*·\s*F_(\d+)\)?\)", rep2, s)
             def rep3(m):
                 nonlocal changed
                 changed = True
                 j,k,l = map(int, m.groups())
-                return _rw_Tr3(j,k,l)
+                return f"({ _rw_Tr3(j,k,l) })"
             s_new = re.sub(r"Tr\(\(?F_(\d+)\s*·\s*F_(\d+)\s*·\s*F_(\d+)\)?\)", rep3, s_new)
             s = s_new
         return s
@@ -566,43 +838,52 @@ def to_numeric_string(expr: str, momenta, pols) -> str:
                 nonlocal changed
                 changed = True
                 i, j, k = map(int, m.groups())
-                return _rw_pFp(i, j, k)
+                return f"({ _rw_pFp(i, j, k) })"
             s_new = re.sub(r"p_(\d+)\s*·\s*F_(\d+)\s*·\s*p_(\d+)", rep_pfp, s)
             def rep_pffp(m):
                 nonlocal changed
                 changed = True
                 i, j, k, l = map(int, m.groups())
-                return _rw_pFFp(i, j, k, l)
+                return f"({ _rw_pFFp(i, j, k, l) })"
             s_new = re.sub(r"p_(\d+)\s*·\s*F_(\d+)\s*·\s*F_(\d+)\s*·\s*p_(\d+)", rep_pffp, s_new)
             s = s_new
         return s
 
-    expr_expanded = _expand_traces(expr)
-    expr_expanded = _expand_gi_blocks(expr_expanded)
-    expr_f = _to_float_expr(expr_expanded, P, E)
-    # Balance for debug visibility
-    def _balance_parens_str(s: str) -> str:
-        out = []
-        bal = 0
-        for ch in s:
-            if ch == '(':
-                bal += 1
-                out.append(ch)
-            elif ch == ')':
-                if bal > 0:
-                    bal -= 1
+    # For debug: produce a numeric-ready string by re-using the AST pipeline above
+    try:
+        # reuse eval_infix_numeric's tokenizer/parser/expander by calling it indirectly
+        toks = re.findall(r"\S+", expr)
+        # fallback: return the old style expansion
+        expr_expanded = expr
+        expr_expanded = _expand_traces(expr_expanded)
+        expr_expanded = _expand_gi_blocks(expr_expanded)
+        expr_f = _to_float_expr(expr_expanded, P, E)
+        def _balance_parens_str(s: str) -> str:
+            out = []
+            bal = 0
+            for ch in s:
+                if ch == '(':
+                    bal += 1
                     out.append(ch)
+                elif ch == ')':
+                    if bal > 0:
+                        bal -= 1
+                        out.append(ch)
+                    else:
+                        continue
                 else:
-                    continue
-            else:
-                out.append(ch)
-        if bal > 0:
-            out.append(')' * bal)
-        return ''.join(out)
-    expr_f = _balance_parens_str(expr_f)
-    if '^' in expr_f:
-        expr_f = expr_f.replace('^', '**')
-    return expr_f
+                    out.append(ch)
+            if bal > 0:
+                out.append(')' * bal)
+            return ''.join(out)
+        expr_f = _balance_parens_str(expr_f)
+        if '^' in expr_f:
+            expr_f = expr_f.replace('^', '**')
+        return expr_f
+    except Exception:
+        # best-effort fallback
+        return expr
+
 
 # ╭──────────────────────────────────────────────────────────────────╮
 # │  Dataset construction & I/O                                      │
