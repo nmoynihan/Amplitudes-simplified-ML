@@ -14,7 +14,8 @@ from Tokenizer import ScatteringAmplitudeTokenizer, numerically_equivalent
 # Settings
 N_particles = 5 
 model_path = os.path.join('models', f'model_{N_particles}pt.pt')  # Path to the trained model
-csv_file = os.path.join('data/test_set', f'gi_{N_particles}pt_tok.csv')  # Path to the test dataset
+#csv_file = os.path.join('data/test_set', f'gi_{N_particles}pt_tok.csv')  # Path to the test dataset
+csv_file = os.path.join('data/', f'relabM_alt_{N_particles}pt_tok.csv')  # Path to Paolo's data
 #csv_file = os.path.join('data/_old', f'ampl00111_tok.csv') # Path the Feyman rues data
 batch_size = 64  
 max_datasize = None  # Max number of examples to evaluate (None = use whole file)
@@ -24,7 +25,7 @@ force_cpu = False # Force CPU usage (set to True to avoid CUDA/MPS device issues
 use_mps = False # Device toggle: enable MPS explicitly (default False due to missing ops in PyTorch Transformer on MPS)
 
 # Decoding hyperparameters (set here for evaluation)
-decoding_method = 'nucleus'  # Use greedy for deterministic, teacher-forcing-like behavior
+decoding_method = 'greedy'  # Use greedy for deterministic, teacher-forcing-like behavior
 max_length = None           # Length limit for generation (None = no limit)
 beam_size = 4              # Number of beams for beam/nucleus search
 p_nucleus = 0.99            # Nucleus cutoff probability (lower => more diversity)
