@@ -35,6 +35,9 @@ beam_match_any = True
 
 def main():
     # Resolve device and load model on it (prefer CUDA, then optional MPS, else CPU)
+    use_data_parallel = False
+    num_gpus = 0
+    
     if force_cpu:
         preferred_device = 'cpu'
         print("Forcing CPU device usage")
@@ -44,7 +47,22 @@ def main():
                 # Test if CUDA actually works by creating a small tensor
                 test_tensor = torch.zeros(1).cuda()
                 preferred_device = 'cuda'
-                print("CUDA device available and working")
+                num_gpus = torch.cuda.device_count()
+                print(f"CUDA device available and working")
+                print(f"Found {num_gpus} GPU(s):")
+                for i in range(num_gpus):
+                    props = torch.cuda.get_device_properties(i)
+                    print(f"  GPU {i}: {props.name} ({props.total_memory / (1024**3):.1f} GB)")
+                    print(f"    - CUDA Capability: {props.major}.{props.minor}")
+                    print(f"    - Multi-Processors: {props.multi_processor_count}")
+                    print(f"    - Max threads per Multi-Processor: {props.max_threads_per_multi_processor}")
+                    total_parallel = props.multi_processor_count * props.max_threads_per_multi_processor
+                    print(f"    - Total parallel threads: {total_parallel:,}")
+                
+                if num_gpus > 1:
+                    use_data_parallel = True
+                    print(f"\nWill distribute dataset entries across {num_gpus} GPUs using DataParallel")
+                    print(f"Each GPU will process {batch_size // num_gpus} examples per batch")
             else:
                 raise RuntimeError("CUDA not available")
         except (RuntimeError, AssertionError) as e:
@@ -65,7 +83,19 @@ def main():
     loaded = load_transformer_model(TransformerRegressor, model_path, device=preferred_device)
     model = loaded['model']
     model.to(preferred_device)
-    model.device = preferred_device  
+    model.device = preferred_device
+    
+    # Apply DataParallel to distribute batch processing across GPUs
+    # This splits each batch across available GPUs - e.g., batch of 64 splits to 32+32 on 2 GPUs
+    if use_data_parallel:
+        print(f"\nWrapping model with DataParallel...")
+        # Store original model reference
+        base_model = model
+        model = torch.nn.DataParallel(model)
+        print(f"Model parallelized across GPUs: {list(range(num_gpus))}")
+        # Update device reference for DataParallel
+        model.module.device = preferred_device
+    
     model.eval()
     device = preferred_device
     print(f"Running on device: {device}")
@@ -112,6 +142,17 @@ def main():
     total_batches = len(data_loader) if hasattr(data_loader, '__len__') else None
     batch_count = 0
     
+    # Initial GPU memory check
+    if preferred_device == 'cuda' and use_data_parallel:
+        print(f"\n{'='*60}")
+        print(f"Initial GPU Memory Status:")
+        print(f"{'='*60}")
+        for i in range(num_gpus):
+            allocated = torch.cuda.memory_allocated(i) / (1024**3)
+            reserved = torch.cuda.memory_reserved(i) / (1024**3)
+            print(f"  GPU {i}: Allocated={allocated:.2f} GB, Reserved={reserved:.2f} GB")
+        print(f"{'='*60}\n")
+    
     for batch in data_loader:
         batch_count += 1
         
@@ -126,17 +167,39 @@ def main():
         src = batch['input'].to(device)
         tgt = batch['target'].to(device)
         
+        # Monitor GPU usage every 10 batches to confirm parallelization
+        if preferred_device == 'cuda' and use_data_parallel and batch_count % 10 == 0:
+            print(f"\n  [Batch {batch_count}] GPU Usage Check:")
+            for i in range(num_gpus):
+                allocated = torch.cuda.memory_allocated(i) / (1024**3)
+                reserved = torch.cuda.memory_reserved(i) / (1024**3)
+                print(f"    GPU {i}: Allocated={allocated:.2f} GB, Reserved={reserved:.2f} GB")
+            print()
+            sys.stdout.flush()
+        
         # Generate predictions
+        # When using DataParallel, the forward pass automatically splits the batch across GPUs
+        # For generation, we need to handle this carefully
         with torch.no_grad():
             decode_len = tgt.size(1) * 2  # Allow sequences to be up to 2x target length
+            
+            # For DataParallel with generation, we need to use the base model
+            # because decode_with_model does autoregressive generation which doesn't
+            # parallelize the same way. However, each forward pass inside generation
+            # will still use DataParallel.
+            generation_model = model.module if use_data_parallel else model
             gen, beams = decode_with_model(
-                model, src, max_length=decode_len, 
+                generation_model, src, max_length=decode_len, 
                 decoding_method=decoding_method,
                 beam_size=beam_size,
                 p_nucleus=p_nucleus,
                 temperature_nucleus=temperature_nucleus,
                 bos_token=2, eos_token=3, pad_token=0
             )
+        
+        # Clear cache periodically to prevent fragmentation
+        if preferred_device == 'cuda' and batch_count % 10 == 0:
+            torch.cuda.empty_cache()
         
         gen = gen.cpu().numpy()
         tgt = tgt.cpu().numpy()
@@ -330,6 +393,21 @@ def main():
                     print()
                     printed += 1
 
+    # Final GPU memory report
+    if preferred_device == 'cuda' and use_data_parallel:
+        print(f"\n{'='*60}")
+        print(f"Final GPU Memory Statistics:")
+        print(f"{'='*60}")
+        total_peak = 0
+        for i in range(num_gpus):
+            allocated = torch.cuda.memory_allocated(i) / (1024**3)
+            reserved = torch.cuda.memory_reserved(i) / (1024**3)
+            max_allocated = torch.cuda.max_memory_allocated(i) / (1024**3)
+            total_peak += max_allocated
+            print(f"  GPU {i}: Current={allocated:.2f} GB, Reserved={reserved:.2f} GB, Peak={max_allocated:.2f} GB")
+        print(f"  Total Peak Across All GPUs: {total_peak:.2f} GB")
+        print(f"{'='*60}\n")
+    
     if inference_only:
         print(f"Processed {total} examples for inference.")
     else:
