@@ -150,6 +150,13 @@ def main():
     data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     print(f"Using full test dataset: {len(dataset)} examples")
 
+    # Ensure all models are in evaluation mode
+    if use_data_parallel:
+        for m in models_per_gpu:
+            m.eval()
+    else:
+        model.eval()
+
     # Tracking metrics for evaluation mode
     total = 0
     token_total = 0    # Total tokens
@@ -205,6 +212,9 @@ def main():
                 tgt_full = batch['target']
                 batch_size_actual = src_full.size(0)
                 decode_len = tgt_full.size(1) * 2
+                # Cap at model's max positional encoding length
+                # Use -1 to leave room for generation loop edge cases
+                decode_len = min(decode_len, model.max_seq_len - 1)
                 
                 # Calculate split sizes for each GPU
                 base_size = batch_size_actual // num_gpus
@@ -218,23 +228,35 @@ def main():
                 # Storage for results from each GPU
                 results = [None] * num_gpus
                 beams_results = [None] * num_gpus
+                errors = [None] * num_gpus
                 
                 def process_on_gpu(gpu_id, src_chunk, tgt_chunk):
                     """Process a chunk of the batch on a specific GPU"""
-                    src_gpu = src_chunk.to(f'cuda:{gpu_id}')
-                    model_gpu = models_per_gpu[gpu_id]
-                    
-                    gen_gpu, beams_gpu = decode_with_model(
-                        model_gpu, src_gpu, max_length=decode_len,
-                        decoding_method=decoding_method,
-                        beam_size=beam_size,
-                        p_nucleus=p_nucleus,
-                        temperature_nucleus=temperature_nucleus,
-                        bos_token=2, eos_token=3, pad_token=0
-                    )
-                    
-                    results[gpu_id] = gen_gpu.cpu()
-                    beams_results[gpu_id] = beams_gpu
+                    try:
+                        src_gpu = src_chunk.to(f'cuda:{gpu_id}')
+                        model_gpu = models_per_gpu[gpu_id]
+                        
+                        gen_gpu, beams_gpu = decode_with_model(
+                            model_gpu, src_gpu, max_length=decode_len,
+                            decoding_method=decoding_method,
+                            beam_size=beam_size,
+                            p_nucleus=p_nucleus,
+                            temperature_nucleus=temperature_nucleus,
+                            bos_token=2, eos_token=3, pad_token=0
+                        )
+                        
+                        results[gpu_id] = gen_gpu.cpu()
+                        beams_results[gpu_id] = beams_gpu
+                        
+                        # Clean up GPU tensors
+                        del src_gpu, gen_gpu
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                    except Exception as e:
+                        errors[gpu_id] = e
+                        print(f"Error in GPU {gpu_id}: {e}")
+                        import traceback
+                        traceback.print_exc()
                 
                 # Launch parallel processing on each GPU
                 threads = []
@@ -251,8 +273,17 @@ def main():
                 for thread in threads:
                     thread.join()
                 
+                # Check for errors in any thread
+                if any(e is not None for e in errors):
+                    error_msgs = [f"GPU {i}: {e}" for i, e in enumerate(errors) if e is not None]
+                    raise RuntimeError(f"Errors occurred during parallel processing:\n" + "\n".join(error_msgs))
+                
                 # Combine results from all GPUs
-                gen = torch.cat([r for r in results if r is not None], dim=0)
+                valid_results = [r for r in results if r is not None]
+                if len(valid_results) == 0:
+                    raise RuntimeError("No valid results from any GPU")
+                gen = torch.cat(valid_results, dim=0)
+                
                 # Combine beams if they exist
                 if all(b is not None for b in beams_results):
                     beams = []
@@ -270,6 +301,9 @@ def main():
                 src = batch['input'].to(device)
                 tgt = batch['target'].to(device)
                 decode_len = tgt.size(1) * 2
+                # Cap at model's max positional encoding length
+                # Use -1 to leave room for generation loop edge cases
+                decode_len = min(decode_len, model.max_seq_len - 1)
                 
                 gen, beams = decode_with_model(
                     model, src, max_length=decode_len,
@@ -291,8 +325,13 @@ def main():
             sys.stdout.flush()
         
         # Clear cache periodically to prevent fragmentation
-        if preferred_device == 'cuda' and batch_count % 10 == 0:
-            torch.cuda.empty_cache()
+        if preferred_device == 'cuda':
+            if batch_count % 10 == 0:
+                if use_data_parallel:
+                    for i in range(num_gpus):
+                        torch.cuda.empty_cache()
+                else:
+                    torch.cuda.empty_cache()
         
         gen = gen.cpu().numpy()
         tgt = tgt.cpu().numpy()
