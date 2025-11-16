@@ -1,6 +1,10 @@
 import os
 import sys
 import torch
+
+# Set CUDA memory allocator to reduce fragmentation (helps with OOM issues)
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
 # Detect and set number of CPU threads for PyTorch
 n_threads = int(os.environ.get('OMP_NUM_THREADS', torch.get_num_threads()))
 torch.set_num_threads(n_threads)
@@ -17,7 +21,7 @@ model_path = os.path.join('models', f'model_{N_particles}pt.pt')  # Path to the 
 #csv_file = os.path.join('data/test_set', f'gi_{N_particles}pt_tok.csv')  # Path to the test dataset
 csv_file = os.path.join('data/', f'relabM_alt_{N_particles}pt_tok.csv')  # Path to Paolo's data
 #csv_file = os.path.join('data/_old', f'ampl00111_tok.csv') # Path the Feyman rues data
-batch_size = 64  
+batch_size = 64  # Will be auto-adjusted for smaller GPUs (< 60GB will use batch_size=32)
 max_datasize = None  # Max number of examples to evaluate (None = use whole file)
 num_print = 0  # Disable example printing for cleaner output
 inference_only = False  # Set to True for pure inference (ignore simple column), False for evaluation
@@ -50,14 +54,26 @@ def main():
                 num_gpus = torch.cuda.device_count()
                 print(f"CUDA device available and working")
                 print(f"Found {num_gpus} GPU(s):")
+                
+                # Get minimum GPU memory across all GPUs
+                min_gpu_memory = float('inf')
                 for i in range(num_gpus):
                     props = torch.cuda.get_device_properties(i)
-                    print(f"  GPU {i}: {props.name} ({props.total_memory / (1024**3):.1f} GB)")
+                    gpu_memory_gb = props.total_memory / (1024**3)
+                    min_gpu_memory = min(min_gpu_memory, gpu_memory_gb)
+                    print(f"  GPU {i}: {props.name} ({gpu_memory_gb:.1f} GB)")
                     print(f"    - CUDA Capability: {props.major}.{props.minor}")
                     print(f"    - Multi-Processors: {props.multi_processor_count}")
                     print(f"    - Max threads per Multi-Processor: {props.max_threads_per_multi_processor}")
                     total_parallel = props.multi_processor_count * props.max_threads_per_multi_processor
                     print(f"    - Total parallel threads: {total_parallel:,}")
+                
+                # Auto-adjust batch size based on GPU memory
+                original_batch_size = batch_size
+                if min_gpu_memory < 60:  # Less than 60GB (e.g., A100 40GB)
+                    batch_size = 32
+                    print(f"\n⚠️  Detected GPUs with {min_gpu_memory:.1f} GB memory (< 60 GB)")
+                    print(f"   Auto-adjusting batch_size: {original_batch_size} → {batch_size}")
                 
                 if num_gpus > 1:
                     use_data_parallel = True
