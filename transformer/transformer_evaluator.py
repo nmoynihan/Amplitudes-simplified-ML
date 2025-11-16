@@ -82,10 +82,15 @@ def main():
                         print(f"\n⚠️  Detected GPUs with {min_gpu_memory:.1f} GB memory (< 60 GB)")
                         print(f"   Auto-adjusting batch_size: {batch_size} → {effective_batch_size}")
                 
-                if num_gpus > 1:
+                # Beam/nucleus search is not thread-safe for multi-GPU parallel processing
+                # Only use multi-GPU for greedy decoding
+                if num_gpus > 1 and decoding_method == 'greedy':
                     use_data_parallel = True
                     print(f"\nWill distribute dataset entries across {num_gpus} GPUs using DataParallel")
                     print(f"Each GPU will process {effective_batch_size // num_gpus} examples per batch")
+                elif num_gpus > 1 and decoding_method in ['beam', 'nucleus']:
+                    print(f"\n⚠️  Note: Beam/nucleus search uses single GPU (not thread-safe for parallel processing)")
+                    print(f"   Using GPU 0 only. Batch size: {effective_batch_size}")
             else:
                 raise RuntimeError("CUDA not available")
         except (RuntimeError, AssertionError) as e:
