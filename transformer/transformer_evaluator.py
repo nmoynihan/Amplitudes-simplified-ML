@@ -41,6 +41,7 @@ def main():
     # Resolve device and load model on it (prefer CUDA, then optional MPS, else CPU)
     use_data_parallel = False
     num_gpus = 0
+    effective_batch_size = batch_size  # Local copy that we can modify
     
     if force_cpu:
         preferred_device = 'cpu'
@@ -69,16 +70,15 @@ def main():
                     print(f"    - Total parallel threads: {total_parallel:,}")
                 
                 # Auto-adjust batch size based on GPU memory
-                original_batch_size = batch_size
                 if min_gpu_memory < 60:  # Less than 60GB (e.g., A100 40GB)
-                    batch_size = 32
+                    effective_batch_size = 32
                     print(f"\n⚠️  Detected GPUs with {min_gpu_memory:.1f} GB memory (< 60 GB)")
-                    print(f"   Auto-adjusting batch_size: {original_batch_size} → {batch_size}")
+                    print(f"   Auto-adjusting batch_size: {batch_size} → {effective_batch_size}")
                 
                 if num_gpus > 1:
                     use_data_parallel = True
                     print(f"\nWill distribute dataset entries across {num_gpus} GPUs using DataParallel")
-                    print(f"Each GPU will process {batch_size // num_gpus} examples per batch")
+                    print(f"Each GPU will process {effective_batch_size // num_gpus} examples per batch")
             else:
                 raise RuntimeError("CUDA not available")
         except (RuntimeError, AssertionError) as e:
@@ -122,9 +122,9 @@ def main():
                 models_per_gpu.append(model_gpu)
         print(f"Model replicas created on GPUs: {list(range(num_gpus))}")
         print(f"Strategy: Each batch will be split across GPUs, processed in parallel")
-        print(f"  Example: batch_size={batch_size} with {num_gpus} GPUs")
-        base = batch_size // num_gpus
-        rem = batch_size % num_gpus
+        print(f"  Example: batch_size={effective_batch_size} with {num_gpus} GPUs")
+        base = effective_batch_size // num_gpus
+        rem = effective_batch_size % num_gpus
         splits = [base + (1 if i < rem else 0) for i in range(num_gpus)]
         for i, s in enumerate(splits):
             print(f"    GPU {i}: {s} examples")
@@ -163,7 +163,7 @@ def main():
         dataset = Subset(dataset, range(max_datasize))
         print(f"Limited dataset to {max_datasize} examples")
     
-    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    data_loader = DataLoader(dataset, batch_size=effective_batch_size, shuffle=False)
     print(f"Using full test dataset: {len(dataset)} examples")
 
     # Ensure all models are in evaluation mode
