@@ -29,7 +29,7 @@ force_cpu = False # Force CPU usage (set to True to avoid CUDA/MPS device issues
 use_mps = False # Device toggle: enable MPS explicitly (default False due to missing ops in PyTorch Transformer on MPS)
 
 # Decoding hyperparameters (set here for evaluation)
-decoding_method = 'greedy'  # Use greedy for deterministic, teacher-forcing-like behavior
+decoding_method = 'nucleus'  # Use greedy for deterministic, teacher-forcing-like behavior
 max_length = None           # Length limit for generation (None = no limit)
 beam_size = 4              # Number of beams for beam/nucleus search
 p_nucleus = 0.99            # Nucleus cutoff probability (lower => more diversity)
@@ -69,11 +69,18 @@ def main():
                     total_parallel = props.multi_processor_count * props.max_threads_per_multi_processor
                     print(f"    - Total parallel threads: {total_parallel:,}")
                 
-                # Auto-adjust batch size based on GPU memory
+                # Auto-adjust batch size based on GPU memory and decoding method
                 if min_gpu_memory < 60:  # Less than 60GB (e.g., A100 40GB)
-                    effective_batch_size = 32
-                    print(f"\n⚠️  Detected GPUs with {min_gpu_memory:.1f} GB memory (< 60 GB)")
-                    print(f"   Auto-adjusting batch_size: {batch_size} → {effective_batch_size}")
+                    if decoding_method in ['beam', 'nucleus']:
+                        # Beam/nucleus uses beam_size * batch_size memory, so reduce more
+                        effective_batch_size = 16
+                        print(f"\n⚠️  Detected GPUs with {min_gpu_memory:.1f} GB memory (< 60 GB)")
+                        print(f"   Using {decoding_method} decoding with beam_size={beam_size}")
+                        print(f"   Auto-adjusting batch_size: {batch_size} → {effective_batch_size} (accounts for {beam_size}x beam expansion)")
+                    else:
+                        effective_batch_size = 32
+                        print(f"\n⚠️  Detected GPUs with {min_gpu_memory:.1f} GB memory (< 60 GB)")
+                        print(f"   Auto-adjusting batch_size: {batch_size} → {effective_batch_size}")
                 
                 if num_gpus > 1:
                     use_data_parallel = True
