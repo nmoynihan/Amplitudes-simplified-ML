@@ -82,15 +82,14 @@ def main():
                         print(f"\n⚠️  Detected GPUs with {min_gpu_memory:.1f} GB memory (< 60 GB)")
                         print(f"   Auto-adjusting batch_size: {batch_size} → {effective_batch_size}")
                 
-                # Beam/nucleus search is not thread-safe for multi-GPU parallel processing
-                # Only use multi-GPU for greedy decoding
-                if num_gpus > 1 and decoding_method == 'greedy':
+                # Autoregressive generation is not thread-safe for multi-GPU parallel processing
+                # We'll use sequential processing on multiple GPUs for all decoding methods
+                if num_gpus > 1:
                     use_data_parallel = True
-                    print(f"\nWill distribute dataset entries across {num_gpus} GPUs using DataParallel")
-                    print(f"Each GPU will process {effective_batch_size // num_gpus} examples per batch")
-                elif num_gpus > 1 and decoding_method in ['beam', 'nucleus']:
-                    print(f"\n⚠️  Note: Beam/nucleus search uses single GPU (not thread-safe for parallel processing)")
-                    print(f"   Using GPU 0 only. Batch size: {effective_batch_size}")
+                    print(f"\nWill distribute batches across {num_gpus} GPUs (sequential processing per GPU)")
+                    print(f"Each GPU will process ~{effective_batch_size // num_gpus} examples per batch")
+                    if decoding_method in ['beam', 'nucleus']:
+                        print(f"Note: Using {decoding_method} decoding with beam_size={beam_size}")
             else:
                 raise RuntimeError("CUDA not available")
         except (RuntimeError, AssertionError) as e:
@@ -133,13 +132,15 @@ def main():
                 model_gpu.eval()
                 models_per_gpu.append(model_gpu)
         print(f"Model replicas created on GPUs: {list(range(num_gpus))}")
-        print(f"Strategy: Each batch will be split across GPUs, processed in parallel")
+        print(f"Strategy: Each batch will be split across GPUs, processed sequentially")
+        print(f"  Note: Autoregressive generation is not thread-safe, so we process")
+        print(f"  chunks sequentially on different GPUs to utilize all hardware.")
         print(f"  Example: batch_size={effective_batch_size} with {num_gpus} GPUs")
         base = effective_batch_size // num_gpus
         rem = effective_batch_size % num_gpus
         splits = [base + (1 if i < rem else 0) for i in range(num_gpus)]
         for i, s in enumerate(splits):
-            print(f"    GPU {i}: {s} examples")
+            print(f"    GPU {i}: {s} examples per batch")
         device = 'cuda'
     else:
         model.to(preferred_device)
@@ -220,9 +221,9 @@ def main():
                 print(f"Processing batch {batch_count}...")
             sys.stdout.flush()  # Force output to display immediately
         
-        # Monitor GPU usage every 10 batches to confirm parallelization
+        # Monitor GPU usage every 10 batches
         if preferred_device == 'cuda' and use_data_parallel and batch_count % 10 == 0:
-            print(f"\n  [Batch {batch_count}] GPU Usage Check (before processing):")
+            print(f"\n  [Batch {batch_count}] GPU Memory Usage:")
             for i in range(num_gpus):
                 allocated = torch.cuda.memory_allocated(i) / (1024**3)
                 reserved = torch.cuda.memory_reserved(i) / (1024**3)
@@ -233,8 +234,10 @@ def main():
         # Generate predictions
         with torch.no_grad():
             if use_data_parallel:
-                # Multi-GPU: Split batch across GPUs and process in parallel using threading
-                import threading
+                # Multi-GPU: Split batch across GPUs and process SEQUENTIALLY
+                # Note: Autoregressive generation is not thread-safe with CUDA due to
+                # dynamic tensor creation in loops. We process chunks sequentially but
+                # on different GPUs to utilize all available hardware.
                 
                 src_full = batch['input']
                 tgt_full = batch['target']
@@ -254,63 +257,38 @@ def main():
                 tgt_splits = torch.split(tgt_full, split_sizes, dim=0)
                 
                 # Storage for results from each GPU
-                results = [None] * num_gpus
-                beams_results = [None] * num_gpus
-                errors = [None] * num_gpus
+                results = []
+                beams_results = []
                 
-                def process_on_gpu(gpu_id, src_chunk, tgt_chunk):
-                    """Process a chunk of the batch on a specific GPU"""
-                    try:
+                # Process each chunk sequentially on its designated GPU
+                for gpu_id in range(num_gpus):
+                    if split_sizes[gpu_id] > 0:  # Only process if this GPU has data
+                        src_chunk = src_splits[gpu_id]
                         src_gpu = src_chunk.to(f'cuda:{gpu_id}')
                         model_gpu = models_per_gpu[gpu_id]
                         
-                        gen_gpu, beams_gpu = decode_with_model(
-                            model_gpu, src_gpu, max_length=decode_len,
-                            decoding_method=decoding_method,
-                            beam_size=beam_size,
-                            p_nucleus=p_nucleus,
-                            temperature_nucleus=temperature_nucleus,
-                            bos_token=2, eos_token=3, pad_token=0
-                        )
+                        # Set CUDA device context for this GPU
+                        with torch.cuda.device(f'cuda:{gpu_id}'):
+                            gen_gpu, beams_gpu = decode_with_model(
+                                model_gpu, src_gpu, max_length=decode_len,
+                                decoding_method=decoding_method,
+                                beam_size=beam_size,
+                                p_nucleus=p_nucleus,
+                                temperature_nucleus=temperature_nucleus,
+                                bos_token=2, eos_token=3, pad_token=0
+                            )
                         
-                        results[gpu_id] = gen_gpu.cpu()
-                        beams_results[gpu_id] = beams_gpu
+                        results.append(gen_gpu.cpu())
+                        beams_results.append(beams_gpu)
                         
                         # Clean up GPU tensors
                         del src_gpu, gen_gpu
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                    except Exception as e:
-                        errors[gpu_id] = e
-                        print(f"Error in GPU {gpu_id}: {e}")
-                        import traceback
-                        traceback.print_exc()
-                
-                # Launch parallel processing on each GPU
-                threads = []
-                for gpu_id in range(num_gpus):
-                    if split_sizes[gpu_id] > 0:  # Only process if this GPU has data
-                        thread = threading.Thread(
-                            target=process_on_gpu,
-                            args=(gpu_id, src_splits[gpu_id], tgt_splits[gpu_id])
-                        )
-                        thread.start()
-                        threads.append(thread)
-                
-                # Wait for all GPUs to finish
-                for thread in threads:
-                    thread.join()
-                
-                # Check for errors in any thread
-                if any(e is not None for e in errors):
-                    error_msgs = [f"GPU {i}: {e}" for i, e in enumerate(errors) if e is not None]
-                    raise RuntimeError(f"Errors occurred during parallel processing:\n" + "\n".join(error_msgs))
+                        torch.cuda.empty_cache()
                 
                 # Combine results from all GPUs
-                valid_results = [r for r in results if r is not None]
-                if len(valid_results) == 0:
+                if len(results) == 0:
                     raise RuntimeError("No valid results from any GPU")
-                gen = torch.cat(valid_results, dim=0)
+                gen = torch.cat(results, dim=0)
                 
                 # Combine beams if they exist
                 if all(b is not None for b in beams_results):
@@ -342,15 +320,7 @@ def main():
                     bos_token=2, eos_token=3, pad_token=0
                 )
         
-        # Monitor GPU usage after processing to confirm all GPUs were used
-        if preferred_device == 'cuda' and use_data_parallel and batch_count % 10 == 0:
-            print(f"  [Batch {batch_count}] GPU Usage Check (after processing):")
-            for i in range(num_gpus):
-                allocated = torch.cuda.memory_allocated(i) / (1024**3)
-                reserved = torch.cuda.memory_reserved(i) / (1024**3)
-                print(f"    GPU {i}: Allocated={allocated:.2f} GB, Reserved={reserved:.2f} GB")
-            print()
-            sys.stdout.flush()
+
         
         # Clear cache periodically to prevent fragmentation
         if preferred_device == 'cuda':
