@@ -23,13 +23,13 @@ csv_file = os.path.join('data/', f'relabM_alt_{N_particles}pt_tok.csv')  # Path 
 #csv_file = os.path.join('data/_old', f'ampl00111_tok.csv') # Path the Feyman rues data
 batch_size = 64  # Will be auto-adjusted for smaller GPUs (< 60GB will use batch_size=32)
 max_datasize = None  # Max number of examples to evaluate (None = use whole file)
-num_print = 0  # Disable example printing for cleaner output
+num_print = 2  # Number of examples to print
 inference_only = False  # Set to True for pure inference (ignore simple column), False for evaluation
 force_cpu = False # Force CPU usage (set to True to avoid CUDA/MPS device issues, good for local testing)
 use_mps = False # Device toggle: enable MPS explicitly (default False due to missing ops in PyTorch Transformer on MPS)
 
 # Decoding hyperparameters (set here for evaluation)
-decoding_method = 'nucleus'  # Use greedy for deterministic, teacher-forcing-like behavior
+decoding_method = 'greedy'  # Use greedy for deterministic, teacher-forcing-like behavior
 max_length = None           # Length limit for generation (None = no limit)
 beam_size = 4              # Number of beams for beam/nucleus search
 p_nucleus = 0.99            # Nucleus cutoff probability (lower => more diversity)
