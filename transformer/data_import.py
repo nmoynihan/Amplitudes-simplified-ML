@@ -8,16 +8,31 @@ from torch.utils.data import Dataset, DataLoader
 class TransformerDataset(Dataset):
     def __init__(self, csv_file, max_length=None):
         """
-        Dataset for transformer training from CSV file
+        Dataset for transformer training from CSV file(s)
         
         Args:
-            csv_file: Path to CSV file with 'simple' and 'scrambled' columns
+            csv_file: Path to CSV file with 'simple' and 'scrambled' columns,
+                     or list of paths to multiple CSV files (will be combined and shuffled)
             max_length: Maximum sequence length for padding (if None, uses max length in dataset)
         """
-        self.data = pd.read_csv(csv_file)
         self.BOS_TOKEN = 2
         self.EOS_TOKEN = 3
         self.PAD_TOKEN = 0
+        
+        # Handle both single file and list of files
+        if isinstance(csv_file, list):
+            # Load and combine multiple CSV files
+            dfs = []
+            for file in csv_file:
+                df = pd.read_csv(file)
+                dfs.append(df)
+            self.data = pd.concat(dfs, ignore_index=True)
+            # Shuffle the combined data
+            self.data = self.data.sample(frac=1.0, random_state=42).reset_index(drop=True)
+            print(f"Loaded and shuffled {len(csv_file)} CSV files with {len(self.data)} total examples")
+        else:
+            # Single file
+            self.data = pd.read_csv(csv_file)
         
         # Parse string representations of lists into actual lists
         self.simple_sequences = []
@@ -75,14 +90,33 @@ def load_and_prepare_data(csv_file, batch_size=32, max_length=None, train_split=
     Load data and create train/validation splits
     
     Args:
-        csv_file: Path to CSV file
+        csv_file: Path to CSV file (or list of paths to multiple CSV files)
         batch_size: Batch size for training
         max_length: Maximum sequence length
         train_split: Fraction of data to use for training
     
     Returns:
-        train_loader, val_loader, dataset_info
+        train_loader, val_loader
     """
+    # Normalize paths to handle both 'data/file.csv' and 'folder/file.csv' formats
+    data_dir = os.path.join(os.getcwd(), 'data')
+    
+    if isinstance(csv_file, list):
+        # Multiple files: normalize each path
+        normalized_files = []
+        for file in csv_file:
+            if not os.path.isabs(file):
+                # Relative path: join with data directory
+                full_path = os.path.join(data_dir, file)
+            else:
+                full_path = file
+            normalized_files.append(full_path)
+        csv_file = normalized_files
+    else:
+        # Single file: normalize path
+        if not os.path.isabs(csv_file):
+            csv_file = os.path.join(data_dir, csv_file)
+    
     # Load full dataset
     full_dataset = TransformerDataset(csv_file, max_length)
     

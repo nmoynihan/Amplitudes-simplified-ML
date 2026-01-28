@@ -18,9 +18,14 @@ from Tokenizer import ScatteringAmplitudeTokenizer, numerically_equivalent
 # Settings
 N_particles = 5 
 model_path = os.path.join('models', f'model_{N_particles}pt.pt')  # Path to the trained model
-#csv_file = os.path.join('data/test_set', f'gi_{N_particles}pt_tok.csv')  # Path to the test dataset
-csv_file = os.path.join('data/', f'relabM_alt_{N_particles}pt_tok.csv')  # Path to Paolo's data
-#csv_file = os.path.join('data/_old', f'ampl00111_tok.csv') # Path the Feyman rues data
+# csv_file can be a single string or a list of strings for multiple files
+# Examples:
+#   Single file: csv_file = 'test_set/gi_5pt_tok.csv'
+#   Multiple files: csv_file = ['expanded_data/test_data/gi_5pt_tok_python.csv', 
+#                               'expanded_data/test_data/gi_5pt_tok_mathematica.csv']
+csv_file = f'relabM_alt_{N_particles}pt_tok.csv'  # Paths are relative to data/ directory
+#csv_file = f'test_set/gi_{N_particles}pt_tok.csv'  # Path to the test dataset
+#csv_file = f'_old/ampl00111_tok.csv' # Path the Feynman rules data
 batch_size = 64  # Will be auto-adjusted for smaller GPUs (< 60GB will use batch_size=32)
 max_datasize = None  # Max number of examples to evaluate (None = use whole file)
 num_print = 2  # Number of examples to print
@@ -169,7 +174,27 @@ def main():
     from data_import import TransformerDataset
     from torch.utils.data import DataLoader, Subset
     
-    dataset = TransformerDataset(csv_file, max_length=None)
+    # Normalize paths - handle both single file and list of files
+    data_dir = os.path.join(os.getcwd(), 'data')
+    
+    if isinstance(csv_file, list):
+        # Multiple files: normalize each path
+        normalized_files = []
+        for file in csv_file:
+            if not os.path.isabs(file):
+                full_path = os.path.join(data_dir, file)
+            else:
+                full_path = file
+            normalized_files.append(full_path)
+        csv_file_normalized = normalized_files
+    else:
+        # Single file: normalize path
+        if not os.path.isabs(csv_file):
+            csv_file_normalized = os.path.join(data_dir, csv_file)
+        else:
+            csv_file_normalized = csv_file
+    
+    dataset = TransformerDataset(csv_file_normalized, max_length=None)
     
     # Apply max_datasize limit if specified
     if max_datasize is not None and max_datasize < len(dataset):

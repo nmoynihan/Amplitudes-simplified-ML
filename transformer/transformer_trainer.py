@@ -24,13 +24,13 @@ if device.type == 'cpu':
     print(f"Using {n_threads} CPU threads for PyTorch.")
 
 # Specify the run hyperparameters
-filename = 'gi_4pt_tok.csv'
+filename = ['expanded_data/train_data/gi_5pt_tok_python.csv', 'expanded_data/train_data/gi_5pt_tok_mathematica.csv'] #'gi_4pt_tok.csv'
 training_hyperparams = {
     'n_epochs': 200,
-    'batch_size': 8,
+    'batch_size': 16,
     'train_split': 0.8,
-    'learning_rate': 5e-5,
-    'weight_decay': 1e-6,
+    'learning_rate': 1e-4,
+    'weight_decay': 1e-5,
     'early_stopping_patience': 10,  # Stop if no improvement for 10 epochs
     'early_stopping_min_delta': 1e-4  # Minimum change to qualify as improvement
 }
@@ -38,50 +38,20 @@ model_hyperparams = {
     'embedding_dim': 512,
     'n_heads': 4,
     'n_enc_layers': 5,
-    'n_dec_layers': 6,
-    'dropout': 0.005,
+    'n_dec_layers': 5,
+    'dropout': 0.025,
     'sinusoidal_embeddings': True,
     'head_ff_dim': 1024,  # 4 * embedding_dim (4 * 64 = 256)
     'device': device
 }
 
-# Define the vocabulary
-vocab = {
-    "<PAD>": 0,
-    "<UNK>": 1,
-    "<BOS>": 2,
-    "<EOS>": 3,
-    "+": 4,
-    "-": 5,
-    "*": 6,
-    "/": 7,
-    "^": 8,
-    "(": 9,
-    ")": 10,
-    "0:": 11,
-    "1:": 12,
-    "2:": 13,
-    "3:": 14,
-    "4:": 15,
-    "5:": 16,
-    "6:": 17,
-    "7:": 18,
-    "8:": 19,
-    "9:": 20,
-    "10:": 21,
-    "·": 22, # dot operator.
-    "Tr": 23,
-    "u-": 24,  # unary minus
-    "M": 25,  # mass. Probably best not used!
-}
-vocab_size = 58 ###len(vocab.keys())
+# Hardcode the vocab size (use what specified in data_generation/ scripts)
+vocab_size = 58 
 
 # Load data
-csv_file = os.getcwd()+'/data/'+filename
-
 # Set up the dataloaders
 train_loader, val_loader = load_and_prepare_data(
-    csv_file, 
+    filename, 
     batch_size=training_hyperparams['batch_size'], 
     max_length=None, 
     train_split=training_hyperparams['train_split']

@@ -265,15 +265,38 @@ def main():
     print(f"Model loaded from {model_path}")
     
     # Load test dataset
-    csv_file = os.path.join('data/eval_tuning_set', f'gi_{N_particles}pt_tok.csv')
-    if not os.path.exists(csv_file):
-        print(f"Error: Test dataset not found at {csv_file}")
-        sys.exit(1)
+    csv_file = f'eval_tuning_set/gi_{N_particles}pt_tok.csv'
     
     from data_import import TransformerDataset
     from torch.utils.data import DataLoader, Subset
     
-    dataset = TransformerDataset(csv_file, max_length=None)
+    # Normalize paths using the same logic as load_and_prepare_data
+    data_dir = os.path.join(os.getcwd(), 'data')
+    
+    if isinstance(csv_file, list):
+        # Multiple files: normalize each path
+        normalized_files = []
+        for file in csv_file:
+            if not os.path.isabs(file):
+                full_path = os.path.join(data_dir, file)
+            else:
+                full_path = file
+            if not os.path.exists(full_path):
+                print(f"Error: Dataset file not found at {full_path}")
+                sys.exit(1)
+            normalized_files.append(full_path)
+        csv_file_normalized = normalized_files
+    else:
+        # Single file: normalize path
+        if not os.path.isabs(csv_file):
+            csv_file_normalized = os.path.join(data_dir, csv_file)
+        else:
+            csv_file_normalized = csv_file
+        if not os.path.exists(csv_file_normalized):
+            print(f"Error: Test dataset not found at {csv_file_normalized}")
+            sys.exit(1)
+    
+    dataset = TransformerDataset(csv_file_normalized, max_length=None)
     
     # Limit dataset size for faster optimization
     if max_datasize is not None and max_datasize < len(dataset):
