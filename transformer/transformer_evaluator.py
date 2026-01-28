@@ -18,11 +18,6 @@ from Tokenizer import ScatteringAmplitudeTokenizer, numerically_equivalent
 # Settings
 N_particles = 5 
 model_path = os.path.join('models', f'model_{N_particles}pt.pt')  # Path to the trained model
-# csv_file can be a single string or a list of strings for multiple files
-# Examples:
-#   Single file: csv_file = 'test_set/gi_5pt_tok.csv'
-#   Multiple files: csv_file = ['expanded_data/test_data/gi_5pt_tok_python.csv', 
-#                               'expanded_data/test_data/gi_5pt_tok_mathematica.csv']
 csv_file = f'relabM_alt_{N_particles}pt_tok.csv'  # Paths are relative to data/ directory
 #csv_file = f'test_set/gi_{N_particles}pt_tok.csv'  # Path to the test dataset
 #csv_file = f'_old/ampl00111_tok.csv' # Path the Feynman rules data
