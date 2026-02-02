@@ -17,11 +17,12 @@ from Tokenizer import ScatteringAmplitudeTokenizer, numerically_equivalent
 
 # Settings
 N_particles = 5 
-model_path = os.path.join('models', f'model_{N_particles}pt.pt')  # Path to the trained model
-csv_file = f'relabM_alt_{N_particles}pt_tok.csv'  # Paths are relative to data/ directory
+model_path = os.path.join('models', 'default_run/best_model.pt')  # Path to the trained model
+csv_file = ['expanded_data/test_data/gi_5pt_tok_python.csv', 'expanded_data/test_data/gi_5pt_tok_mathematica.csv'] 
+#csv_file = f'relabM_alt_{N_particles}pt_tok.csv'  # Paths are relative to data/ directory
 #csv_file = f'test_set/gi_{N_particles}pt_tok.csv'  # Path to the test dataset
 #csv_file = f'_old/ampl00111_tok.csv' # Path the Feynman rules data
-batch_size = 64  # Will be auto-adjusted for smaller GPUs (< 60GB will use batch_size=32)
+batch_size = 16  # Will be auto-adjusted for smaller GPUs (< 60GB will use batch_size=32)
 max_datasize = None  # Max number of examples to evaluate (None = use whole file)
 num_print = 2  # Number of examples to print
 inference_only = False  # Set to True for pure inference (ignore simple column), False for evaluation
