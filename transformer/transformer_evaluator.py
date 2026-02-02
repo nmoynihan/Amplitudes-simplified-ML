@@ -73,12 +73,12 @@ def main():
                 if min_gpu_memory < 60:  # Less than 60GB (e.g., A100 40GB)
                     if decoding_method in ['beam', 'nucleus']:
                         # Beam/nucleus uses beam_size * batch_size memory, so reduce more
-                        effective_batch_size = 16
+                        effective_batch_size = 8  # Reduced from 16 for better memory safety
                         print(f"\n⚠️  Detected GPUs with {min_gpu_memory:.1f} GB memory (< 60 GB)")
                         print(f"   Using {decoding_method} decoding with beam_size={beam_size}")
                         print(f"   Auto-adjusting batch_size: {batch_size} → {effective_batch_size} (accounts for {beam_size}x beam expansion)")
                     else:
-                        effective_batch_size = 32
+                        effective_batch_size = 16  # Reduced from 32 for greedy decoding
                         print(f"\n⚠️  Detected GPUs with {min_gpu_memory:.1f} GB memory (< 60 GB)")
                         print(f"   Auto-adjusting batch_size: {batch_size} → {effective_batch_size}")
                 
@@ -198,6 +198,19 @@ def main():
     
     data_loader = DataLoader(dataset, batch_size=effective_batch_size, shuffle=False)
     print(f"Using full test dataset: {len(dataset)} examples")
+    
+    # Print memory info before starting
+    if preferred_device == 'cuda':
+        print(f"\n{'='*70}")
+        print(f"INITIAL MEMORY STATUS")
+        for i in range(num_gpus if num_gpus > 0 else 1):
+            allocated = torch.cuda.memory_allocated(i) / (1024**3)
+            reserved = torch.cuda.memory_reserved(i) / (1024**3)
+            props = torch.cuda.get_device_properties(i)
+            total = props.total_memory / (1024**3)
+            free = total - allocated
+            print(f"  GPU {i}: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved, {free:.2f} GB free, {total:.2f} GB total")
+        print(f"{'='*70}")
 
     # Ensure all models are in evaluation mode
     if use_data_parallel:
@@ -342,14 +355,24 @@ def main():
         
 
         
-        # Clear cache periodically to prevent fragmentation
+        # Clear cache more aggressively to prevent fragmentation and OOM
         if preferred_device == 'cuda':
-            if batch_count % 10 == 0:
+            # Clear every 5 batches instead of 10 for better memory management
+            if batch_count % 5 == 0:
                 if use_data_parallel:
                     for i in range(num_gpus):
                         torch.cuda.empty_cache()
                 else:
                     torch.cuda.empty_cache()
+                
+                # Print memory status periodically
+                if batch_count % 20 == 0:
+                    for i in range(num_gpus if num_gpus > 0 else 1):
+                        allocated = torch.cuda.memory_allocated(i) / (1024**3)
+                        reserved = torch.cuda.memory_reserved(i) / (1024**3)
+                        total = torch.cuda.get_device_properties(i).total_memory / (1024**3)
+                        free = total - allocated
+                        print(f"    GPU {i} memory: {allocated:.2f}/{total:.2f} GB ({free:.2f} GB free)")
         
         gen = gen.cpu().numpy()
         tgt = tgt.cpu().numpy()
