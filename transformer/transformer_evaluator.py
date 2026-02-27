@@ -13,24 +13,24 @@ from transformer_functions import TransformerRegressor, load_transformer_model, 
 
 # Add data_generation to path for imports
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'data_generation'))
-from Tokenizer import ScatteringAmplitudeTokenizer, numerically_equivalent
+from Tokenizer import ScatteringAmplitudeTokenizer
 
 # Settings
 N_particles = 5 
-model_path = os.path.join('models', 'default_run/best_model.pt')  # Path to the trained model
+model_path = os.path.join('models', 'best_model.pt')  # Path to the trained model
 csv_file = ['expanded_data/test_data/gi_5pt_tok_python.csv', 'expanded_data/test_data/gi_5pt_tok_mathematica.csv'] 
 #csv_file = f'relabM_alt_{N_particles}pt_tok.csv'  # Paths are relative to data/ directory
 #csv_file = f'test_set/gi_{N_particles}pt_tok.csv'  # Path to the test dataset
 #csv_file = f'_old/ampl00111_tok.csv' # Path the Feynman rules data
 batch_size = 16  # Will be auto-adjusted for smaller GPUs (< 60GB will use batch_size=32)
-max_datasize = None  # Max number of examples to evaluate (None = use whole file)
+max_datasize = 4 #None  # Max number of examples to evaluate (None = use whole file)
 num_print = 2  # Number of examples to print
 inference_only = False  # Set to True for pure inference (ignore simple column), False for evaluation
 force_cpu = False # Force CPU usage (set to True to avoid CUDA/MPS device issues, good for local testing)
 use_mps = False # Device toggle: enable MPS explicitly (default False due to missing ops in PyTorch Transformer on MPS)
 
 # Decoding hyperparameters (set here for evaluation)
-decoding_method = 'greedy'  # Use greedy for deterministic, teacher-forcing-like behavior
+decoding_method = 'nucleus'  # Choose between: 'greedy', 'beam', or 'nucleus'
 max_length = None           # Length limit for generation (None = no limit)
 beam_size = 4              # Number of beams for beam/nucleus search
 p_nucleus = 0.99            # Nucleus cutoff probability (lower => more diversity)
@@ -165,7 +165,50 @@ def main():
 
     # Initialize tokenizer for numerical equivalence checking
     tokenizer = ScatteringAmplitudeTokenizer(max_particles=8)
-    
+
+    # --- Fix 2+3: Pre-import heavy modules once and pre-generate fixed kinematics ---
+    # numerically_equivalent() was lazily importing gen_data/kinematics on every call
+    # and regenerating the same 3 phase-space points (seed=42 is fixed) each time.
+    # Now we import once and cache the points for the whole evaluation run.
+    import importlib, importlib.util as _iutil
+    _data_gen_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data_generation')
+
+    def _local_import(mod_name):
+        try:
+            return importlib.import_module(mod_name)
+        except ModuleNotFoundError:
+            spec = _iutil.spec_from_file_location(mod_name, os.path.join(_data_gen_dir, f"{mod_name}.py"))
+            mod  = _iutil.module_from_spec(spec)
+            sys.modules[mod_name] = mod
+            spec.loader.exec_module(mod)
+            return mod
+
+    _km_mod = _local_import("kinematics")
+    _gd_mod = _local_import("gen_data")
+
+    _NUM_EQUIV_SAMPLES = 3
+    _NUM_EQUIV_SEED    = 42
+    _NUM_EQUIV_M       = 2.0
+    _precomputed_kinematics = [
+        _km_mod.generate_kinematics(N_particles, M=_NUM_EQUIV_M, seed=_NUM_EQUIV_SEED + i)
+        for i in range(_NUM_EQUIV_SAMPLES)
+    ]
+    print(f"Pre-generated {_NUM_EQUIV_SAMPLES} kinematic phase-space points (N={N_particles}, M={_NUM_EQUIV_M}, seed={_NUM_EQUIV_SEED}).")
+
+    def _num_equiv_fast(a_tokens, b_tokens, tok, tol_abs=1e-12, tol_rel=1e-10):
+        """Fast numerical equivalence check using pre-computed kinematics.
+        Avoids per-call lazy imports and kinematics regeneration."""
+        expr_a = tok.decode_infix(list(a_tokens))
+        expr_b = tok.decode_infix(list(b_tokens))
+        for mom, pol in _precomputed_kinematics:
+            val_a = _gd_mod.eval_infix_numeric(expr_a, mom, pol)
+            val_b = _gd_mod.eval_infix_numeric(expr_b, mom, pol)
+            diff  = abs(val_a - val_b)
+            scale = max(abs(val_a), abs(val_b), 1.0)
+            if not (diff <= tol_abs or diff / scale <= tol_rel):
+                return False
+        return True
+
     # Load full test dataset for both inference and evaluation modes
     from data_import import TransformerDataset
     from torch.utils.data import DataLoader, Subset
@@ -319,10 +362,18 @@ def main():
                         del src_gpu, gen_gpu
                         torch.cuda.empty_cache()
                 
-                # Combine results from all GPUs
+                # Combine results from all GPUs, padding to the same sequence length first.
+                # Different chunks may generate sequences of different lengths (Fix: torch.cat safety).
                 if len(results) == 0:
                     raise RuntimeError("No valid results from any GPU")
-                gen = torch.cat(results, dim=0)
+                max_gen_len = max(r.size(1) for r in results)
+                padded_results = []
+                for r in results:
+                    if r.size(1) < max_gen_len:
+                        pad_cols = torch.zeros(r.size(0), max_gen_len - r.size(1), dtype=r.dtype)
+                        r = torch.cat([r, pad_cols], dim=1)
+                    padded_results.append(r)
+                gen = torch.cat(padded_results, dim=0)
                 
                 # Combine beams if they exist
                 if all(b is not None for b in beams_results):
@@ -389,10 +440,7 @@ def main():
                 if decoding_method == 'greedy':
                     # Check numerical equivalence between input and output
                     try:
-                        is_num_equiv = numerically_equivalent(
-                            tokenizer, src_seq, gen_seq, N_particles,
-                            samples=3, M=2.0, seed=42, return_details=False
-                        )
+                        is_num_equiv = _num_equiv_fast(src_seq, gen_seq, tokenizer)
                         print(f"Predicted: {gen_seq}")
                         print(f"  Numerically equivalent to input: {is_num_equiv}")
                     except Exception as e:
@@ -402,10 +450,7 @@ def main():
                     print(f"Best prediction: {gen_seq}")
                     # Check numerical equivalence for best prediction
                     try:
-                        is_num_equiv = numerically_equivalent(
-                            tokenizer, src_seq, gen_seq, N_particles,
-                            samples=3, M=2.0, seed=42, return_details=False
-                        )
+                        is_num_equiv = _num_equiv_fast(src_seq, gen_seq, tokenizer)
                         print(f"  Numerically equivalent to input: {is_num_equiv}")
                     except Exception as e:
                         print(f"  Numerically equivalent to input: Error - {e}")
@@ -416,10 +461,7 @@ def main():
                             clean_hyp = clean_seq(hyp_seq, pad_token=0, eos_token=3)
                             # Check numerical equivalence for each beam
                             try:
-                                is_num_equiv = numerically_equivalent(
-                                    tokenizer, src_seq, clean_hyp, N_particles,
-                                    samples=3, M=2.0, seed=42, return_details=False
-                                )
+                                is_num_equiv = _num_equiv_fast(src_seq, clean_hyp, tokenizer)
                                 print(f"  Beam {j+1}: {clean_hyp}")
                                 print(f"    Numerically equivalent to input: {is_num_equiv}")
                             except Exception as e:
@@ -477,11 +519,8 @@ def main():
                             tgt_infix = tokenizer.decode_infix(tgt_seq)
                             gen_infix = tokenizer.decode_infix(gen_seq)
                             
-                            # Check numerical equivalence                       
-                            is_numerical_match = numerically_equivalent(
-                                tokenizer, tgt_seq, gen_seq, N_particles, 
-                                samples=3, M=2.0, seed=42, return_details=False
-                            )
+                            # Check numerical equivalence
+                            is_numerical_match = _num_equiv_fast(tgt_seq, gen_seq, tokenizer)
                             
                         except Exception as e:
                             # If detokenization or numerical evaluation fails, mark as malformed
@@ -509,10 +548,7 @@ def main():
                             try:
                                 tgt_infix = tokenizer.decode_infix(tgt_seq)
                                 gen_infix = tokenizer.decode_infix(gen_seq)
-                                is_numerical_match = numerically_equivalent(
-                                    tokenizer, tgt_seq, gen_seq, N_particles, 
-                                    samples=3, M=2.0, seed=42, return_details=False
-                                )
+                                is_numerical_match = _num_equiv_fast(tgt_seq, gen_seq, tokenizer)
                             except Exception as e:
                                 is_malformed = True
                         else:
@@ -520,13 +556,7 @@ def main():
                             for hyp_seq in beam_list:
                                 try:
                                     clean_hyp = clean_seq(hyp_seq, pad_token=0, eos_token=3)
-                                    tgt_infix = tokenizer.decode_infix(tgt_seq)
-                                    hyp_infix = tokenizer.decode_infix(clean_hyp)
-                                    
-                                    if numerically_equivalent(
-                                        tokenizer, tgt_seq, clean_hyp, N_particles, 
-                                        samples=3, M=2.0, seed=42, return_details=False
-                                    ):
+                                    if _num_equiv_fast(tgt_seq, clean_hyp, tokenizer):
                                         is_numerical_match = True
                                         break
                                 except Exception as e:

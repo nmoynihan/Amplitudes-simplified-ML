@@ -192,7 +192,9 @@ class TransformerRegressor(nn.Module):
     
     def generate(self, src, max_length=100, bos_token=2, eos_token=3, pad_token=0):
         """
-        Generate sequences using the trained model
+        Generate sequences using the trained model.
+        Encoder output is cached once and reused every decoding step (Fix 1).
+        Per-sequence early stopping emits pad tokens for finished sequences (Fix 4).
         
         Args:
             src: Source sequence [batch_size, src_seq_len]
@@ -210,23 +212,53 @@ class TransformerRegressor(nn.Module):
         # Ensure source is on correct device
         src = src.to(self.device)
         
-        # Start with BOS token
-        generated = torch.full((batch_size, 1), bos_token, device=self.device, dtype=torch.long)
-        
         with torch.no_grad():
+            # --- Fix 1: Run encoder once and cache memory ---
+            src_key_padding_mask = self.create_padding_mask(src, self.pad_token_id)
+            src_emb = self.src_embedding(src) * math.sqrt(self.embedding_dim)
+            src_emb = self.src_pos_encoding(src_emb)
+            src_emb = self.dropout(src_emb)
+            memory = self.transformer.encoder(src_emb, src_key_padding_mask=src_key_padding_mask)
+            
+            # Start with BOS token
+            generated = torch.full((batch_size, 1), bos_token, device=self.device, dtype=torch.long)
+            
+            # --- Fix 4: Track which sequences have finished ---
+            done = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+            
             for _ in range(max_length - 1):
-                # Forward pass
-                output = self.forward(src, generated)
+                tgt_seq_len = generated.size(1)
+                tgt_mask = self.create_causal_mask(tgt_seq_len).to(self.device)
+                
+                tgt_emb = self.tgt_embedding(generated) * math.sqrt(self.embedding_dim)
+                tgt_emb = self.tgt_pos_encoding(tgt_emb)
+                tgt_emb = self.dropout(tgt_emb)
+                
+                # Decoder only — encoder memory is already computed
+                dec_out = self.transformer.decoder(
+                    tgt_emb, memory,
+                    tgt_mask=tgt_mask,
+                    memory_key_padding_mask=src_key_padding_mask,
+                )
+                output = self.output_projection(dec_out)
                 
                 # Get next token predictions (last position)
                 next_token_logits = output[:, -1, :]  # [batch_size, vocab_size]
                 next_tokens = torch.argmax(next_token_logits, dim=-1, keepdim=True)  # [batch_size, 1]
                 
+                # --- Fix 4: Finished sequences emit pad instead of a real token ---
+                next_tokens = torch.where(
+                    done.unsqueeze(1),
+                    torch.full_like(next_tokens, pad_token),
+                    next_tokens,
+                )
+                
                 # Append to generated sequence
                 generated = torch.cat([generated, next_tokens], dim=1)
                 
-                # Check if all sequences have generated EOS token
-                if (next_tokens.squeeze() == eos_token).all():
+                # Update done mask and check for full completion
+                done = done | (next_tokens.squeeze(1) == eos_token)
+                if done.all():
                     break
         
         return generated
@@ -278,27 +310,30 @@ class TransformerRegressor(nn.Module):
         done = [False for _ in range(batch_size)]
         cur_len = 1
 
+        # --- Fix 1: Run encoder once and cache memory (reused every beam step) ---
+        with torch.no_grad():
+            src_key_padding_mask = self.create_padding_mask(src_rep, pad_token)
+            src_emb = self.src_embedding(src_rep) * math.sqrt(self.embedding_dim)
+            src_emb = self.src_pos_encoding(src_emb)
+            src_emb = self.dropout(src_emb)
+            memory = self.transformer.encoder(src_emb, src_key_padding_mask=src_key_padding_mask)
+
         while cur_len < max_length:
             # Prepare decoder input
             input_ids = generated[:cur_len, :].transpose(0, 1)  # [batch_size * beam_size, cur_len]
             # Decoder expects [batch, seq_len]
             tgt_mask = self.create_causal_mask(cur_len).to(device)
-            # Forward pass
+            # Forward pass — decoder only, encoder memory is already computed
             with torch.no_grad():
-                src_key_padding_mask = self.create_padding_mask(src_rep, pad_token)
                 tgt_key_padding_mask = self.create_padding_mask(input_ids, pad_token)
-                src_emb = self.src_embedding(src_rep) * math.sqrt(self.embedding_dim)
                 tgt_emb = self.tgt_embedding(input_ids) * math.sqrt(self.embedding_dim)
-                src_emb = self.src_pos_encoding(src_emb)
                 tgt_emb = self.tgt_pos_encoding(tgt_emb)
-                src_emb = self.dropout(src_emb)
                 tgt_emb = self.dropout(tgt_emb)
-                output = self.transformer(
-                    src=src_emb,
-                    tgt=tgt_emb,
+                output = self.transformer.decoder(
+                    tgt_emb, memory,
                     tgt_mask=tgt_mask,
-                    src_key_padding_mask=src_key_padding_mask,
-                    tgt_key_padding_mask=tgt_key_padding_mask
+                    tgt_key_padding_mask=tgt_key_padding_mask,
+                    memory_key_padding_mask=src_key_padding_mask,
                 )
                 logits = self.output_projection(output)  # [batch_size * beam_size, cur_len, vocab_size]
                 scores = logits[:, -1, :]  # [batch_size * beam_size, vocab_size]
