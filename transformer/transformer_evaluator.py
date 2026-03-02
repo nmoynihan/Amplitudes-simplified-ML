@@ -23,14 +23,14 @@ csv_file = ['expanded_data/test_data/gi_5pt_tok_python.csv', 'expanded_data/test
 #csv_file = f'test_set/gi_{N_particles}pt_tok.csv'  # Path to the test dataset
 #csv_file = f'_old/ampl00111_tok.csv' # Path the Feynman rules data
 batch_size = 16  # Will be auto-adjusted for smaller GPUs (< 60GB will use batch_size=32)
-max_datasize = 4 #None  # Max number of examples to evaluate (None = use whole file)
+max_datasize = None  # Max number of examples to evaluate (None = use whole file)
 num_print = 2  # Number of examples to print
 inference_only = False  # Set to True for pure inference (ignore simple column), False for evaluation
 force_cpu = False # Force CPU usage (set to True to avoid CUDA/MPS device issues, good for local testing)
 use_mps = False # Device toggle: enable MPS explicitly (default False due to missing ops in PyTorch Transformer on MPS)
 
 # Decoding hyperparameters (set here for evaluation)
-decoding_method = 'nucleus'  # Choose between: 'greedy', 'beam', or 'nucleus'
+decoding_method = 'greedy'  # Choose between: 'greedy', 'beam', or 'nucleus'
 max_length = None           # Length limit for generation (None = no limit)
 beam_size = 4              # Number of beams for beam/nucleus search
 p_nucleus = 0.99            # Nucleus cutoff probability (lower => more diversity)
