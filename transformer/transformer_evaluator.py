@@ -251,9 +251,9 @@ def main():
             allocated = torch.cuda.memory_allocated(i) / (1024**3)
             reserved = torch.cuda.memory_reserved(i) / (1024**3)
             props = torch.cuda.get_device_properties(i)
-            total = props.total_memory / (1024**3)
-            free = total - allocated
-            print(f"  GPU {i}: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved, {free:.2f} GB free, {total:.2f} GB total")
+            gpu_total_mem = props.total_memory / (1024**3)
+            free = gpu_total_mem - allocated
+            print(f"  GPU {i}: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved, {free:.2f} GB free, {gpu_total_mem:.2f} GB total")
         print(f"{'='*70}")
 
     # Ensure all models are in evaluation mode
@@ -422,9 +422,9 @@ def main():
                     for i in range(num_gpus if num_gpus > 0 else 1):
                         allocated = torch.cuda.memory_allocated(i) / (1024**3)
                         reserved = torch.cuda.memory_reserved(i) / (1024**3)
-                        total = torch.cuda.get_device_properties(i).total_memory / (1024**3)
-                        free = total - allocated
-                        print(f"    GPU {i} memory: {allocated:.2f}/{total:.2f} GB ({free:.2f} GB free)")
+                        gpu_total_mem = torch.cuda.get_device_properties(i).total_memory / (1024**3)
+                        free = gpu_total_mem - allocated
+                        print(f"    GPU {i} memory: {allocated:.2f}/{gpu_total_mem:.2f} GB ({free:.2f} GB free)")
         
         gen = gen.cpu().numpy()
         tgt = tgt.cpu().numpy()
