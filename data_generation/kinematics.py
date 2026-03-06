@@ -13,7 +13,13 @@
 from __future__ import annotations
 import numpy as np
 from numpy.linalg import norm
-import random, time, colorama
+import random, time
+try:
+    import colorama
+    _HAS_COLORAMA = True
+except ImportError:
+    colorama = None
+    _HAS_COLORAMA = False
 
 # ╭──────────────────────────────────────────────────────────────────╮
 # │  Helpers                                                        │
@@ -119,7 +125,8 @@ def generate_kinematics(N: int,
 # │  Extended self‑tests (only if run as script)                     │
 # ╰──────────────────────────────────────────────────────────────────╯
 if __name__ == "__main__":
-    colorama.init(autoreset=True)
+    if _HAS_COLORAMA:
+        colorama.init(autoreset=True)
     np.set_printoptions(precision=6, suppress=True)
 
     def check_point(N, M):
@@ -134,7 +141,8 @@ if __name__ == "__main__":
         # momentum conservation
         tot = mom.sum(axis=0)
         if not np.allclose(tot, 0.0, atol=1e-10):
-            print(colorama.Fore.RED + f" Error: total momentum = {tot}")
+            _red = colorama.Fore.RED if _HAS_COLORAMA else ""
+            print(_red + f" Error: total momentum = {tot}")
         assert np.allclose(tot, 0.0, atol=1e-10)
 
         # polarisation checks
@@ -150,4 +158,5 @@ if __name__ == "__main__":
         check_point(N=6, M=2.3)
         check_point(N=7, M=5)
     dt = time.perf_counter() - t0
-    print(colorama.Fore.GREEN + f"all kinematic tests passed ({dt:.2f}s)")
+    _green = colorama.Fore.GREEN if _HAS_COLORAMA else ""
+    print(_green + f"all kinematic tests passed ({dt:.2f}s)")
