@@ -104,6 +104,8 @@ class TransformerRegressor(nn.Module):
             self.tgt_pos_encoding = LearnedPositionalEncoding(embedding_dim, max_seq_len)
         
         # Transformer
+        # enable_nested_tensor=False suppresses the prototype nested-tensor warning
+        # triggered when src_key_padding_mask is passed to the encoder.
         self.transformer = nn.Transformer(
             d_model=embedding_dim,
             nhead=n_heads,
@@ -111,7 +113,8 @@ class TransformerRegressor(nn.Module):
             num_decoder_layers=n_dec_layers,
             dim_feedforward=self.head_ff_dim,
             dropout=dropout,
-            batch_first=True  # batch_size, seq_len, embedding_dim
+            batch_first=True,  # batch_size, seq_len, embedding_dim
+            enable_nested_tensor=False,
         )
         
         # Output projection
