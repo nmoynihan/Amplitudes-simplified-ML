@@ -71,7 +71,7 @@ temperature_nucleus = 1.0     # Base temperature for nucleus sampling
 # Search budget
 # NOTE: automatically overridden to 1 for greedy and beam (both deterministic).
 #       For nucleus, the temperature is varied linearly across attempts.
-number_of_attempts = 1000
+number_of_attempts = 10000
 
 # Temperature schedule for nucleus across attempts
 # Attempt 0 uses temp_min (focused), attempt number_of_attempts-1 uses temp_max (exploratory).
@@ -116,30 +116,34 @@ def main():
     # ------------------------------------------------------------------
     # 1.  Resolve device
     # ------------------------------------------------------------------
+    print(f"PyTorch version  : {torch.__version__}", flush=True)
+    print(f"CUDA compiled ver: {torch.version.cuda}", flush=True)
+    print(f"CUDA device count: {torch.cuda.device_count()}", flush=True)
+
     if force_cpu:
         device = 'cpu'
-        print("Forcing CPU device.")
+        print("Forcing CPU device.", flush=True)
     else:
         try:
             if torch.cuda.is_available():
                 torch.zeros(1).cuda()   # smoke test
                 device = 'cuda'
                 props = torch.cuda.get_device_properties(0)
-                print(f"Using CUDA: {props.name} ({props.total_memory / 1024**3:.1f} GB)")
+                print(f"Using CUDA: {props.name} ({props.total_memory / 1024**3:.1f} GB)", flush=True)
             else:
                 raise RuntimeError("CUDA not available")
         except (RuntimeError, AssertionError) as e:
-            print(f"CUDA not working: {e}")
+            print(f"CUDA not working: {e}", flush=True)
             try:
                 if use_mps and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
                     torch.zeros(1).to('mps')   # smoke test
                     device = 'mps'
-                    print("Using MPS.")
+                    print("Using MPS.", flush=True)
                 else:
                     raise RuntimeError("MPS not available or disabled")
             except (RuntimeError, AssertionError):
                 device = 'cpu'
-                print("Using CPU.")
+                print("Using CPU.", flush=True)
 
     # ------------------------------------------------------------------
     # 2.  Load model
@@ -149,7 +153,7 @@ def main():
     model.to(device)
     model.device = device
     model.eval()
-    print(f"Model loaded from {model_path} on {device}.")
+    print(f"Model loaded from {model_path} on {device}.", flush=True)
 
     # ------------------------------------------------------------------
     # 3.  Validate / override number_of_attempts for deterministic methods
