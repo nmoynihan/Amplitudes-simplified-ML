@@ -106,7 +106,8 @@ class TransformerRegressor(nn.Module):
         # Transformer
         # enable_nested_tensor=False suppresses the prototype nested-tensor warning
         # triggered when src_key_padding_mask is passed to the encoder.
-        self.transformer = nn.Transformer(
+        # The kwarg was added in PyTorch 1.13; skip it on older versions.
+        _transformer_kwargs = dict(
             d_model=embedding_dim,
             nhead=n_heads,
             num_encoder_layers=n_enc_layers,
@@ -114,8 +115,11 @@ class TransformerRegressor(nn.Module):
             dim_feedforward=self.head_ff_dim,
             dropout=dropout,
             batch_first=True,  # batch_size, seq_len, embedding_dim
-            enable_nested_tensor=False,
         )
+        import inspect
+        if "enable_nested_tensor" in inspect.signature(nn.Transformer.__init__).parameters:
+            _transformer_kwargs["enable_nested_tensor"] = False
+        self.transformer = nn.Transformer(**_transformer_kwargs)
         
         # Output projection
         self.output_projection = nn.Linear(embedding_dim, vocab_size)

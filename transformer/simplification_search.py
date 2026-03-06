@@ -54,7 +54,7 @@ N_particles = 5  # Number of particles in the expressions
 model_path = os.path.join('models', 'best_model.pt')  # Relative to working directory
 
 # Input data (relative to data/ directory)
-csv_file = 'expanded_data/test_data/gi_5pt_tok_python.csv'
+csv_file = '_old/ampl00111_tok.csv'
 input_column = 'scrambled'   # Column name containing the expressions to simplify
 
 # Output file (relative to data/ directory)
@@ -77,7 +77,7 @@ temp_min = 0.5
 temp_max = 2.5
 
 # Dataset limit
-max_datasize = None   # Set to an integer to cap the number of expressions processed
+max_datasize = None # Set to an integer to cap the number of expressions processed
 
 # Device
 force_cpu = False  # True → always use CPU (useful for quick local tests)
