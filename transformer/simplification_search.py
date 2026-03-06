@@ -51,7 +51,9 @@ from Tokenizer import ScatteringAmplitudeTokenizer
 N_particles = 5  # Number of particles in the expressions
 
 # Model
-model_path = os.path.join('models', 'best_model.pt')  # Relative to working directory
+# Path is relative to the repo root (one level up from this script's directory)
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+model_path = os.path.join(_repo_root, 'models', 'best_model.pt')
 
 # Input data (relative to data/ directory)
 csv_file = '_old/ampl00111_tok.csv'
@@ -211,7 +213,7 @@ def main():
     # ------------------------------------------------------------------
     # 5.  Load input CSV
     # ------------------------------------------------------------------
-    data_dir = os.path.join(os.getcwd(), 'data')
+    data_dir = os.path.join(_repo_root, 'data')
 
     if not os.path.isabs(csv_file):
         csv_path = os.path.join(data_dir, csv_file)
