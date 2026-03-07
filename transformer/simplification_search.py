@@ -31,7 +31,7 @@ import torch
 import pandas as pd
 
 # Set CUDA memory allocator to reduce fragmentation
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+os.environ['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'
 
 # Detect and honour OMP_NUM_THREADS
 n_threads = int(os.environ.get('OMP_NUM_THREADS', torch.get_num_threads()))
@@ -172,9 +172,7 @@ def main():
 
     print(f"Decoding method  : {decoding_method}")
     print(f"Attempts/expr    : {effective_attempts}")
-    if decoding_method == 'nucleus' and effective_attempts > 1:
-        print(f"Temperature schedule: {[f'{t:.2f}' for t in temp_schedule]}")
-    elif decoding_method in ('beam', 'nucleus'):
+    if decoding_method in ('beam', 'nucleus'):
         print(f"Beam size        : {beam_size}")
 
     # ------------------------------------------------------------------
@@ -277,7 +275,36 @@ def main():
         simplification_found = None
         simplification_tokens = None
 
+        # ------------------------------------------------------------------
+        # Greedy pre-check (nucleus only): one deterministic decode first.
+        # If it already yields a shorter equivalent, skip stochastic search.
+        # ------------------------------------------------------------------
+        if decoding_method == 'nucleus':
+            with torch.no_grad():
+                max_gen_len = min(len(src_tokens) * 2, model.max_seq_len - 1)
+                gen_g, _ = decode_with_model(
+                    model, src_tensor,
+                    max_length          = max_gen_len,
+                    decoding_method     = 'greedy',
+                    beam_size           = beam_size,
+                    p_nucleus           = p_nucleus,
+                    temperature_nucleus = temperature_nucleus,
+                    bos_token = BOS, eos_token = EOS, pad_token = PAD,
+                )
+            greedy_seq = clean_seq(gen_g.cpu().numpy()[0], pad_token=PAD, eos_token=EOS)
+            greedy_content = greedy_seq[:-1] if greedy_seq and greedy_seq[-1] == EOS else greedy_seq
+            if len(greedy_content) < input_content_len:
+                try:
+                    if _num_equiv(input_seq_eos, greedy_seq):
+                        simplification_found  = greedy_content
+                        simplification_tokens = greedy_seq
+                        print(f"  ✓ Greedy pre-check succeeded ({len(greedy_content)} tokens).")
+                except Exception:
+                    pass
+
         for attempt in range(effective_attempts):
+            if simplification_found is not None:
+                break
             # Temperature for this attempt (only relevant for nucleus)
             t_this = temp_schedule[attempt] if decoding_method == 'nucleus' else temperature_nucleus
 
