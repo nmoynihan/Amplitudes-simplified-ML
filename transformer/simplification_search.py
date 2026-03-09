@@ -56,7 +56,7 @@ _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 model_path = os.path.join(_repo_root, 'models', 'best_model.pt')
 
 # Input data (relative to data/ directory)
-csv_file = '_old/ampl00111_tok.csv'
+csv_file = 'amplitudes/ampl00111_tok.csv'
 input_column = 'scrambled'   # Column name containing the expressions to simplify
 
 # Output file (relative to data/ directory)
