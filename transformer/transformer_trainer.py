@@ -29,19 +29,19 @@ training_hyperparams = {
     'n_epochs': 200,
     'batch_size': 16,
     'train_split': 0.8,
-    'learning_rate': 1e-4,
+    'learning_rate': 5e-4,
     'weight_decay': 1e-5,
     'early_stopping_patience': 10,  # Stop if no improvement for 10 epochs
-    'early_stopping_min_delta': 1e-4  # Minimum change to qualify as improvement
+    'early_stopping_min_delta': 1e-3  # Minimum change to qualify as improvement
 }
 model_hyperparams = {
     'embedding_dim': 512,
     'n_heads': 4,
     'n_enc_layers': 5,
     'n_dec_layers': 5,
-    'dropout': 0.025,
+    'dropout': 0.1,
     'sinusoidal_embeddings': True,
-    'head_ff_dim': 1024,  # 4 * embedding_dim (4 * 64 = 256)
+    'head_ff_dim': 1024,  # 2 * embedding_dim
     'device': device
 }
 
@@ -66,6 +66,11 @@ criterion = nn.CrossEntropyLoss(ignore_index=0)  # 0 is pad token
 # Optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=training_hyperparams['learning_rate'], weight_decay=training_hyperparams['weight_decay'])
 
+# LR scheduler: halve LR when val loss plateaus for 5 epochs
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer, mode='min', factor=0.5, patience=5, min_lr=1e-6
+)
+
 print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters.")
 print(f"Hyperparameters:\nModel:{model_hyperparams}\nTraining:{training_hyperparams}")
 
@@ -75,15 +80,16 @@ parser.add_argument('--run_name', type=str, default='default_run', help='Unique 
 args = parser.parse_args()
 run_name = args.run_name
 train_losses, val_losses, train_accuracies, val_accuracies= train_model(
-    model, 
-    optimizer, 
-    criterion, 
-    train_loader, 
-    val_loader, 
+    model,
+    optimizer,
+    criterion,
+    train_loader,
+    val_loader,
     epochs=training_hyperparams['n_epochs'],
     run_name=run_name,
     early_stopping_patience=training_hyperparams['early_stopping_patience'],
-    early_stopping_min_delta=training_hyperparams['early_stopping_min_delta']
+    early_stopping_min_delta=training_hyperparams['early_stopping_min_delta'],
+    scheduler=scheduler
 )
 
 '''

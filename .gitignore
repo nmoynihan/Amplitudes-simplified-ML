@@ -12,3 +12,4 @@ messabout.py
 # Ignore all .csv files except .tar.gz compressed ones
 *.csv
 !*.csv.tar.gz
+PLAN.md

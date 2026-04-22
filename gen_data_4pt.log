@@ -1,0 +1,2 @@
+# gen_data log N=4 target=6000 terms=[1,4] scr=[0,5] seed=42
+# SUMMARY accepted=6000 parity_fail=0 scramble_fail=514 pole_fail=0 dimension_fail=0 attempts=6514
