@@ -9,6 +9,7 @@ os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 n_threads = int(os.environ.get('OMP_NUM_THREADS', torch.get_num_threads()))
 torch.set_num_threads(n_threads)
 print(f"Using {n_threads} CPU threads for PyTorch.")
+import argparse
 from transformer_functions import TransformerRegressor, load_transformer_model, decode_with_model, clean_seq
 
 # Add data_generation to path for imports
@@ -17,7 +18,7 @@ from Tokenizer import ScatteringAmplitudeTokenizer
 
 # Settings
 N_particles = 5 
-model_path = os.path.join('models', 'best_model.pt')  # Path to the trained model
+# model_path is set dynamically via --run_name in main() below
 csv_file = ['expanded_data/test_data/gi_5pt_tok_python.csv', 'expanded_data/test_data/gi_5pt_tok_mathematica.csv'] 
 #csv_file = f'relabM_alt_{N_particles}pt_tok.csv'  # Paths are relative to data/ directory
 #csv_file = f'test_set/gi_{N_particles}pt_tok.csv'  # Path to the test dataset
@@ -39,6 +40,11 @@ temperature_nucleus = 1.96   # Lower temperature for more deterministic output
 beam_match_any = True
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--run_name', type=str, default='default_run', help='Name of the training run to evaluate')
+    args = parser.parse_args()
+    model_path = os.path.join('models', args.run_name, 'best_model.pt')
+
     # Resolve device and load model on it (prefer CUDA, then optional MPS, else CPU)
     use_data_parallel = False
     num_gpus = 0

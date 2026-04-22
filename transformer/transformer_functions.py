@@ -507,6 +507,7 @@ def train_step(model, batch, criterion, optimizer):
     
     # Backward pass
     loss.backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     optimizer.step()
     
     return loss.item(), accuracy
@@ -545,7 +546,8 @@ def validate_step(model, batch, criterion):
 
 
 def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, run_name='default_run',
-                early_stopping_patience=None, early_stopping_min_delta=1e-4, save_models=True):
+                early_stopping_patience=None, early_stopping_min_delta=1e-4, save_models=True,
+                scheduler=None):
     """Trains a transformer model with optional checkpointing after each epoch and optional early stopping.
 
     Performs training and validation loops for the specified number of epochs,
@@ -620,7 +622,10 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
         val_losses.append(epoch_val_loss)
         train_accuracies.append(epoch_train_acc)
         val_accuracies.append(epoch_val_acc)
-        
+
+        if scheduler is not None:
+            scheduler.step(epoch_val_loss)
+
         # Early stopping logic
         if early_stopping_patience is not None:
             if epoch_val_loss < best_val_loss - early_stopping_min_delta:
