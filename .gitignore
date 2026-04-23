@@ -9,7 +9,5 @@ messabout.ipynb
 data_generation/*.csv
 final_models/**
 messabout.py
-# Ignore all .csv files except .tar.gz compressed ones
-*.csv
 !*.csv.tar.gz
 PLAN.md
