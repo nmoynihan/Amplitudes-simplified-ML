@@ -79,10 +79,14 @@ class TransformerDataset(Dataset):
     
     def pad_sequence(self, sequence):
         """Pad sequence to max_length with PAD_TOKEN"""
-        if len(sequence) >= self.max_length:
-            return sequence[:self.max_length]
-        else:
-            return sequence + [self.PAD_TOKEN] * (self.max_length - len(sequence))
+        if len(sequence) > self.max_length:
+            raise ValueError(
+                f"Sequence length {len(sequence)} exceeds max_length={self.max_length}; "
+                "regenerate/filter the data or increase max_length."
+            )
+        if len(sequence) == self.max_length:
+            return sequence
+        return sequence + [self.PAD_TOKEN] * (self.max_length - len(sequence))
 
 
 def load_and_prepare_data(csv_file, batch_size=32, max_length=None, train_split=0.8):
@@ -98,24 +102,26 @@ def load_and_prepare_data(csv_file, batch_size=32, max_length=None, train_split=
     Returns:
         train_loader, val_loader
     """
-    # Normalize paths to handle both 'data/file.csv' and 'folder/file.csv' formats
+    # Normalize paths to handle absolute paths, paths that already exist relative
+    # to the current working directory, and bare filenames under data/.
     data_dir = os.path.join(os.getcwd(), 'data')
+
+    def normalize_path(file):
+        if os.path.isabs(file):
+            return file
+        if os.path.exists(file):
+            return file
+        return os.path.join(data_dir, file)
     
     if isinstance(csv_file, list):
         # Multiple files: normalize each path
         normalized_files = []
         for file in csv_file:
-            if not os.path.isabs(file):
-                # Relative path: join with data directory
-                full_path = os.path.join(data_dir, file)
-            else:
-                full_path = file
-            normalized_files.append(full_path)
+            normalized_files.append(normalize_path(file))
         csv_file = normalized_files
     else:
         # Single file: normalize path
-        if not os.path.isabs(csv_file):
-            csv_file = os.path.join(data_dir, csv_file)
+        csv_file = normalize_path(csv_file)
     
     # Load full dataset
     full_dataset = TransformerDataset(csv_file, max_length)

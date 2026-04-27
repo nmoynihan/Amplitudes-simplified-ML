@@ -13,8 +13,100 @@ Conventions
               then hit by algebraic identities that preserve numerical
               equality.
 
-The implementation is aimed first at 4pt and 5pt scalar-QED-like data, but
-the core monomial generation and evaluator work for generic N.
+What this script generates
+--------------------------
+The basic object is a scalar-QED-like N-point expression with two equal-mass
+scalar legs and N-2 photon legs. Each generated term uses every photon exactly
+once inside gauge-invariant building blocks:
+
+    Tr(F_i · F_j · ...)
+    p_a · F_i · F_j · ... · p_b
+
+The endpoint momenta p_a and p_b are chosen independently from the non-F legs
+of the chain, so repeated endpoints such as p_1 · F_2 · F_3 · p_1 are allowed.
+Extra p_i · p_j numerator factors may also be included. Denominators, when
+enabled, are products of physical p_i · p_j poles chosen so that the manifest
+mass dimension is 4-N. A sample is a random integer linear combination of such
+terms.
+
+The gauge-invariant "simple" expression is expanded by replacing each F_i with
+the antisymmetric combination implicit in F_i = p_i e_i - e_i p_i. For example,
+p · F_i · q expands into a difference of products of ordinary dot products.
+The expanded expression is then scrambled.
+
+Scrambles
+---------
+Each scramble is an algebraic rewrite that should preserve the numerical value
+on generated on-shell phase-space points:
+
+1. Multiply by one:
+       expr -> expr * (p_i · p_j)/(p_i · p_j)
+
+2. Ward/momentum-conservation substitution on polarizations:
+       e_h · p_l -> -sum_{s != l} e_h · p_s
+   This uses transversality e_h · p_h = 0 together with total momentum
+   conservation sum_s p_s = 0.
+
+3. Momentum-conservation substitution on momenta:
+       p_a · p_b -> -sum_{s != a} p_s · p_b
+   This is the dot product of sum_s p_s = 0 with p_b, solved for one chosen
+   p_a · p_b occurrence.
+
+4. Dot-product commutation:
+       x · y -> y · x
+   for ordinary p/e dot products.
+
+5. Multiply by a more complicated ratio:
+       expr -> expr * (p_i · p_j + p_k · p_l)/(p_i · p_j + p_k · p_l)
+
+6. Add zero from mass shell plus momentum conservation. For a randomly omitted
+   leg a, momentum conservation gives p_a = -sum_{i != a} p_i. Squaring and
+   moving p_a^2 to the left gives the identity
+
+       0 = sum_{i != a} p_i · p_i - p_a · p_a
+           + 2 sum_{i<j, i,j != a} p_i · p_j.
+
+   The script inserts this zero with random labelling, random term order, a
+   random overall sign, optional multiplication by existing/random dot-product
+   context factors, and sometimes over an existing denominator. The mass shell
+   information is not a hard-coded M^2 symbol; it is represented by p_i · p_i
+   and checked numerically on kinematics where photons are massless and the two
+   scalar legs have equal mass.
+
+7. Partial-fraction rewrite on denominators. If a denominator contains at
+   least two p·p factors D_a and D_b, the script may replace
+
+       N/(D_a D_b R)
+
+   by an algebraically equivalent difference of two terms with denominators
+   involving (D_a - D_b). This deliberately produces less direct rational
+   forms while preserving the value away from accidental singular points.
+
+Dataset modes
+-------------
+The default "oneshot" dataset writes CSV rows with columns:
+
+    simple, scrambled
+
+where "simple" is the compact gauge-invariant expression and "scrambled" is
+the fully expanded and scrambled equivalent expression.
+
+The "step" dataset uses the same CSV column names but a different target
+policy. It records the accepted scramble trajectory and reverses it into
+one-step simplification pairs:
+
+    scrambled_k -> scrambled_{k-1} -> ... -> expanded -> simple
+
+so each row still stores target in "simple" and source in "scrambled", but the
+target is only the next shorter verified step rather than the final answer.
+
+Validation and scope
+--------------------
+Generated pairs are checked numerically on random phase-space points in both
+Coulomb and covariant polarization modes by default. Token-length filtering is
+also applied before writing tokenized data. The code is intended to work for
+4 <= N <= 8 under the current two-scalar convention, i.e. the user-facing range
+9 > N > 3.
 """
 from __future__ import annotations
 
@@ -34,6 +126,28 @@ from kinematics import generate_kinematics, mdot
 DOT = "·"
 SCALAR_COEFF_POOL = [c for c in range(-9, 10) if c != 0]
 TERM_COEFF_POOL = [c for c in range(-100, 101) if c != 0]
+DEFAULT_MAX_TOKENS = 2048
+DEFAULT_VALIDATION_POL_MODES = ("coulomb", "covariant")
+
+# Scramble labels used by --scrambles and the curriculum run*.sh scripts.
+# The empty set with min_scr=max_scr=0 still produces step pairs of the form
+# expanded -> simple in --dataset-kind step mode.
+SCRAMBLE_MULTIPLY_ONE = "multiply_one"
+SCRAMBLE_WARD = "ward"
+SCRAMBLE_MOMENTUM = "momentum"
+SCRAMBLE_COMMUTE_DOT = "commute_dot"
+SCRAMBLE_RATIO = "ratio"
+SCRAMBLE_MASS_SHELL_ZERO = "mass_shell_zero"
+SCRAMBLE_PARTIAL_FRACTION = "partial_fraction"
+DEFAULT_SCRAMBLES = (
+    SCRAMBLE_MULTIPLY_ONE,
+    SCRAMBLE_WARD,
+    SCRAMBLE_MOMENTUM,
+    SCRAMBLE_COMMUTE_DOT,
+    SCRAMBLE_RATIO,
+    SCRAMBLE_MASS_SHELL_ZERO,
+    SCRAMBLE_PARTIAL_FRACTION,
+)
 
 
 def dot(a: str, b: str) -> str:
@@ -283,6 +397,10 @@ _DOT_TAG = "DOT"
 _VEC_TAG = "VEC"
 
 
+class ExpressionParseError(ValueError):
+    """Raised when an amplitude expression cannot be parsed or evaluated."""
+
+
 class _Parser:
     """Recursive-descent parser for amplitude expressions."""
 
@@ -298,8 +416,18 @@ class _Parser:
         self.i += 1
         return tok
 
+    def _expect(self, expected: str) -> None:
+        tok = self.peek()
+        if tok != expected:
+            got = "end of input" if tok is None else repr(tok)
+            raise ExpressionParseError(f"Expected {expected!r}, got {got}")
+        self.pop()
+
     def parse(self):
-        return self._expr()
+        node = self._expr()
+        if self.peek() is not None:
+            raise ExpressionParseError(f"Unexpected token {self.peek()!r} at position {self.i}")
+        return node
 
     def _expr(self):
         node = self._term()
@@ -331,55 +459,59 @@ class _Parser:
 
     def _primary(self):
         tok = self.peek()
+        if tok is None:
+            raise ExpressionParseError("Unexpected end of input")
+
         if tok == "(":
             self.pop()
             node = self._expr()
-            if self.peek() == ")":
-                self.pop()
+            self._expect(")")
             return node
 
         if tok == "Tr":
             self.pop()
-            if self.peek() == "(":
-                self.pop()
-                parts = self._parse_F_chain()
-                if self.peek() == ")":
-                    self.pop()
-                vecs = [_Vec("F", int(re.search(r"\d+", t).group())) for t in parts]
-                return _DotChain(vecs + [_DotChain._TR])
-            return _Num(0.0)
+            self._expect("(")
+            parts = self._parse_F_chain()
+            self._expect(")")
+            vecs = [_Vec("F", int(re.search(r"\d+", t).group())) for t in parts]
+            return _DotChain(vecs + [_DotChain._TR])
 
         parts: list[_Vec] = []
-        while True:
-            current = self.peek()
-            if current and re.match(r"(p_|e_|F_)\d+", str(current)):
-                m = re.match(r"(p_|e_|F_)(\d+)", current)
+        if tok and re.fullmatch(r"(p_|e_|F_)\d+", str(tok)):
+            while True:
+                current = self.peek()
+                if not current or not re.fullmatch(r"(p_|e_|F_)\d+", str(current)):
+                    raise ExpressionParseError(f"Expected vector token at position {self.i}")
+                m = re.fullmatch(r"(p_|e_|F_)(\d+)", current)
                 parts.append(_Vec(m.group(1)[0], int(m.group(2))))
                 self.pop()
                 if self.peek() in ("·", "."):
                     self.pop()
+                    if self.peek() is None:
+                        raise ExpressionParseError("Dot operator at end of input")
                     continue
                 break
-            break
         if parts:
             return parts[0] if len(parts) == 1 else _DotChain(parts)
 
-        if tok and re.match(r"\d+(?:\.\d+)?", str(tok)):
+        if tok and re.fullmatch(r"\d+(?:\.\d+)?", str(tok)):
             self.pop()
             return _Num(float(tok))
 
-        if tok is not None:
-            self.pop()
-        return _Num(0.0)
+        raise ExpressionParseError(f"Unexpected token {tok!r} at position {self.i}")
 
     def _parse_F_chain(self) -> list[str]:
         out: list[str] = []
+        if not self.peek() or not re.fullmatch(r"F_\d+", str(self.peek())):
+            raise ExpressionParseError("Trace requires at least one F_i factor")
         while True:
             tok = self.peek()
-            if tok and re.match(r"F_\d+", str(tok)):
+            if tok and re.fullmatch(r"F_\d+", str(tok)):
                 out.append(self.pop())
                 if self.peek() in ("·", ".", ","):
                     self.pop()
+                    if not self.peek() or not re.fullmatch(r"F_\d+", str(self.peek())):
+                        raise ExpressionParseError("Trace separator must be followed by an F_i factor")
                     continue
                 break
             break
@@ -401,7 +533,7 @@ def _tokenize(expr: str) -> list[str]:
             toks.append(match.group(1))
             pos += match.end()
         else:
-            pos += 1
+            raise ExpressionParseError(f"Unrecognised character {expr[pos]!r} at position {pos}")
     return toks
 
 
@@ -464,7 +596,7 @@ def _expand_dotchain(dc: _DotChain):
             and isinstance(parts[-1], _Vec)
             and parts[-1].tag == "p"
         ):
-            return _Num(0.0)
+            raise ExpressionParseError("F chains must appear as p_i · F_j · ... · p_k or inside Tr(...)")
         left_idx = parts[0].idx
         right_idx = parts[-1].idx
         labels = [v.idx for v in F_vecs]
@@ -519,6 +651,8 @@ def eval_infix_numeric(expr: str, momenta, pols) -> float:
     def _eval(node):
         if isinstance(node, _Num):
             return node.value
+        if isinstance(node, _Vec):
+            raise ExpressionParseError(f"Bare vector {_vec(node.tag, node.idx)} cannot be numerically evaluated")
         if isinstance(node, _BinOp):
             left = _eval(node.left)
             right = _eval(node.right)
@@ -543,8 +677,10 @@ def eval_infix_numeric(expr: str, momenta, pols) -> float:
                 vb = P.get(f"p_{rhs[2]}") if rhs[1] == "p" else E.get(f"e_{rhs[2]}")
                 if va is not None and vb is not None:
                     return mdot(va, vb)
-            return 0.0
-        return 0.0
+            raise ExpressionParseError(
+                f"Unknown or unsupported dot product {_vec_name(lhs)} · {_vec_name(rhs)}"
+            )
+        raise ExpressionParseError(f"Unsupported AST node {type(node).__name__}")
 
     tree = _Parser(_tokenize(expr)).parse()
     expanded = _expand_ast(tree)
@@ -602,7 +738,8 @@ def _ast_to_infix(node, parent_prec: int = 0, is_right: bool = False) -> str:
 
 def _singleF_block(j: int, N: int) -> tuple[str, BlockSpec]:
     pool = [x for x in range(1, N + 1) if x != j]
-    left, right = random.sample(pool, 2)
+    left = random.choice(pool)
+    right = random.choice(pool)
     return (
         f"{p(left)} {DOT} {F(j)} {DOT} {p(right)}",
         BlockSpec("chain", (j,), left, right),
@@ -611,7 +748,8 @@ def _singleF_block(j: int, N: int) -> tuple[str, BlockSpec]:
 
 def _doubleF_block(j: int, k: int, N: int) -> tuple[str, BlockSpec]:
     pool = [x for x in range(1, N + 1) if x not in (j, k)]
-    left, right = random.sample(pool, 2)
+    left = random.choice(pool)
+    right = random.choice(pool)
     return (
         f"{p(left)} {DOT} {F(j)} {DOT} {F(k)} {DOT} {p(right)}",
         BlockSpec("chain", (j, k), left, right),
@@ -620,7 +758,8 @@ def _doubleF_block(j: int, k: int, N: int) -> tuple[str, BlockSpec]:
 
 def _tripleF_block(j: int, k: int, l: int, N: int) -> tuple[str, BlockSpec]:
     pool = [x for x in range(1, N + 1) if x not in (j, k, l)]
-    left, right = random.sample(pool, 2)
+    left = random.choice(pool)
+    right = random.choice(pool)
     return (
         f"{p(left)} {DOT} {F(j)} {DOT} {F(k)} {DOT} {F(l)} {DOT} {p(right)}",
         BlockSpec("chain", (j, k, l), left, right),
@@ -1010,6 +1149,76 @@ def scr_mul_by_ratio(expr: str, N: int) -> str:
     return f"({expr})*{denom}/{denom}"
 
 
+def _mass_shell_zero_relation(N: int) -> str:
+    """Return a random mass-shell/momentum-conservation zero.
+
+    For any omitted leg a, momentum conservation gives:
+
+        p_a = -sum_{i != a} p_i
+
+    Squaring this and moving p_a^2 to the left gives:
+
+        0 = sum_{i != a} p_i^2 - p_a^2
+            + 2 sum_{i<j, i,j != a} p_i · p_j
+
+    The p_i^2 terms are written as p_i · p_i, so this works for every
+    labelling without introducing an explicit mass symbol.
+    """
+    omitted = random.randint(1, N)
+    legs = [i for i in range(1, N + 1) if i != omitted]
+    terms: list[str] = [_canon_pp(dot(p(i), p(i))) for i in legs]
+    coeffs: list[int] = [1 for _ in legs]
+
+    terms.append(_canon_pp(dot(p(omitted), p(omitted))))
+    coeffs.append(-1)
+
+    pairs = [(legs[i], legs[j]) for i in range(len(legs)) for j in range(i + 1, len(legs))]
+    for i, j in pairs:
+        terms.append(_canon_pp(dot(p(i), p(j))))
+        coeffs.append(2)
+
+    shuffled = list(zip(terms, coeffs, strict=True))
+    random.shuffle(shuffled)
+    terms = [term for term, _coeff in shuffled]
+    coeffs = [coeff for _term, coeff in shuffled]
+    if random.random() < 0.5:
+        coeffs = [-coeff for coeff in coeffs]
+    return f"({_format_poly(terms, coeffs)})"
+
+
+def _random_context_factor(expr: str, N: int, max_factors: int = 2) -> str:
+    factors: list[str] = []
+    existing_dots = [m.group(0) for m in _RE_DOT.finditer(expr)]
+    n_factors = random.randint(0, max_factors)
+
+    for _ in range(n_factors):
+        if existing_dots and random.random() < 0.7:
+            factors.append(random.choice(existing_dots))
+            continue
+        if photon_legs(N) and random.random() < 0.5:
+            factors.append(dot(e(random.choice(photon_legs(N))), p(random.randint(1, N))))
+        else:
+            i, j = random.sample(range(1, N + 1), 2)
+            factors.append(dot(p(i), p(j)))
+
+    return "*".join(factors)
+
+
+def scr_add_mass_shell_zero(expr: str, N: int) -> str:
+    zero = _mass_shell_zero_relation(N)
+    context = _random_context_factor(expr, N)
+    zero_term = zero if not context else f"{zero}*{context}"
+
+    denom_blocks = _find_denom_blocks(expr)
+    if denom_blocks and random.random() < 0.5:
+        _slash_pos, dopen, dclose = random.choice(denom_blocks)
+        denom = expr[dopen + 1 : dclose]
+        zero_term = f"({zero_term})/({denom})"
+
+    sign = "+" if random.random() < 0.5 else "-"
+    return f"({expr}) {sign} {zero_term}"
+
+
 def _split_top_level(s: str, sep: str) -> list[str]:
     parts: list[str] = []
     current: list[str] = []
@@ -1097,14 +1306,47 @@ def scr_partial_fraction(expr: str) -> str:
     return f"{prefix}({numerator}/{den1} - {numerator}/{den2}){suffix}"
 
 
-_SCRAMBLERS = (
-    lambda expr, Ng, N: scr_mul_by_one(expr, N),
-    lambda expr, Ng, N: scr_ward_substitute(expr, Ng, N),
-    lambda expr, Ng, N: scr_momentum_substitute(expr, N),
-    lambda expr, Ng, N: scr_commute_dot(expr),
-    lambda expr, Ng, N: scr_mul_by_ratio(expr, N),
-    lambda expr, Ng, N: scr_partial_fraction(expr),
-)
+_SCRAMBLERS = {
+    SCRAMBLE_MULTIPLY_ONE: lambda expr, Ng, N: scr_mul_by_one(expr, N),
+    SCRAMBLE_WARD: lambda expr, Ng, N: scr_ward_substitute(expr, Ng, N),
+    SCRAMBLE_MOMENTUM: lambda expr, Ng, N: scr_momentum_substitute(expr, N),
+    SCRAMBLE_COMMUTE_DOT: lambda expr, Ng, N: scr_commute_dot(expr),
+    SCRAMBLE_RATIO: lambda expr, Ng, N: scr_mul_by_ratio(expr, N),
+    SCRAMBLE_MASS_SHELL_ZERO: lambda expr, Ng, N: scr_add_mass_shell_zero(expr, N),
+    SCRAMBLE_PARTIAL_FRACTION: lambda expr, Ng, N: scr_partial_fraction(expr),
+}
+
+
+def normalise_scramble_names(scrambles: Sequence[str] | None) -> tuple[str, ...]:
+    if scrambles is None:
+        return DEFAULT_SCRAMBLES
+    names: list[str] = []
+    for item in scrambles:
+        for name in str(item).split(","):
+            name = name.strip()
+            if not name:
+                continue
+            if name == "all":
+                names.extend(DEFAULT_SCRAMBLES)
+                continue
+            if name == "none":
+                continue
+            if name not in _SCRAMBLERS:
+                allowed = ", ".join(("all", "none", *DEFAULT_SCRAMBLES))
+                raise ValueError(f"Unknown scramble {name!r}. Allowed: {allowed}")
+            names.append(name)
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in names:
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return tuple(out)
+
+
+def _active_scramblers(scrambles: Sequence[str] | None):
+    names = normalise_scramble_names(scrambles)
+    return tuple(_SCRAMBLERS[name] for name in names)
 
 
 def scramble(
@@ -1115,16 +1357,51 @@ def scramble(
     min_scr: int = 0,
     max_scr: int = 3,
     max_len: int = 4000,
+    scrambles: Sequence[str] | None = None,
 ) -> str:
     min_scr = max(0, int(min_scr))
     max_scr = max(min_scr, int(max_scr))
+    active = _active_scramblers(scrambles)
+    if not active:
+        return expr
     out = expr
     n_steps = random.randint(min_scr, max_scr) if max_scr > 0 else 0
     for _ in range(n_steps):
-        cand = random.choice(_SCRAMBLERS)(out, Ngamma, N)
+        cand = random.choice(active)(out, Ngamma, N)
         if len(cand) <= max_len:
             out = cand
     return out
+
+
+def scramble_trajectory(
+    expr: str,
+    Ngamma: int,
+    N: int,
+    *,
+    min_scr: int = 0,
+    max_scr: int = 3,
+    max_len: int = 4000,
+    scrambles: Sequence[str] | None = None,
+) -> tuple[str, ...]:
+    """Return the actual scramble path, starting at ``expr``.
+
+    The path records only accepted expression changes. It is used to build
+    reverse one-step training pairs for iterative simplification.
+    """
+    min_scr = max(0, int(min_scr))
+    max_scr = max(min_scr, int(max_scr))
+    active = _active_scramblers(scrambles)
+    out = expr
+    path = [expr]
+    if not active:
+        return tuple(path)
+    n_steps = random.randint(min_scr, max_scr) if max_scr > 0 else 0
+    for _ in range(n_steps):
+        cand = random.choice(active)(out, Ngamma, N)
+        if cand != out and len(cand) <= max_len:
+            out = cand
+            path.append(out)
+    return tuple(path)
 
 
 def _validate_pair(
@@ -1136,20 +1413,36 @@ def _validate_pair(
     n_checks: int = 3,
     tol_rel: float = 1e-8,
     tol_abs: float = 1e-10,
+    pol_modes: Sequence[str] = DEFAULT_VALIDATION_POL_MODES,
 ) -> tuple[bool, str]:
-    for _ in range(n_checks):
-        mom, pol = generate_kinematics(N, M=M)
-        try:
-            va = eval_infix_numeric(expr_a, mom, pol)
-            vb = eval_infix_numeric(expr_b, mom, pol)
-        except Exception as exc:
-            return False, f"exception:{exc}"
-        if not (math.isfinite(va) and math.isfinite(vb)):
-            return False, "non-finite"
-        diff = abs(va - vb)
-        if diff > max(tol_abs, tol_rel * max(1.0, abs(va), abs(vb))):
-            return False, f"mismatch:{diff:.3e}"
+    for pol_mode in pol_modes:
+        for _ in range(n_checks):
+            mom, pol = generate_kinematics(N, M=M, pol_mode=pol_mode)
+            try:
+                va = eval_infix_numeric(expr_a, mom, pol)
+                vb = eval_infix_numeric(expr_b, mom, pol)
+            except Exception as exc:
+                return False, f"{pol_mode}:exception:{exc}"
+            if not (math.isfinite(va) and math.isfinite(vb)):
+                return False, f"{pol_mode}:non-finite"
+            diff = abs(va - vb)
+            if diff > max(tol_abs, tol_rel * max(1.0, abs(va), abs(vb))):
+                return False, f"{pol_mode}:mismatch:{diff:.3e}"
     return True, ""
+
+
+def _within_token_budget(
+    simple_expr: str,
+    scrambled_expr: str,
+    tokenizer,
+    max_tokens: int | None,
+) -> bool:
+    if tokenizer is None or max_tokens is None:
+        return True
+    return (
+        len(tokenizer.encode_infix(simple_expr)) <= max_tokens
+        and len(tokenizer.encode_infix(scrambled_expr)) <= max_tokens
+    )
 
 
 def _format_poly(terms: Sequence[str], coeffs: Sequence[int]) -> str:
@@ -1163,6 +1456,57 @@ def _format_poly(terms: Sequence[str], coeffs: Sequence[int]) -> str:
         else:
             pieces.append(f" {sign} {core}")
     return "".join(pieces)
+
+
+def _build_base_expression(
+    N: int,
+    *,
+    use_denominators: bool,
+    min_terms: int,
+    max_terms: int,
+) -> tuple[str, str] | None:
+    n_terms = random.randint(min_terms, max_terms)
+
+    first_simple, first_expanded, _signature = _generate_term(
+        N, use_denominators=use_denominators
+    )
+    if not _has_supported_physical_poles(first_simple):
+        return None
+    if manifest_mass_dimension(first_simple) != 4 - N:
+        return None
+
+    simple_terms = [first_simple]
+    expanded_terms = [first_expanded]
+    coeffs = [random.choice(SCALAR_COEFF_POOL)]
+
+    for _ in range(n_terms - 1):
+        for _attempt in range(80):
+            cand_simple, cand_expanded, _cand_signature = _generate_term(
+                N, use_denominators=use_denominators
+            )
+            if not _has_supported_physical_poles(cand_simple):
+                continue
+            if manifest_mass_dimension(cand_simple) != 4 - N:
+                continue
+            simple_terms.append(cand_simple)
+            expanded_terms.append(cand_expanded)
+            coeffs.append(random.choice(TERM_COEFF_POOL))
+            break
+        else:
+            return None
+
+    return _format_poly(simple_terms, coeffs), _format_poly(expanded_terms, coeffs)
+
+
+def _make_tokenizer(tokenizer_max_particles: int, max_tokens: int | None):
+    if max_tokens is None:
+        return None
+    from Tokenizer import ScatteringAmplitudeTokenizer
+
+    return ScatteringAmplitudeTokenizer(
+        max_particles=tokenizer_max_particles,
+        max_sequence_length=max_tokens,
+    )
 
 
 def build_dataset(
@@ -1179,6 +1523,10 @@ def build_dataset(
     max_terms: int = 1,
     log_path: str | None = None,
     max_attempts_factor: int = 12,
+    max_tokens: int | None = DEFAULT_MAX_TOKENS,
+    tokenizer_max_particles: int = 8,
+    validation_pol_modes: Sequence[str] = DEFAULT_VALIDATION_POL_MODES,
+    scrambles: Sequence[str] | None = None,
 ) -> list[tuple[str, str]]:
     """Build a dataset of (simple, scrambled) pairs."""
     min_terms = max(1, int(min_terms))
@@ -1194,59 +1542,43 @@ def build_dataset(
         "scramble_fail": 0,
         "pole_fail": 0,
         "dimension_fail": 0,
+        "token_fail": 0,
     }
     max_attempts = max(1, num_samples * max_attempts_factor)
+    tokenizer = _make_tokenizer(tokenizer_max_particles, max_tokens)
+    scramble_names = normalise_scramble_names(scrambles)
 
     if log_path:
         with open(log_path, "w", encoding="utf-8") as handle:
             handle.write(
                 f"# gen_data log N={N} target={num_samples} "
-                f"terms=[{min_terms},{max_terms}] scr=[{min_scr},{max_scr}] seed={seed}\n"
+                f"terms=[{min_terms},{max_terms}] scr=[{min_scr},{max_scr}] "
+                f"seed={seed} max_tokens={max_tokens} "
+                f"pol_modes={','.join(validation_pol_modes)} "
+                f"scrambles={','.join(scramble_names) if scramble_names else 'none'}\n"
             )
 
     while len(data) < num_samples and stats["attempts"] < max_attempts:
         stats["attempts"] += 1
-        n_terms = random.randint(min_terms, max_terms)
-
-        first_simple, first_expanded, _signature = _generate_term(
-            N, use_denominators=use_denominators
+        built = _build_base_expression(
+            N,
+            use_denominators=use_denominators,
+            min_terms=min_terms,
+            max_terms=max_terms,
         )
-        if not _has_supported_physical_poles(first_simple):
-            stats["pole_fail"] += 1
-            continue
-        if manifest_mass_dimension(first_simple) != 4 - N:
+        if built is None:
             stats["dimension_fail"] += 1
             continue
-
-        simple_terms = [first_simple]
-        expanded_terms = [first_expanded]
-        coeffs = [random.choice(SCALAR_COEFF_POOL)]
-
-        ok_build = True
-        for _ in range(n_terms - 1):
-            for _attempt in range(80):
-                cand_simple, cand_expanded, _cand_signature = _generate_term(
-                    N, use_denominators=use_denominators
-                )
-                if not _has_supported_physical_poles(cand_simple):
-                    continue
-                if manifest_mass_dimension(cand_simple) != 4 - N:
-                    continue
-                simple_terms.append(cand_simple)
-                expanded_terms.append(cand_expanded)
-                coeffs.append(random.choice(TERM_COEFF_POOL))
-                break
-            else:
-                ok_build = False
-                break
-        if not ok_build:
-            continue
-
-        simple_expr = _format_poly(simple_terms, coeffs)
-        expanded_expr = _format_poly(expanded_terms, coeffs)
+        simple_expr, expanded_expr = built
 
         if validate:
-            ok, _ = _validate_pair(simple_expr, expanded_expr, N, M)
+            ok, _ = _validate_pair(
+                simple_expr,
+                expanded_expr,
+                N,
+                M,
+                pol_modes=validation_pol_modes,
+            )
             if not ok:
                 stats["parity_fail"] += 1
                 continue
@@ -1257,13 +1589,28 @@ def build_dataset(
             N,
             min_scr=min_scr,
             max_scr=max_scr,
+            scrambles=scramble_names,
         )
 
         if validate:
-            ok, _ = _validate_pair(expanded_expr, scrambled, N, M)
+            ok, _ = _validate_pair(
+                expanded_expr,
+                scrambled,
+                N,
+                M,
+                pol_modes=validation_pol_modes,
+            )
             if not ok:
                 stats["scramble_fail"] += 1
                 continue
+
+        try:
+            if not _within_token_budget(simple_expr, scrambled, tokenizer, max_tokens):
+                stats["token_fail"] += 1
+                continue
+        except ValueError:
+            stats["token_fail"] += 1
+            continue
 
         data.append((simple_expr, scrambled))
 
@@ -1273,7 +1620,156 @@ def build_dataset(
                 "# SUMMARY "
                 f"accepted={len(data)} parity_fail={stats['parity_fail']} "
                 f"scramble_fail={stats['scramble_fail']} pole_fail={stats['pole_fail']} "
-                f"dimension_fail={stats['dimension_fail']} attempts={stats['attempts']}\n"
+                f"dimension_fail={stats['dimension_fail']} token_fail={stats['token_fail']} "
+                f"attempts={stats['attempts']}\n"
+            )
+    return data
+
+
+def build_step_dataset(
+    N: int,
+    num_samples: int,
+    *,
+    max_scr: int = 5,
+    min_scr: int = 1,
+    seed: int | None = None,
+    use_denominators: bool = True,
+    validate: bool = True,
+    M: float = 2.0,
+    min_terms: int = 1,
+    max_terms: int = 1,
+    log_path: str | None = None,
+    max_attempts_factor: int = 12,
+    max_tokens: int | None = DEFAULT_MAX_TOKENS,
+    tokenizer_max_particles: int = 8,
+    validation_pol_modes: Sequence[str] = DEFAULT_VALIDATION_POL_MODES,
+    scrambles: Sequence[str] | None = None,
+) -> list[tuple[str, str]]:
+    """Build one-step simplification pairs as (target_step, source_step).
+
+    The CSV convention remains ``simple,scrambled``. For step-model data,
+    ``scrambled`` is the current expression and ``simple`` is exactly one
+    verified shorter step toward the compact target.
+    """
+    min_terms = max(1, int(min_terms))
+    max_terms = max(min_terms, int(max_terms))
+    if seed is not None:
+        random.seed(seed)
+
+    Ngamma = N - 2
+    data: list[tuple[str, str]] = []
+    stats = {
+        "attempts": 0,
+        "base_fail": 0,
+        "parity_fail": 0,
+        "trajectory_fail": 0,
+        "equiv_fail": 0,
+        "not_shorter": 0,
+        "token_fail": 0,
+    }
+    max_attempts = max(1, num_samples * max_attempts_factor)
+    tokenizer = _make_tokenizer(tokenizer_max_particles, max_tokens)
+    scramble_names = normalise_scramble_names(scrambles)
+
+    if log_path:
+        with open(log_path, "w", encoding="utf-8") as handle:
+            handle.write(
+                f"# gen_data step log N={N} target_pairs={num_samples} "
+                f"terms=[{min_terms},{max_terms}] scr=[{min_scr},{max_scr}] "
+                f"seed={seed} max_tokens={max_tokens} "
+                f"pol_modes={','.join(validation_pol_modes)} "
+                f"scrambles={','.join(scramble_names) if scramble_names else 'none'}\n"
+            )
+
+    def token_len(expr: str) -> int:
+        if tokenizer is None:
+            return len(_tokenize(expr))
+        return len(tokenizer.encode_infix(expr))
+
+    while len(data) < num_samples and stats["attempts"] < max_attempts:
+        stats["attempts"] += 1
+        built = _build_base_expression(
+            N,
+            use_denominators=use_denominators,
+            min_terms=min_terms,
+            max_terms=max_terms,
+        )
+        if built is None:
+            stats["base_fail"] += 1
+            continue
+        simple_expr, expanded_expr = built
+
+        if validate:
+            ok, _ = _validate_pair(
+                simple_expr,
+                expanded_expr,
+                N,
+                M,
+                pol_modes=validation_pol_modes,
+            )
+            if not ok:
+                stats["parity_fail"] += 1
+                continue
+
+        trajectory = scramble_trajectory(
+            expanded_expr,
+            Ngamma,
+            N,
+            min_scr=min_scr,
+            max_scr=max_scr,
+            scrambles=scramble_names,
+        )
+        if len(trajectory) <= 1:
+            stats["trajectory_fail"] += 1
+
+        candidate_pairs: list[tuple[str, str]] = []
+        # expanded -> simple
+        candidate_pairs.append((expanded_expr, simple_expr))
+        # scrambled_i -> scrambled_{i-1}, from hardest back toward expanded
+        for i in range(len(trajectory) - 1, 0, -1):
+            candidate_pairs.append((trajectory[i], trajectory[i - 1]))
+
+        for source_expr, target_expr in candidate_pairs:
+            if len(data) >= num_samples:
+                break
+            try:
+                if max_tokens is not None and not _within_token_budget(
+                    target_expr,
+                    source_expr,
+                    tokenizer,
+                    max_tokens,
+                ):
+                    stats["token_fail"] += 1
+                    continue
+                if token_len(target_expr) >= token_len(source_expr):
+                    stats["not_shorter"] += 1
+                    continue
+            except (ExpressionParseError, ValueError):
+                stats["token_fail"] += 1
+                continue
+
+            if validate:
+                ok, _ = _validate_pair(
+                    source_expr,
+                    target_expr,
+                    N,
+                    M,
+                    pol_modes=validation_pol_modes,
+                )
+                if not ok:
+                    stats["equiv_fail"] += 1
+                    continue
+
+            data.append((target_expr, source_expr))
+
+    if log_path:
+        with open(log_path, "a", encoding="utf-8") as handle:
+            handle.write(
+                "# SUMMARY "
+                f"accepted={len(data)} base_fail={stats['base_fail']} "
+                f"parity_fail={stats['parity_fail']} trajectory_fail={stats['trajectory_fail']} "
+                f"equiv_fail={stats['equiv_fail']} not_shorter={stats['not_shorter']} "
+                f"token_fail={stats['token_fail']} attempts={stats['attempts']}\n"
             )
     return data
 
@@ -1306,10 +1802,19 @@ def write_csv(pairs: Iterable[tuple[str, str]], path: str) -> None:
             writer.writerow([simple, scrambled])
 
 
-def tokenise_csv(inp: str, out: str, *, max_particles: int = 8) -> None:
+def tokenise_csv(
+    inp: str,
+    out: str,
+    *,
+    max_particles: int = 8,
+    max_sequence_length: int | None = DEFAULT_MAX_TOKENS,
+) -> None:
     from Tokenizer import ScatteringAmplitudeTokenizer
 
-    tok = ScatteringAmplitudeTokenizer(max_particles=max_particles)
+    tok = ScatteringAmplitudeTokenizer(
+        max_particles=max_particles,
+        max_sequence_length=max_sequence_length,
+    )
     with open(inp, newline="", encoding="utf-8") as fin, open(
         out, "w", newline="", encoding="utf-8"
     ) as fout:
@@ -1391,11 +1896,41 @@ if __name__ == "__main__":
     parser.add_argument("--min-scr", type=int, default=0)
     parser.add_argument("--min-terms", type=int, default=1)
     parser.add_argument("--max-terms", type=int, default=4)
+    parser.add_argument(
+        "--dataset-kind",
+        choices=["oneshot", "step"],
+        default="oneshot",
+        help="Generate direct scrambled->simple pairs or one-step simplification pairs.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--mass", type=float, default=2.0)
     parser.add_argument("--raw-out", type=str, default=None)
     parser.add_argument("--tok-out", type=str, default=None)
     parser.add_argument("--log-out", type=str, default=None)
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=DEFAULT_MAX_TOKENS,
+        help="Maximum tokenized length per expression. Use 0 to disable filtering.",
+    )
+    parser.add_argument("--tokenizer-max-particles", type=int, default=8)
+    parser.add_argument(
+        "--validation-pol-modes",
+        nargs="+",
+        choices=["coulomb", "covariant"],
+        default=list(DEFAULT_VALIDATION_POL_MODES),
+        help="Polarization modes used for numerical validation.",
+    )
+    parser.add_argument(
+        "--scrambles",
+        nargs="*",
+        default=None,
+        choices=["all", "none", *DEFAULT_SCRAMBLES],
+        help=(
+            "Enabled scramble labels. Omit for the default full set. "
+            "Use --scrambles none with --min-scr 0 --max-scr 0 for expanded->simple only."
+        ),
+    )
     parser.add_argument("--no-validate", action="store_true")
     parser.add_argument("--no-tokenise", action="store_true")
     args = parser.parse_args()
@@ -1406,7 +1941,9 @@ if __name__ == "__main__":
 
     t0 = time.perf_counter()
     oversample = int(round(args.samples * 1.2))
-    pairs = build_dataset(
+    max_tokens = None if args.max_tokens <= 0 else args.max_tokens
+    builder = build_step_dataset if args.dataset_kind == "step" else build_dataset
+    pairs = builder(
         args.N,
         oversample,
         max_scr=args.max_scr,
@@ -1418,6 +1955,10 @@ if __name__ == "__main__":
         min_terms=args.min_terms,
         max_terms=args.max_terms,
         log_path=log_out,
+        max_tokens=max_tokens,
+        tokenizer_max_particles=args.tokenizer_max_particles,
+        validation_pol_modes=tuple(args.validation_pol_modes),
+        scrambles=args.scrambles,
     )
     t1 = time.perf_counter()
 
@@ -1426,7 +1967,12 @@ if __name__ == "__main__":
     pairs = pairs[: args.samples]
     write_csv(pairs, raw_out)
     if not args.no_tokenise:
-        tokenise_csv(raw_out, tok_out)
+        tokenise_csv(
+            raw_out,
+            tok_out,
+            max_particles=args.tokenizer_max_particles,
+            max_sequence_length=max_tokens,
+        )
     t2 = time.perf_counter()
 
     print(f"{len(pairs)} pairs -> {raw_out}")

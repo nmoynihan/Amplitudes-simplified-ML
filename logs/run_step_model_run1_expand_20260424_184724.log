@@ -1,0 +1,49 @@
+Run log: logs/run_step_model_run1_expand_20260424_184724.log
+Mode: step-eval
+N_PARTICLES=4 RUN_NAME=step_model_run1_expand MODEL_PATH=models/step_model_run1_expand/best_model.pt
+SCRAMBLES=none
+/home/nathan/.local/share/mise/installs/python/3.14.0/lib/python3.14/site-packages/torch/nn/modules/transformer.py:531: UserWarning: The PyTorch API of nested tensors is in prototype stage and will change in the near future. We recommend specifying layout=torch.jagged when constructing a nested tensor, as this layout receives active development, has better operator coverage, and works with torch.compile. (Triggered internally at /pytorch/aten/src/ATen/NestedTensorImpl.cpp:178.)
+  output = torch._nested_tensor_from_mask(
+Using device: cuda
+Model path: /home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/models/step_model_run1_expand/best_model.pt
+Evaluation samples: 64 fresh held-out step pairs
+Decoding: beam, beam_size=8
+Generating 64 held-out one-step 4-point pairs...
+Wrote raw step pairs to /home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/data_testing/outputs/step_pair_eval_4pt_run1_expand.csv
+Wrote tokenised step pairs to /home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/data_testing/outputs/step_pair_eval_4pt_run1_expand_tok.csv
+Dedupe removed 0 duplicate pairs
+
+Held-out step-pair summary
+  total examples              : 64
+  top1 parse ok               : 28 / 64
+  top1 exact token matches    : 4 / 64
+  top1 num-eq source          : 20 / 64
+  top1 shorter                : 28 / 64
+  any exact in candidates     : 5 / 64
+  any valid equiv shorter     : 43 / 64
+  avg candidates checked      : 8.00
+  avg valid decodes           : 2.06
+  avg malformed candidates    : 5.94
+  total accepted candidates   : 54
+
+Example step-pair results (3 rows):
+  row 0
+    source : 4*(((p_1 · p_2)*(e_2 · p_3) - (p_1 · e_2)*(p_2 · p_3))*((p_2 · p_3)*(e_3 · p_2) - (p_2 · e_3)*(p_3 · p_2))*p_1 · p_4*p_2 · p_3)/(p_1 · p_2*p_1 · p_3*p_2 · p_3*p_2 · p_4*p_3 · p_4)
+    target : 4*(p_1 · F_2 · p_3*p_2 · F_3 · p_2*p_1 · p_4*p_2 · p_3)/(p_1 · p_2*p_1 · p_3*p_2 · p_3*p_2 · p_4*p_3 · p_4)
+    top1   : (4*p_1·F_2·p_3*p_2·F_3·p_2*p_1·p_4*p_2·p_3)/(p_1·p_2*p_1·p_3*p_2·p_3*p_2·p_4*p_3·p_4)
+    parse=1 exact=0 equiv=1 shorter=1 any_accept=1
+  row 1
+    source : -3*(((p_1 · p_2)*(e_2 · p_3)*(e_3 · p_1) - (p_1 · e_2)*(p_2 · p_3)*(e_3 · p_1) - (p_1 · p_2)*(e_2 · e_3)*(p_3 · p_1) + (p_1 · e_2)*(p_2 · e_3)*(p_3 · p_1))*p_1 · p_2*p_1 · p_2)/(p_
+    target : -3*(p_1 · F_2 · F_3 · p_1*p_1 · p_2*p_1 · p_2)/(p_1 · p_3*p_2 · p_3*p_2 · p_4*p_3 · p_4)
+    top1   : (-3*p_1·F_2·F_3·p_1*p_1·p_2*p_1·p_2)/(p_1·p_3*p_2·p_3*p_2·p_4*p_3·p_4)
+    parse=1 exact=0 equiv=1 shorter=1 any_accept=1
+  row 2
+    source : -7*(((p_4 · p_2)*(e_2 · p_3)*(e_3 · p_4) - (p_4 · e_2)*(p_2 · p_3)*(e_3 · p_4) - (p_4 · p_2)*(e_2 · e_3)*(p_3 · p_4) + (p_4 · e_2)*(p_2 · e_3)*(p_3 · p_4))*p_1 · p_3*p_2 · p_3)/(p_
+    target : -7*(p_4 · F_2 · F_3 · p_4*p_1 · p_3*p_2 · p_3)/(p_1 · p_2*p_1 · p_3*p_2 · p_3*p_3 · p_4)
+    top1   : (-7*p_4·F_2·F_3·p_4*p_1·p_3*p_2·p_3)/(p_1·p_2*p_1·p_3*p_2·p_3*p_3·p_4)
+    parse=1 exact=0 equiv=1 shorter=1 any_accept=1
+
+Wrote detail results to /home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/data_testing/outputs/step_pair_eval_4pt_run1_expand_results.csv
+Wrote summary to /home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/data_testing/outputs/step_pair_eval_4pt_run1_expand_summary.csv
+Total wall time: 22.75s
+Completed. Full log written to logs/run_step_model_run1_expand_20260424_184724.log

@@ -1,0 +1,5 @@
+Run log: logs/run_step_model_eval_beam50_8_20260424_172859.log
+Mode: eval-only
+N_PARTICLES=4 RUN_NAME=step_model MODEL_PATH=models/step_model/best_model.pt
+/home/nathan/.local/share/mise/installs/python/3.14.0/lib/python3.14/site-packages/torch/nn/modules/transformer.py:531: UserWarning: The PyTorch API of nested tensors is in prototype stage and will change in the near future. We recommend specifying layout=torch.jagged when constructing a nested tensor, as this layout receives active development, has better operator coverage, and works with torch.compile. (Triggered internally at /pytorch/aten/src/ATen/NestedTensorImpl.cpp:178.)
+  output = torch._nested_tensor_from_mask(

@@ -22,9 +22,13 @@ def tokenise_file(
     dst: pathlib.Path,
     *,
     max_particles: int = 8,
+    max_sequence_length: int | None = 2048,
     decode_format: str | None = None,
 ) -> None:
-    tok = ScatteringAmplitudeTokenizer(max_particles=max_particles)
+    tok = ScatteringAmplitudeTokenizer(
+        max_particles=max_particles,
+        max_sequence_length=max_sequence_length,
+    )
 
     with src.open(newline="", encoding="utf-8") as fin, \
          dst.open("w", newline="", encoding="utf-8") as fout:
@@ -74,10 +78,18 @@ if __name__ == "__main__":
     parser.add_argument("input_csv", type=pathlib.Path)
     parser.add_argument("output_csv", type=pathlib.Path)
     parser.add_argument("--max-particles", type=int, default=8)
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=2048,
+        help="Maximum tokenized length per expression. Use 0 to disable.",
+    )
     parser.add_argument("--decode-format", type=str, default=None,
                         choices=["infix", "prefix"],
                         help="Decode token IDs back to expressions.")
     args = parser.parse_args()
+    max_sequence_length = None if args.max_tokens <= 0 else args.max_tokens
     tokenise_file(args.input_csv, args.output_csv,
                   max_particles=args.max_particles,
+                  max_sequence_length=max_sequence_length,
                   decode_format=args.decode_format)

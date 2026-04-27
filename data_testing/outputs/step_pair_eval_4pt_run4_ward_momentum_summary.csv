@@ -1,0 +1,2 @@
+total_examples,top1_parse_ok,top1_exact_token_matches,top1_num_eq_source,top1_shorter,any_exact_token_match,any_valid_equiv_shorter,avg_candidates_checked,avg_valid_decodes,avg_malformed,total_accepted_candidates
+64,50,2,32,49,4,59,7.984375,4.59375,3.390625,128

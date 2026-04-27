@@ -1,0 +1,2 @@
+# gen_data log N=4 target=64 terms=[1,2] scr=[2,5] seed=123 max_tokens=2048 pol_modes=coulomb,covariant
+# SUMMARY accepted=64 parity_fail=0 scramble_fail=2 pole_fail=0 dimension_fail=0 token_fail=0 attempts=66

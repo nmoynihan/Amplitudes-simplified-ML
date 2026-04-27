@@ -1,0 +1,2 @@
+# gen_data step log N=4 target_pairs=6000 terms=[1,2] scr=[1,5] seed=42 max_tokens=2048 pol_modes=coulomb,covariant scrambles=commute_dot,multiply_one,ward,momentum,ratio,mass_shell_zero,partial_fraction
+# SUMMARY accepted=6000 base_fail=0 parity_fail=0 trajectory_fail=50 equiv_fail=248 not_shorter=812 token_fail=0 attempts=1926

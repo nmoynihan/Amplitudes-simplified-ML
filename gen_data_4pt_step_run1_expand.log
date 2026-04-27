@@ -1,0 +1,1 @@
+# gen_data step log N=4 target_pairs=6000 terms=[1,1] scr=[0,0] seed=42 max_tokens=512 pol_modes=coulomb,covariant scrambles=none

@@ -65,6 +65,7 @@ PRINT_EXAMPLES = 3
 NUMERIC_EQUIV_SAMPLES = 3
 NUMERIC_EQUIV_SEED = 42
 NUMERIC_EQUIV_MASS = 2.0
+NUMERIC_EQUIV_POL_MODES = ("coulomb", "covariant")
 NUMERIC_TOL_ABS = 1e-12
 NUMERIC_TOL_REL = 1e-10
 
@@ -194,8 +195,10 @@ def precompute_kinematics() -> list[tuple[Any, Any]]:
         generate_kinematics(
             N_PARTICLES,
             M=NUMERIC_EQUIV_MASS,
-            seed=NUMERIC_EQUIV_SEED + i,
+            pol_mode=pol_mode,
+            seed=NUMERIC_EQUIV_SEED + mode_idx * NUMERIC_EQUIV_SAMPLES + i,
         )
+        for mode_idx, pol_mode in enumerate(NUMERIC_EQUIV_POL_MODES)
         for i in range(NUMERIC_EQUIV_SAMPLES)
     ]
 

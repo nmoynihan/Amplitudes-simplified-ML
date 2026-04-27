@@ -208,6 +208,7 @@ def analyze_csv(
     tol_abs: float = 1e-12,
     tol_rel: float = 1e-10,
     skip_numeric: bool = False,
+    pol_modes: tuple[str, ...] = ("coulomb", "covariant"),
 ) -> int:
     tokenizer = ScatteringAmplitudeTokenizer(max_particles=8)
     warnings: list[WarningEntry] = []
@@ -230,7 +231,13 @@ def analyze_csv(
     kinematics_samples: list[tuple[object, object]] = []
     if not skip_numeric:
         kinematics_samples = [
-            generate_kinematics(file_n, M=numeric_mass, seed=12345 + i)
+            generate_kinematics(
+                file_n,
+                M=numeric_mass,
+                pol_mode=pol_mode,
+                seed=12345 + mode_idx * numeric_checks + i,
+            )
+            for mode_idx, pol_mode in enumerate(pol_modes)
             for i in range(numeric_checks)
         ]
 
@@ -378,7 +385,8 @@ def analyze_csv(
     else:
         print(
             "Numerical checks: "
-            f"{numeric_checks} phase-space points, M={numeric_mass}, "
+            f"{numeric_checks} phase-space points per polarization mode, "
+            f"pol_modes={','.join(pol_modes)}, M={numeric_mass}, "
             f"tol_abs={tol_abs:.1e}, tol_rel={tol_rel:.1e}"
         )
     print()
@@ -406,6 +414,13 @@ def main() -> int:
     parser.add_argument("--tol-abs", type=float, default=1e-12)
     parser.add_argument("--tol-rel", type=float, default=1e-10)
     parser.add_argument("--skip-numeric", action="store_true")
+    parser.add_argument(
+        "--pol-modes",
+        nargs="+",
+        choices=["coulomb", "covariant"],
+        default=["coulomb", "covariant"],
+        help="Polarization modes used by numerical checks.",
+    )
     args = parser.parse_args()
     return analyze_csv(
         args.input_csv,
@@ -414,6 +429,7 @@ def main() -> int:
         tol_abs=args.tol_abs,
         tol_rel=args.tol_rel,
         skip_numeric=args.skip_numeric,
+        pol_modes=tuple(args.pol_modes),
     )
 
 

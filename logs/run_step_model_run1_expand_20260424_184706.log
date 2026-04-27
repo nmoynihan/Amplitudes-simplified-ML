@@ -1,0 +1,34 @@
+Run log: logs/run_step_model_run1_expand_20260424_184706.log
+Mode: train_eval
+N_PARTICLES=4 RUN_NAME=step_model_run1_expand MODEL_PATH=models/step_model_run1_expand/best_model.pt
+SCRAMBLES=none
+Traceback (most recent call last):
+  File "/home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/data_gen/gen_data.py", line 1946, in <module>
+    pairs = builder(
+        args.N,
+    ...<13 lines>...
+        scrambles=args.scrambles,
+    )
+  File "/home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/data_gen/gen_data.py", line 1703, in build_step_dataset
+    ok, _ = _validate_pair(
+            ~~~~~~~~~~~~~~^
+        simple_expr,
+        ^^^^^^^^^^^^
+    ...<3 lines>...
+        pol_modes=validation_pol_modes,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/data_gen/gen_data.py", line 1420, in _validate_pair
+    mom, pol = generate_kinematics(N, M=M, pol_mode=pol_mode)
+               ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/data_gen/kinematics.py", line 122, in generate_kinematics
+    pols = np.stack([pol_fn(k4, rng) for k4 in photons])
+                     ~~~~~~^^^^^^^^^
+  File "/home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/data_gen/kinematics.py", line 49, in _transverse_pol_coulomb
+    return np.concatenate(([0.0], eps_spatial))
+           ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nathan/.local/share/mise/installs/python/3.14.0/lib/python3.14/site-packages/numpy/_core/multiarray.py", line 188, in concatenate
+    @array_function_from_c_func_and_dispatcher(_multiarray_umath.concatenate)
+    
+KeyboardInterrupt

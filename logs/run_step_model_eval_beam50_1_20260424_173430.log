@@ -1,0 +1,38 @@
+Run log: logs/run_step_model_eval_beam50_1_20260424_173430.log
+Mode: eval-only
+N_PARTICLES=4 RUN_NAME=step_model MODEL_PATH=models/step_model/best_model.pt
+Using device: cpu
+Model path: /home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/models/step_model/best_model.pt
+Evaluation samples: 1 fresh 4-point examples
+Decoding: beam, beam_size=50
+Generating 1 direct 4-point evaluation samples...
+Wrote raw data to /home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/data_testing/outputs/iterative_eval_4pt_step_model_beam50_1.csv
+Wrote tokenised data to /home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/data_testing/outputs/iterative_eval_4pt_step_model_beam50_1_tok.csv
+Dedupe removed 0 duplicate pairs
+Loading step model from /home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/models/step_model/best_model.pt
+/home/nathan/.local/share/mise/installs/python/3.14.0/lib/python3.14/site-packages/torch/nn/modules/transformer.py:531: UserWarning: The PyTorch API of nested tensors is in prototype stage and will change in the near future. We recommend specifying layout=torch.jagged when constructing a nested tensor, as this layout receives active development, has better operator coverage, and works with torch.compile. (Triggered internally at /pytorch/aten/src/ATen/NestedTensorImpl.cpp:178.)
+  output = torch._nested_tensor_from_mask(
+
+Iterative simplification summary
+  total examples          : 1
+  exact token matches     : 0 / 1
+  exact string matches    : 0 / 1
+  num-eq target simple    : 1 / 1
+  num-eq input scrambled  : 1 / 1
+  improved examples       : 0 / 1
+  improved but not exact  : 0 / 1
+  avg token reduction     : 0.00
+  avg accepted steps      : 0.00
+  avg candidates checked  : 46.00
+
+Example iterative results (1 rows):
+  row 0
+    target simple : 4*(p_1 · F_2 · p_3*p_2 · F_3 · p_2*p_1 · p_4*p_2 · p_3)/(p_1 · p_2*p_1 · p_3*p_2 · p_3*p_2 · p_4*p_3 · p_4)
+    initial       : (4*(((p_1 · p_2)*(e_2 · p_3) - (p_1 · e_2)*(p_3 · p_2))*((p_2 · p_3)*(e_3 · p_2) - (p_2 · e_3)*(p_3 · p_2))*p_1 · p_4*p_2 · p_3)/(p_1 · p_2*p_1 · p_3*p_2 · p_3*p_2 · p_4*p_3 · p_4)
+    final         : (4*(((p_1 · p_2)*(e_2 · p_3) - (p_1 · e_2)*(p_3 · p_2))*((p_2 · p_3)*(e_3 · p_2) - (p_2 · e_3)*(p_3 · p_2))*p_1 · p_4*p_2 · p_3)/(p_1 · p_2*p_1 · p_3*p_2 · p_3*p_2 · p_4*p_3 · p_4)
+    steps=0 reduction=0 stop=malformed_output exact=0
+
+Wrote detail results to /home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/data_testing/outputs/iterative_eval_4pt_step_model_beam50_1_results.csv
+Wrote summary to /home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/data_testing/outputs/iterative_eval_4pt_step_model_beam50_1_summary.csv
+Total wall time: 42.67s
+Completed. Full log written to logs/run_step_model_eval_beam50_1_20260424_173430.log

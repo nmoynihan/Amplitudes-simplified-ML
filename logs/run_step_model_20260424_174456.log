@@ -1,0 +1,48 @@
+Run log: logs/run_step_model_20260424_174456.log
+Mode: step-eval
+N_PARTICLES=4 RUN_NAME=step_model MODEL_PATH=models/step_model/best_model.pt
+/home/nathan/.local/share/mise/installs/python/3.14.0/lib/python3.14/site-packages/torch/nn/modules/transformer.py:531: UserWarning: The PyTorch API of nested tensors is in prototype stage and will change in the near future. We recommend specifying layout=torch.jagged when constructing a nested tensor, as this layout receives active development, has better operator coverage, and works with torch.compile. (Triggered internally at /pytorch/aten/src/ATen/NestedTensorImpl.cpp:178.)
+  output = torch._nested_tensor_from_mask(
+Using device: cuda
+Model path: /home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/models/step_model/best_model.pt
+Evaluation samples: 64 fresh held-out step pairs
+Decoding: beam, beam_size=8
+Generating 64 held-out one-step 4-point pairs...
+Wrote raw step pairs to /home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/data_testing/outputs/step_pair_eval_4pt_step_model.csv
+Wrote tokenised step pairs to /home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/data_testing/outputs/step_pair_eval_4pt_step_model_tok.csv
+Dedupe removed 0 duplicate pairs
+
+Held-out step-pair summary
+  total examples              : 64
+  top1 parse ok               : 12 / 64
+  top1 exact token matches    : 0 / 64
+  top1 num-eq source          : 2 / 64
+  top1 shorter                : 11 / 64
+  any exact in candidates     : 1 / 64
+  any valid equiv shorter     : 4 / 64
+  avg candidates checked      : 7.86
+  avg valid decodes           : 1.23
+  avg malformed candidates    : 6.62
+  total accepted candidates   : 8
+
+Example step-pair results (3 rows):
+  row 0
+    source : 4*(((p_1 · p_2)*(e_2 · p_3) - (p_1 · e_2)*(p_2 · p_3))*((p_2 · p_3)*(e_3 · p_2) - (p_2 · e_3)*(p_3 · p_2))*p_1 · p_4*p_2 · p_3)/(p_1 · p_2*p_1 · p_3*p_2 · p_3*p_2 · p_4*p_3 · p_4)
+    target : 4*(p_1 · F_2 · p_3*p_2 · F_3 · p_2*p_1 · p_4*p_2 · p_3)/(p_1 · p_2*p_1 · p_3*p_2 · p_3*p_2 · p_4*p_3 · p_4)
+    top1   : 
+    parse=0 exact=0 equiv=0 shorter=0 any_accept=0
+  row 1
+    source : (4*(((p_1 · p_2)*(e_2 · p_3) - (p_1 · e_2)*(p_2 · p_3))*((p_2 · p_3)*(e_3 · p_2) - (p_2 · e_3)*(p_3 · p_2))*p_1 · p_4*p_2 · p_3)/(p_1 · p_2*p_1 · p_3*p_2 · p_3*p_2 · p_4*p_3 · p_4)
+    target : 4*(((p_1 · p_2)*(e_2 · p_3) - (p_1 · e_2)*(p_2 · p_3))*((p_2 · p_3)*(e_3 · p_2) - (p_2 · e_3)*(p_3 · p_2))*p_1 · p_4*p_2 · p_3)/(p_1 · p_2*p_1 · p_3*p_2 · p_3*p_2 · p_4*p_3 · p_4)
+    top1   : 
+    parse=0 exact=0 equiv=0 shorter=0 any_accept=0
+  row 2
+    source : -9*(((e_2 · p_3)*(e_3 · p_2) - (p_2 · p_3)*(e_3 · e_2) - (e_2 · e_3)*(p_3 · p_2) + (p_2 · e_3)*(p_3 · e_2))*p_3 · p_4)/(p_2 · p_3*p_2 · p_4)
+    target : -9*(Tr(F_2 · F_3)*p_3 · p_4)/(p_2 · p_3*p_2 · p_4)
+    top1   : 
+    parse=0 exact=0 equiv=0 shorter=0 any_accept=0
+
+Wrote detail results to /home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/data_testing/outputs/step_pair_eval_4pt_step_model_results.csv
+Wrote summary to /home/nathan/Dropbox/Projects/ML For Amplitudes/SC/sturdy-couscous/data_testing/outputs/step_pair_eval_4pt_step_model_summary.csv
+Total wall time: 92.20s
+Completed. Full log written to logs/run_step_model_20260424_174456.log

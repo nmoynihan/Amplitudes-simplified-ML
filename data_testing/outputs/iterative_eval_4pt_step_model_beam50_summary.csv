@@ -1,0 +1,2 @@
+total_examples,exact_token_matches,exact_string_matches,num_eq_target_simple,num_eq_input_scrambled,improved_examples,improved_not_exact,avg_token_reduction,avg_accepted_steps,avg_candidates_checked
+64,1,2,64,64,4,3,3.140625,0.09375,53.15625
