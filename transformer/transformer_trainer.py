@@ -24,24 +24,24 @@ if device.type == 'cpu':
     print(f"Using {n_threads} CPU threads for PyTorch.")
 
 # Specify the run hyperparameters
-filename = ['expanded_data/train_data/gi_5pt_tok_python.csv', 'expanded_data/train_data/gi_5pt_tok_mathematica.csv'] #'gi_4pt_tok.csv'
+filename = ['gi_4pt_os_tok.csv'] #'gi_4pt_tok.csv'
 training_hyperparams = {
-    'n_epochs': 200,
-    'batch_size': 16,
+    'n_epochs': 30,
+    'batch_size': 16, # prev 16. Setting this to 4 makes this run on a 16gb GPU.
     'train_split': 0.8,
     'learning_rate': 1e-4,
     'weight_decay': 1e-5,
-    'early_stopping_patience': 10,  # Stop if no improvement for 10 epochs
+    'early_stopping_patience': 8,  # Stop if no improvement for 10 epochs
     'early_stopping_min_delta': 1e-4  # Minimum change to qualify as improvement
 }
 model_hyperparams = {
-    'embedding_dim': 512,
-    'n_heads': 4,
-    'n_enc_layers': 5,
-    'n_dec_layers': 5,
+    'embedding_dim': 256, # prev 512
+    'n_heads': 4, # prev 4
+    'n_enc_layers': 4, # prev 5
+    'n_dec_layers': 4, # prev 5
     'dropout': 0.025,
     'sinusoidal_embeddings': True,
-    'head_ff_dim': 1024,  # 4 * embedding_dim (4 * 64 = 256)
+    'head_ff_dim': 512,  # 4 * embedding_dim (4 * 64 = 256)
     'device': device
 }
 

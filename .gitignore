@@ -10,4 +10,7 @@ data_generation/*.csv
 final_models/**
 messabout.py
 !*.csv.tar.gz
-PLAN.md
+PLAN.mddata_gen/
+data_gen/
+data_gen/
+data_gen/

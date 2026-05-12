@@ -4,7 +4,7 @@ Evaluate one trained transformer on freshly generated amplitude data.
 
 All configuration lives in this file. The script:
 
-1. Generates new raw data on disk.
+1. Generates new raw data on disk, or imports an existing raw CSV.
 2. Tokenises that data on disk.
 3. Loads one model checkpoint.
 4. Runs one or more decoding modes (greedy by default, optional beam/nucleus).
@@ -35,36 +35,68 @@ from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_TESTING_DIR = ROOT / "data_testing"
+DATA_STORAGE_DIR = ROOT / "data"
 OUTPUT_SUBDIR = "outputs"
 
-MODEL_PATH = ROOT / "models" / "best_model_iter.pt"
+MODEL_PATH = ROOT / "models" / "twofiddytwo" / "best_model.pt"
+# "auto" chooses CUDA when available, otherwise CPU. Set explicitly for repeatable timing/debugging.
 DEVICE = "auto"  # "auto", "cpu", "cuda"
 
+# Generated evaluation set shape. N_PARTICLES=4 means two photon legs in this setup.
 N_PARTICLES = 4
-NUM_SAMPLES = 16
-GENERATION_SEED = 123
+NUM_SAMPLES = 100
+# Seed controls the generated evaluation examples, so changing it changes the test set.
+GENERATION_SEED = 451
+# Tokenizer vocabulary supports p_i/e_i/F_i/M_i up to this particle index.
 TOKENIZER_MAX_PARTICLES = 8
 
+# All generated raw/token/result CSVs use this stem under data_testing/outputs.
 DATA_FILENAME_STEM = "generated_eval_4pt"
 RAW_CSV_PATH = DATA_TESTING_DIR / OUTPUT_SUBDIR / f"{DATA_FILENAME_STEM}.csv"
 TOK_CSV_PATH = DATA_TESTING_DIR / OUTPUT_SUBDIR / f"{DATA_FILENAME_STEM}_tok.csv"
 GEN_LOG_PATH = DATA_TESTING_DIR / OUTPUT_SUBDIR / f"{DATA_FILENAME_STEM}.log"
 SUMMARY_CSV_PATH = DATA_TESTING_DIR / OUTPUT_SUBDIR / f"{DATA_FILENAME_STEM}_summary.csv"
+# Data source for this evaluation. Use "generate" for fresh synthetic data or
+# "csv" for an existing raw CSV with columns named simple and scrambled.
+DATA_SOURCE = "csv"  # "generate", "csv"
+# Used only when DATA_SOURCE="csv". Relative paths are resolved from repo root.
+EXISTING_RAW_CSV_PATH = DATA_STORAGE_DIR / "sqed_w0110_mM00M_den6_maxD2_20000_phys_oneshot.csv" # Paolo's 20k dataset
+#EXISTING_RAW_CSV_PATH = DATA_STORAGE_DIR / "gi_4pt_oneshot_5k_val.csv" # Nathan's 5k dataset
 
+# Optional row cap for imported CSVs. None evaluates every row in the file.
+EXISTING_CSV_MAX_ROWS = 1000
+
+# Optional exact-pair dedupe for imported CSVs before tokenization/evaluation.
+EXISTING_CSV_DEDUPE = True
+
+### Special dataset testing. Comment it all out to use one of the above real datasets instead.
+#DATA_SOURCE = "csv"
+#EXISTING_RAW_CSV_PATH = DATA_STORAGE_DIR / "sqed_w0110_mM00M_den6_maxD2_20000_phys_oneshot_gi_style_no_powers.csv"
+#EXISTING_CSV_MAX_ROWS = 1000
+
+# Number of additive terms in the canonical/simple expression before expansion/scrambling.
 GEN_MIN_TERMS = 1
-GEN_MAX_TERMS = 2
-GEN_MIN_SCRAMBLES = 1
-GEN_MAX_SCRAMBLES = 3
+GEN_MAX_TERMS = 5
+# Number of scramble passes applied to the expanded expression.
+GEN_MIN_SCRAMBLES = 3
+GEN_MAX_SCRAMBLES = 6
+# Validate generated simple/expanded/scrambled expressions numerically before accepting rows.
 GEN_VALIDATE = True
+# Mass value used during generation-time validation.
 GEN_MASS = 2.0
 
+# Evaluation batching. Larger is faster if the selected device has enough memory.
 BATCH_SIZE = 8
+# None means pad/decode up to this generated dataset's longest source/target sequence.
 MAX_SEQ_LENGTH_OVERRIDE = None
+# Number of example rows printed per decode mode; full details are always written to CSV.
 PRINT_EXAMPLES = 3
 
+# Numeric equivalence check for model predictions. These samples are independent of generation.
 NUMERIC_EQUIV_SAMPLES = 3
-NUMERIC_EQUIV_SEED = 42
+NUMERIC_EQUIV_SEED = 151
 NUMERIC_EQUIV_MASS = 2.0
+# Equivalence passes if either absolute or relative tolerance is met on every numeric sample.
 NUMERIC_TOL_ABS = 1e-12
 NUMERIC_TOL_REL = 1e-10
 
@@ -72,16 +104,24 @@ NUMERIC_TOL_REL = 1e-10
 @dataclass(frozen=True)
 class DecodeConfig:
     name: str
+    # Toggle individual modes without changing the rest of the evaluation setup.
     enabled: bool
+    # Supported by decode_with_model: "greedy", "beam", or "nucleus".
     decoding_method: str
+    # Per-mode override. None falls back to MAX_SEQ_LENGTH_OVERRIDE or dataset.max_length.
     max_length: int | None = None
+    # Number of retained hypotheses for beam search and nucleus sampling.
     beam_size: int = 4
+    # Nucleus sampling cutoff and temperature; ignored by greedy/beam.
     p_nucleus: float = 0.95
     temperature_nucleus: float = 1.0
+    # When true, score every returned hypothesis, not just the top-1 output.
     evaluate_beam_hypotheses: bool = False
+    # Optional cap on checked hypotheses; None checks all returned hypotheses.
     max_beams_to_check: int | None = None
 
 
+# Each enabled entry below produces its own detail CSV and one row in the summary CSV.
 DECODE_RUNS: list[DecodeConfig] = [
     DecodeConfig(
         name="greedy",
@@ -175,6 +215,36 @@ def load_raw_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def resolve_input_path(path: Path | str) -> Path:
+    resolved = Path(path).expanduser()
+    if not resolved.is_absolute():
+        resolved = ROOT / resolved
+    return resolved
+
+
+def read_raw_pairs(path: Path) -> list[tuple[str, str]]:
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        required = {"simple", "scrambled"}
+        if reader.fieldnames is None:
+            raise ValueError(f"{path} has no CSV header")
+        missing = required - set(reader.fieldnames)
+        if missing:
+            raise ValueError(f"{path} is missing required columns: {sorted(missing)}")
+
+        pairs: list[tuple[str, str]] = []
+        for row_idx, row in enumerate(reader, start=2):
+            simple = (row.get("simple") or "").strip()
+            scrambled = (row.get("scrambled") or "").strip()
+            if not simple or not scrambled:
+                raise ValueError(f"{path}:{row_idx} has an empty simple or scrambled value")
+            pairs.append((simple, scrambled))
+
+    if not pairs:
+        raise ValueError(f"{path} contains no data rows")
+    return pairs
+
+
 def load_token_rows(path: Path) -> list[dict[str, list[int]]]:
     rows: list[dict[str, list[int]]] = []
     with path.open(newline="", encoding="utf-8") as handle:
@@ -253,6 +323,41 @@ def generate_test_data() -> None:
     print(f"Wrote raw data to {RAW_CSV_PATH}")
     print(f"Wrote tokenised data to {TOK_CSV_PATH}")
     print(f"Dedupe removed {removed} duplicate pairs")
+
+
+def import_existing_test_data() -> None:
+    source_path = resolve_input_path(EXISTING_RAW_CSV_PATH)
+    print(f"Using existing raw data from {source_path}")
+    pairs = read_raw_pairs(source_path)
+    original_count = len(pairs)
+
+    removed = 0
+    if EXISTING_CSV_DEDUPE:
+        pairs, removed = gd.dedupe_pairs(pairs)
+    if EXISTING_CSV_MAX_ROWS is not None:
+        pairs = pairs[: int(EXISTING_CSV_MAX_ROWS)]
+
+    gd.write_csv(pairs, str(RAW_CSV_PATH))
+    gd.tokenise_csv(str(RAW_CSV_PATH), str(TOK_CSV_PATH), max_particles=TOKENIZER_MAX_PARTICLES)
+
+    with GEN_LOG_PATH.open("w", encoding="utf-8") as handle:
+        handle.write(f"# imported raw CSV: {source_path}\n")
+        handle.write(f"# rows_read={original_count} rows_used={len(pairs)} dedupe_removed={removed}\n")
+
+    print(f"Imported {len(pairs)} / {original_count} rows")
+    print(f"Wrote raw data to {RAW_CSV_PATH}")
+    print(f"Wrote tokenised data to {TOK_CSV_PATH}")
+    if EXISTING_CSV_DEDUPE:
+        print(f"Dedupe removed {removed} duplicate pairs")
+
+
+def prepare_test_data() -> None:
+    if DATA_SOURCE == "generate":
+        generate_test_data()
+    elif DATA_SOURCE == "csv":
+        import_existing_test_data()
+    else:
+        raise ValueError(f"DATA_SOURCE must be 'generate' or 'csv', got {DATA_SOURCE!r}")
 
 
 def load_model(device: str):
@@ -521,7 +626,7 @@ def main() -> None:
     device = resolve_device()
     print(f"Using device: {device}")
 
-    generate_test_data()
+    prepare_test_data()
     raw_rows = load_raw_rows(RAW_CSV_PATH)
     token_rows = load_token_rows(TOK_CSV_PATH)
     if len(raw_rows) != len(token_rows):
