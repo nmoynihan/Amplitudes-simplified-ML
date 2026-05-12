@@ -82,6 +82,11 @@ class ScatteringAmplitudeTokenizer:
                 unknown.append(tok)
         if unknown:
             raise ValueError(f"Unknown tokens in '{expr}': {unknown}")
+        if self.max_sequence_length is not None and len(result) > self.max_sequence_length:
+            raise ValueError(
+                f"Tokenized expression has length {len(result)}, "
+                f"exceeding max_sequence_length={self.max_sequence_length}"
+            )
         return result
 
     def decode_prefix(self, ids: List[int]) -> str:
@@ -280,6 +285,7 @@ def numerically_equivalent(
     tol_abs: float = 1e-12,
     tol_rel: float = 1e-10,
     seed: Optional[int] = None,
+    pol_modes: Tuple[str, ...] = ("coulomb", "covariant"),
     return_details: bool = False,
 ):
     """Compare two expressions (token IDs or infix strings) numerically.
@@ -337,17 +343,22 @@ def numerically_equivalent(
         "N_effective": N_eff, "samples": [],
     }
     ok = True
-    for i in range(samples):
-        s = None if seed is None else seed + i
-        mom, pol = _km.generate_kinematics(N_eff, M=M, seed=s)
-        va = _gd.eval_infix_numeric(expr_a, mom, pol)
-        vb = _gd.eval_infix_numeric(expr_b, mom, pol)
-        diff = abs(va - vb)
-        scale = max(abs(va), abs(vb), 1.0)
-        passed = diff <= tol_abs or diff / scale <= tol_rel
-        details["samples"].append({"va": va, "vb": vb, "diff": diff, "passed": passed})
-        if not passed:
-            ok = False
+    for mode_idx, pol_mode in enumerate(pol_modes):
+        for i in range(samples):
+            s = None if seed is None else seed + mode_idx * samples + i
+            mom, pol = _km.generate_kinematics(N_eff, M=M, pol_mode=pol_mode, seed=s)
+            va = _gd.eval_infix_numeric(expr_a, mom, pol)
+            vb = _gd.eval_infix_numeric(expr_b, mom, pol)
+            diff = abs(va - vb)
+            scale = max(abs(va), abs(vb), 1.0)
+            passed = diff <= tol_abs or diff / scale <= tol_rel
+            details["samples"].append(
+                {"pol_mode": pol_mode, "va": va, "vb": vb, "diff": diff, "passed": passed}
+            )
+            if not passed:
+                ok = False
+                break
+        if not ok:
             break
 
     return (ok, details) if return_details else ok
