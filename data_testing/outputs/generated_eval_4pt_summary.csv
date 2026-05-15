@@ -1,3 +1,0 @@
-mode,total_examples,top1_exact_token_matches,top1_exact_string_matches,top1_num_eq_simple,top1_num_eq_scrambled,any_beam_exact_token_matches,any_beam_exact_string_matches,any_beam_num_eq_simple,any_beam_num_eq_scrambled,avg_candidate_sequences_checked,avg_valid_decoded_candidates
-greedy,1000,0,0,0,0,0,0,0,0,1.0,0.795
-beam,1000,0,0,0,0,0,0,0,0,4.0,3.094

@@ -1,2 +1,0 @@
-# gen_data log N=4 target=16 terms=[1,2] scr=[1,3] seed=123
-# SUMMARY accepted=16 parity_fail=0 scramble_fail=0 pole_fail=0 dimension_fail=0 attempts=16
