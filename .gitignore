@@ -6,11 +6,12 @@ venv/
 **.venv/
 models/*
 messabout.ipynb
-data_generation/*.csv
+data_gen/*.csv
+data_testing/*.csv
 final_models/**
 messabout.py
 !*.csv.tar.gz
 PLAN.mddata_gen/
-data_gen/
-data_gen/
-data_gen/
+*.csv
+*.png
+*.log
