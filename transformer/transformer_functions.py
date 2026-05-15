@@ -475,28 +475,43 @@ def create_model(vocab_size, **hyperparams):
     return TransformerRegressor(vocab_size=vocab_size, **hyperparams)
 
 
-def train_step(model, batch, criterion, optimizer):
+def train_step(
+    model,
+    batch,
+    criterion,
+    optimizer,
+    *,
+    scaler=None,
+    amp_enabled=False,
+    amp_dtype=torch.float16,
+    grad_clip=None,
+):
     """Single training step"""
     model.train()
     
     # Move batch to model's device
-    src = batch['input'].to(model.device)  # scrambled sequences
-    tgt = batch['target'].to(model.device)  # simple sequences
+    src = batch['input'].to(model.device, non_blocking=True)  # scrambled sequences
+    tgt = batch['target'].to(model.device, non_blocking=True)  # simple sequences
     
     # Prepare target input and output
     tgt_input = tgt[:, :-1]  # All but last token
     tgt_output = tgt[:, 1:]  # All but first token (shifted)
     
     # Forward pass
-    optimizer.zero_grad()
-    output = model(src, tgt_input)
-    
-    # Reshape for loss calculation
-    output = output.reshape(-1, output.size(-1))
-    tgt_output = tgt_output.reshape(-1)
-    
-    # Calculate loss (ignore padding tokens)
-    loss = criterion(output, tgt_output)
+    optimizer.zero_grad(set_to_none=True)
+    with torch.amp.autocast(
+        device_type=model.device.type,
+        dtype=amp_dtype,
+        enabled=amp_enabled and model.device.type == "cuda",
+    ):
+        output = model(src, tgt_input)
+
+        # Reshape for loss calculation
+        output = output.reshape(-1, output.size(-1))
+        tgt_output = tgt_output.reshape(-1)
+
+        # Calculate loss (ignore padding tokens)
+        loss = criterion(output, tgt_output)
     
     # Calculate accuracy (ignore padding tokens)
     with torch.no_grad():
@@ -506,34 +521,49 @@ def train_step(model, batch, criterion, optimizer):
         accuracy = correct.sum().item() / mask.sum().item() if mask.sum().item() > 0 else 0.0
     
     # Backward pass
-    loss.backward()
-    optimizer.step()
+    if scaler is not None and scaler.is_enabled():
+        scaler.scale(loss).backward()
+        if grad_clip is not None:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        scaler.step(optimizer)
+        scaler.update()
+    else:
+        loss.backward()
+        if grad_clip is not None:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        optimizer.step()
     
     return loss.item(), accuracy
 
 
-def validate_step(model, batch, criterion):
+def validate_step(model, batch, criterion, *, amp_enabled=False, amp_dtype=torch.float16):
     """Single validation step"""
     model.eval()
     
     with torch.no_grad():
         # Move batch to model's device
-        src = batch['input'].to(model.device)
-        tgt = batch['target'].to(model.device)
+        src = batch['input'].to(model.device, non_blocking=True)
+        tgt = batch['target'].to(model.device, non_blocking=True)
         
         # Prepare target input and output
         tgt_input = tgt[:, :-1]
         tgt_output = tgt[:, 1:]
         
-        # Forward pass
-        output = model(src, tgt_input)
-        
-        # Reshape for loss calculation
-        output = output.reshape(-1, output.size(-1))
-        tgt_output = tgt_output.reshape(-1)
-        
-        # Calculate loss
-        loss = criterion(output, tgt_output)
+        with torch.amp.autocast(
+            device_type=model.device.type,
+            dtype=amp_dtype,
+            enabled=amp_enabled and model.device.type == "cuda",
+        ):
+            # Forward pass
+            output = model(src, tgt_input)
+
+            # Reshape for loss calculation
+            output = output.reshape(-1, output.size(-1))
+            tgt_output = tgt_output.reshape(-1)
+
+            # Calculate loss
+            loss = criterion(output, tgt_output)
         
         # Calculate accuracy (ignore padding tokens)
         preds = torch.argmax(output, dim=-1)
@@ -544,8 +574,25 @@ def validate_step(model, batch, criterion):
     return loss.item(), accuracy
 
 
-def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, run_name='default_run',
-                early_stopping_patience=None, early_stopping_min_delta=1e-4, save_models=True):
+def train_model(
+    model,
+    optimizer,
+    criterion,
+    train_loader,
+    val_loader,
+    epochs,
+    run_name='default_run',
+    early_stopping_patience=None,
+    early_stopping_min_delta=1e-4,
+    save_models=True,
+    amp_enabled=False,
+    amp_dtype=torch.float16,
+    scaler=None,
+    start_epoch=0,
+    initial_best_val_loss=None,
+    scheduler=None,
+    grad_clip=None,
+):
     """Trains a transformer model with optional checkpointing after each epoch and optional early stopping.
 
     Performs training and validation loops for the specified number of epochs,
@@ -576,9 +623,9 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
     train_accuracies, val_accuracies = [], []
     
     # Early stopping variables
-    best_val_loss = float('inf')
+    best_val_loss = float('inf') if initial_best_val_loss is None else initial_best_val_loss
     patience_counter = 0
-    best_epoch = 0
+    best_epoch = start_epoch
     
     # Create models directory if saving is enabled
     if save_models:
@@ -590,15 +637,31 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
     total_steps = epochs * steps_per_epoch
     pbar = tqdm(total=total_steps, desc=f"Training {run_name}", unit="batch", dynamic_ncols=True)
 
-    for epoch in range(epochs):
+    for local_epoch in range(epochs):
+        epoch = start_epoch + local_epoch
         # Training
         model.train()
         train_loss = 0
         train_acc = 0
-        for batch in train_loader:
-            loss, acc = train_step(model, batch, criterion, optimizer)
+        for batch_idx, batch in enumerate(train_loader, 1):
+            loss, acc = train_step(
+                model,
+                batch,
+                criterion,
+                optimizer,
+                scaler=scaler,
+                amp_enabled=amp_enabled,
+                amp_dtype=amp_dtype,
+                grad_clip=grad_clip,
+            )
             train_loss += loss
             train_acc += acc
+            pbar.set_postfix(
+                epoch=f"{epoch + 1}/{start_epoch + epochs}",
+                phase="train",
+                loss=f"{train_loss / batch_idx:.4f}",
+                acc=f"{train_acc / batch_idx:.4f}",
+            )
             pbar.update(1)
         
         # Validation
@@ -606,10 +669,22 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
         val_loss = 0
         val_acc = 0
         with torch.no_grad():
-            for batch in val_loader:
-                loss, acc = validate_step(model, batch, criterion)
+            for batch_idx, batch in enumerate(val_loader, 1):
+                loss, acc = validate_step(
+                    model,
+                    batch,
+                    criterion,
+                    amp_enabled=amp_enabled,
+                    amp_dtype=amp_dtype,
+                )
                 val_loss += loss
                 val_acc += acc
+                pbar.set_postfix(
+                    epoch=f"{epoch + 1}/{start_epoch + epochs}",
+                    phase="val",
+                    loss=f"{val_loss / batch_idx:.4f}",
+                    acc=f"{val_acc / batch_idx:.4f}",
+                )
                 pbar.update(1)
         
         epoch_train_loss = train_loss / len(train_loader)
@@ -620,7 +695,10 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
         val_losses.append(epoch_val_loss)
         train_accuracies.append(epoch_train_acc)
         val_accuracies.append(epoch_val_acc)
-        
+
+        if scheduler is not None:
+            scheduler.step()
+
         # Early stopping logic
         if early_stopping_patience is not None:
             if epoch_val_loss < best_val_loss - early_stopping_min_delta:
@@ -634,6 +712,7 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
                         'epoch': epoch + 1,
                         'model_state_dict': model.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
+                        'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
                         'train_loss': epoch_train_loss,
                         'val_loss': epoch_val_loss,
                         'model_args': model.model_hyperparams,
@@ -669,6 +748,7 @@ def train_model(model, optimizer, criterion, train_loader, val_loader, epochs, r
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
                 'train_loss': epoch_train_loss,
                 'val_loss': epoch_val_loss,
                 'model_args': model.model_hyperparams,
