@@ -1,0 +1,2 @@
+# gen_data batched log N=4 target=6000 batches=3 batch_size=2000 jobs=8 terms=[1,5] scr=[1,5] unit_probability=0.2 old_style_probability=0.25 spurious_repeat_probability=0.35 full_expand_scrambled=True seed=42 base_seed=42
+# SUMMARY accepted=6000 requested=6000 batches=3 jobs=8

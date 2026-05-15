@@ -40,7 +40,8 @@ DATA_STORAGE_DIR = ROOT / "data"
 OUTPUT_SUBDIR = "outputs"
 
 #MODEL_PATH = ROOT / "models" / "best_model.pt"
-MODEL_PATH = ROOT / "models" / "fivek_newtest" / "best_model.pt"
+# MODEL_PATH = ROOT / "models" / "fivek_newtest" / "best_model.pt"
+MODEL_PATH = ROOT / "models" / "unit_500k" / "best_model.pt"
 # "auto" chooses CUDA when available, otherwise CPU. Set explicitly for repeatable timing/debugging.
 DEVICE = "auto"  # "auto", "cpu", "cuda"
 
@@ -63,11 +64,14 @@ SUMMARY_CSV_PATH = DATA_TESTING_DIR / OUTPUT_SUBDIR / f"{DATA_FILENAME_STEM}_sum
 DATA_SOURCE = "csv"  # "generate", "csv"
 # Used only when DATA_SOURCE="csv". Relative paths are resolved from repo root.
 # EXISTING_RAW_CSV_PATH = DATA_STORAGE_DIR / "sqed_w0110_mM00M_den6_maxD2_20000_phys_oneshot.csv" # Paolo's 20k dataset
-#EXISTING_RAW_CSV_PATH = DATA_STORAGE_DIR / "gi_4pt_oneshot_5k_val.csv" # Nathan's 5k dataset
-#EXISTING_RAW_CSV_PATH = DATA_STORAGE_DIR / "messified.csv" # Paolo's 20k dataset
-EXISTING_RAW_CSV_PATH = DATA_STORAGE_DIR / "sqed_oneshot_150.csv" # Paolo's 20k dataset
+# EXISTING_RAW_CSV_PATH = DATA_STORAGE_DIR / "gi_4pt_oneshot_5k_val.csv" # Nathan's 5k dataset
+# EXISTING_RAW_CSV_PATH = DATA_STORAGE_DIR / "messified.csv" # Paolo's 20k dataset
+# EXISTING_RAW_CSV_PATH = DATA_STORAGE_DIR / "sqed_oneshot_150.csv" # Paolo's 20k dataset
+EXISTING_RAW_CSV_PATH = DATA_STORAGE_DIR / "sqed_4ptseed_oneshot.csv" # 100 scrambled amplitudes
+
+
 # Optional row cap for imported CSVs. None evaluates every row in the file.
-EXISTING_CSV_MAX_ROWS = 150 
+EXISTING_CSV_MAX_ROWS = 100 
 
 # Optional exact-pair dedupe for imported CSVs before tokenization/evaluation.
 EXISTING_CSV_DEDUPE = True
@@ -96,6 +100,10 @@ MAX_SEQ_LENGTH_OVERRIDE = None
 PRINT_EXAMPLES = 3
 # When True, print a concise one-block summary instead of the verbose per-metric list.
 SIMPLE_SUMMARY = True
+# When True, write a compact human-readable CSV alongside the full detail CSV.
+HUMAN_CSV = True
+# When True, generate diagnostic plots alongside the evaluation outputs.
+PLOTS = True
 
 # Numeric equivalence check for model predictions. These samples are independent of generation.
 NUMERIC_EQUIV_SAMPLES = 3
@@ -104,6 +112,7 @@ NUMERIC_EQUIV_MASS = 2.0
 # Equivalence passes if either absolute or relative tolerance is met on every numeric sample.
 NUMERIC_TOL_ABS = 1e-12
 NUMERIC_TOL_REL = 1e-10
+BEAM_SIZE = 50
 
 
 @dataclass(frozen=True)
@@ -116,7 +125,7 @@ class DecodeConfig:
     # Per-mode override. None falls back to MAX_SEQ_LENGTH_OVERRIDE or dataset.max_length.
     max_length: int | None = None
     # Number of retained hypotheses for beam search and nucleus sampling.
-    beam_size: int = 10
+    beam_size: int = BEAM_SIZE
     # Nucleus sampling cutoff and temperature; ignored by greedy/beam.
     p_nucleus: float = 0.95
     temperature_nucleus: float = 1.0
@@ -126,14 +135,14 @@ class DecodeConfig:
     max_beams_to_check: int | None = None
     # If true, choose the shortest decoded beam that is numerically equivalent
     # to the scrambled input as the reported top-1 prediction.
-    rerank_numerical_equiv: bool = False
+    rerank_numerical_equiv: bool = True
 
 
 # Each enabled entry below produces its own detail CSV and one row in the summary CSV.
 DECODE_RUNS: list[DecodeConfig] = [
     DecodeConfig(
         name="greedy",
-        enabled=False,
+        enabled=True,
         decoding_method="greedy",
         evaluate_beam_hypotheses=False,
     ),
@@ -141,17 +150,17 @@ DECODE_RUNS: list[DecodeConfig] = [
         name="beam",
         enabled=True,
         decoding_method="beam",
-        beam_size=5,
+        beam_size=BEAM_SIZE,
         evaluate_beam_hypotheses=True,
         max_beams_to_check=None,
     ),
     DecodeConfig(
         name="nucleus",
-        enabled=False,
+        enabled=True,
         decoding_method="nucleus",
-        beam_size=10,
-        p_nucleus=0.99,
-        temperature_nucleus=1.0,
+        beam_size=BEAM_SIZE,
+        p_nucleus=0.99, # Higher p means more tokens are considered at each step; 0.9 is a common default but may be too low for this task.
+        temperature_nucleus=1.2, # Higher temperature means more random samples; 1.0 is the default and means no reweighting.
         evaluate_beam_hypotheses=True,
         max_beams_to_check=None,
     ),
@@ -228,6 +237,18 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Print a concise summary block instead of the verbose per-metric list.",
     )
+    parser.add_argument(
+        "--human-csv",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Write a compact human-readable CSV with simple, scrambled, top_pred, correct columns.",
+    )
+    parser.add_argument(
+        "--plots",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Generate diagnostic plots alongside the evaluation outputs.",
+    )
     return parser.parse_args()
 
 
@@ -237,7 +258,7 @@ def apply_cli_config(args: argparse.Namespace) -> None:
     global GEN_LOG_PATH, SUMMARY_CSV_PATH, DATA_SOURCE, EXISTING_RAW_CSV_PATH
     global EXISTING_CSV_MAX_ROWS, EXISTING_CSV_DEDUPE, GEN_MIN_TERMS, GEN_MAX_TERMS
     global GEN_MIN_SCRAMBLES, GEN_MAX_SCRAMBLES, BATCH_SIZE, MAX_SEQ_LENGTH_OVERRIDE
-    global DECODE_RUNS, CLI_SCRAMBLES, SIMPLE_SUMMARY
+    global DECODE_RUNS, CLI_SCRAMBLES, SIMPLE_SUMMARY, HUMAN_CSV, PLOTS
 
     if args.model_path is not None:
         MODEL_PATH = resolve_input_path(args.model_path)
@@ -334,6 +355,10 @@ def apply_cli_config(args: argparse.Namespace) -> None:
 
     if args.simple_summary is not None:
         SIMPLE_SUMMARY = args.simple_summary
+    if args.human_csv is not None:
+        HUMAN_CSV = args.human_csv
+    if args.plots is not None:
+        PLOTS = args.plots
 
     CLI_SCRAMBLES = args.scrambles
 
@@ -895,6 +920,164 @@ def write_summary_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def write_human_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Write a compact, human-readable CSV for quick inspection of results.
+
+    Columns:
+        simple                 - target canonical expression
+        scrambled              - input expression given to the model
+        top_pred               - model's top-1 prediction (reranked if enabled)
+        correct                - yes/no: top_pred is numerically equivalent to scrambled
+        any_correct            - yes/no: any candidate was numerically equivalent
+        candidates_checked     - total candidate sequences evaluated
+        valid_candidates       - candidates that decoded to a valid infix expression
+        pred_tokens            - token count of top_pred
+        scrambled_tokens       - token count of scrambled input
+        decode_ok              - yes/no: top_pred decoded without error
+    """
+    if not rows:
+        return
+    fieldnames = [
+        "simple",
+        "scrambled",
+        "top_pred",
+        "correct",
+        "any_correct",
+        "candidates_checked",
+        "valid_candidates",
+        "pred_tokens",
+        "scrambled_tokens",
+        "decode_ok",
+    ]
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({
+                "simple": row["target_simple"],
+                "scrambled": row["input_scrambled"],
+                "top_pred": row["top1_prediction_expr"],
+                "correct": "yes" if int(row["top1_num_eq_scrambled"]) else "no",
+                "any_correct": "yes" if int(row["any_beam_num_eq_scrambled"]) else "no",
+                "candidates_checked": row["candidate_sequences_checked"],
+                "valid_candidates": row["candidate_valid_decode_count"],
+                "pred_tokens": row["top1_prediction_token_count"],
+                "scrambled_tokens": row["target_scrambled_token_count"],
+                "decode_ok": "yes" if int(row["top1_decode_ok"]) else "no",
+            })
+
+
+def write_plots(stem: Path, rows: list[dict[str, Any]], mode_name: str) -> None:
+    """Generate and save diagnostic plots for one decode run.
+
+    Plots produced (all saved as <stem>_plots/<mode>_*.png):
+        1. success_by_length   — success rate (top-1 correct) binned by scrambled token count
+        2. token_length_dist   — histogram of scrambled / prediction token lengths, split
+                                 by whether the prediction was correct
+        3. candidate_quality   — distributions of total candidates checked and valid
+                                 decoded candidates, split by whether any candidate was correct
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except ImportError:
+        print("  matplotlib/numpy not available — skipping plots")
+        return
+
+    plot_dir = stem.parent / f"{stem.name}_plots"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+
+    scr_tok   = np.array([int(r["target_scrambled_token_count"]) for r in rows])
+    pred_tok  = np.array([int(r["top1_prediction_token_count"])  for r in rows])
+    correct   = np.array([int(r["top1_num_eq_scrambled"])        for r in rows], dtype=bool)
+    any_corr  = np.array([int(r["any_beam_num_eq_scrambled"])    for r in rows], dtype=bool)
+    n_cands   = np.array([int(r["candidate_sequences_checked"])  for r in rows])
+    n_valid   = np.array([int(r["candidate_valid_decode_count"]) for r in rows])
+
+    # ── 1. Success rate by scrambled token length ─────────────────────────
+    fig, ax = plt.subplots(figsize=(8, 4))
+    bin_edges = np.percentile(scr_tok, np.linspace(0, 100, 9))  # 8 equal-count bins
+    bin_edges = np.unique(bin_edges.astype(int))
+    bin_labels, bin_correct, bin_any, bin_counts = [], [], [], []
+    for lo, hi in zip(bin_edges[:-1], bin_edges[1:]):
+        mask = (scr_tok >= lo) & (scr_tok < hi)
+        if mask.sum() == 0:
+            continue
+        bin_labels.append(f"{lo}–{hi}")
+        bin_correct.append(correct[mask].mean() * 100)
+        bin_any.append(any_corr[mask].mean() * 100)
+        bin_counts.append(mask.sum())
+    # include last bin edge
+    mask = scr_tok >= bin_edges[-1]
+    if mask.sum() > 0:
+        bin_labels.append(f"{bin_edges[-1]}+")
+        bin_correct.append(correct[mask].mean() * 100)
+        bin_any.append(any_corr[mask].mean() * 100)
+        bin_counts.append(mask.sum())
+    x = np.arange(len(bin_labels))
+    w = 0.35
+    bars1 = ax.bar(x - w / 2, bin_correct, w, label="top-1 correct", color="steelblue")
+    bars2 = ax.bar(x + w / 2, bin_any,     w, label="any-beam correct", color="darkorange", alpha=0.8)
+    ax.set_xticks(x)
+    ax.set_xticklabels(bin_labels, rotation=30, ha="right", fontsize=8)
+    ax.set_xlabel("Scrambled token count (bin)")
+    ax.set_ylabel("Success rate (%)")
+    ax.set_ylim(0, 110)
+    ax.set_title(f"[{mode_name}] Success rate by input length  (n={len(rows)})")
+    ax.legend()
+    for bar, count in zip(bars1, bin_counts):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1.5,
+                f"n={count}", ha="center", va="bottom", fontsize=7)
+    fig.tight_layout()
+    p = plot_dir / f"{mode_name}_success_by_length.png"
+    fig.savefig(p, dpi=150)
+    plt.close(fig)
+    print(f"  plot: {p}")
+
+    # ── 2. Token length distributions ─────────────────────────────────────
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4), sharey=False)
+    bins = np.linspace(0, max(scr_tok.max(), pred_tok.max()) + 10, 30)
+    for ax, vals, label in [
+        (axes[0], scr_tok, "Scrambled"),
+        (axes[1], pred_tok, "Prediction"),
+    ]:
+        ax.hist(vals[correct],  bins=bins, alpha=0.7, label="correct",   color="steelblue")
+        ax.hist(vals[~correct], bins=bins, alpha=0.7, label="incorrect", color="tomato")
+        ax.set_xlabel("Token count")
+        ax.set_ylabel("Count")
+        ax.set_title(f"{label} token length")
+        ax.legend()
+    fig.suptitle(f"[{mode_name}] Token length distributions  (n={len(rows)})")
+    fig.tight_layout()
+    p = plot_dir / f"{mode_name}_token_length_dist.png"
+    fig.savefig(p, dpi=150)
+    plt.close(fig)
+    print(f"  plot: {p}")
+
+    # ── 3. Candidate quality ───────────────────────────────────────────────
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+    max_val = max(n_cands.max(), n_valid.max()) + 1
+    cbins = np.arange(0, max_val + 2)
+    for ax, vals, label in [
+        (axes[0], n_cands, "Candidates checked"),
+        (axes[1], n_valid, "Valid decoded candidates"),
+    ]:
+        ax.hist(vals[any_corr],  bins=cbins, alpha=0.7, label="any correct",    color="steelblue")
+        ax.hist(vals[~any_corr], bins=cbins, alpha=0.7, label="none correct",   color="tomato")
+        ax.set_xlabel(label)
+        ax.set_ylabel("Count")
+        ax.set_title(label)
+        ax.legend()
+    fig.suptitle(f"[{mode_name}] Candidate quality  (n={len(rows)})")
+    fig.tight_layout()
+    p = plot_dir / f"{mode_name}_candidate_quality.png"
+    fig.savefig(p, dpi=150)
+    plt.close(fig)
+    print(f"  plot: {p}")
+
+
 def print_examples(detail_rows: list[dict[str, Any]], count: int) -> None:
     if not detail_rows:
         return
@@ -956,6 +1139,12 @@ def main() -> None:
         )
         detail_path = DATA_TESTING_DIR / OUTPUT_SUBDIR / f"{DATA_FILENAME_STEM}_{decode_cfg.name}_results.csv"
         write_detail_csv(detail_path, detail_rows)
+        if HUMAN_CSV:
+            human_path = DATA_TESTING_DIR / OUTPUT_SUBDIR / f"{DATA_FILENAME_STEM}_{decode_cfg.name}_human.csv"
+            write_human_csv(human_path, detail_rows)
+            print(f"  wrote human CSV to {human_path}")
+        if PLOTS:
+            write_plots(DATA_TESTING_DIR / OUTPUT_SUBDIR / DATA_FILENAME_STEM, detail_rows, decode_cfg.name)
         if SIMPLE_SUMMARY:
             print_simple_summary(summary)
         else:

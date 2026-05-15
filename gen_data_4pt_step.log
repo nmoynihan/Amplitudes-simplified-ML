@@ -1,0 +1,2 @@
+# gen_data log N=4 target=180 terms=[1,5] scr=[1,5] unit_probability=0.2 full_expand_scrambled=True seed=42
+# SUMMARY accepted=180 parity_fail=0 scramble_fail=26 pole_fail=0 dimension_fail=124 attempts=330

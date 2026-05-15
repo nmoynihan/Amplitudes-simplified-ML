@@ -13,8 +13,100 @@ Conventions
               then hit by algebraic identities that preserve numerical
               equality.
 
-The implementation is aimed first at 4pt and 5pt scalar-QED-like data, but
-the core monomial generation and evaluator work for generic N.
+What this script generates
+--------------------------
+The basic object is a scalar-QED-like N-point expression with two equal-mass
+scalar legs and N-2 photon legs. Each generated term uses every photon exactly
+once inside gauge-invariant building blocks:
+
+    Tr(F_i · F_j · ...)
+    p_a · F_i · F_j · ... · p_b
+
+The endpoint momenta p_a and p_b are chosen independently from the non-F legs
+of the chain, so repeated endpoints such as p_1 · F_2 · F_3 · p_1 are allowed.
+Extra p_i · p_j numerator factors may also be included. Denominators, when
+enabled, are products of physical p_i · p_j poles chosen so that the manifest
+mass dimension is 4-N. A sample is a random integer linear combination of such
+terms.
+
+The gauge-invariant "simple" expression is expanded by replacing each F_i with
+the antisymmetric combination implicit in F_i = p_i e_i - e_i p_i. For example,
+p · F_i · q expands into a difference of products of ordinary dot products.
+The expanded expression is then scrambled.
+
+Scrambles
+---------
+Each scramble is an algebraic rewrite that should preserve the numerical value
+on generated on-shell phase-space points:
+
+1. Multiply by one:
+       expr -> expr * (p_i · p_j)/(p_i · p_j)
+
+2. Ward/momentum-conservation substitution on polarizations:
+       e_h · p_l -> -sum_{s != l} e_h · p_s
+   This uses transversality e_h · p_h = 0 together with total momentum
+   conservation sum_s p_s = 0.
+
+3. Momentum-conservation substitution on momenta:
+       p_a · p_b -> -sum_{s != a} p_s · p_b
+   This is the dot product of sum_s p_s = 0 with p_b, solved for one chosen
+   p_a · p_b occurrence.
+
+4. Dot-product commutation:
+       x · y -> y · x
+   for ordinary p/e dot products.
+
+5. Multiply by a more complicated ratio:
+       expr -> expr * (p_i · p_j + p_k · p_l)/(p_i · p_j + p_k · p_l)
+
+6. Add zero from mass shell plus momentum conservation. For a randomly omitted
+   leg a, momentum conservation gives p_a = -sum_{i != a} p_i. Squaring and
+   moving p_a^2 to the left gives the identity
+
+       0 = sum_{i != a} p_i · p_i - p_a · p_a
+           + 2 sum_{i<j, i,j != a} p_i · p_j.
+
+   The script inserts this zero with random labelling, random term order, a
+   random overall sign, optional multiplication by existing/random dot-product
+   context factors, and sometimes over an existing denominator. The mass shell
+   information is not a hard-coded M^2 symbol; it is represented by p_i · p_i
+   and checked numerically on kinematics where photons are massless and the two
+   scalar legs have equal mass.
+
+7. Partial-fraction rewrite on denominators. If a denominator contains at
+   least two p·p factors D_a and D_b, the script may replace
+
+       N/(D_a D_b R)
+
+   by an algebraically equivalent difference of two terms with denominators
+   involving (D_a - D_b). This deliberately produces less direct rational
+   forms while preserving the value away from accidental singular points.
+
+Dataset modes
+-------------
+The default "oneshot" dataset writes CSV rows with columns:
+
+    simple, scrambled
+
+where "simple" is the compact gauge-invariant expression and "scrambled" is
+the fully expanded and scrambled equivalent expression.
+
+The "step" dataset uses the same CSV column names but a different target
+policy. It records the accepted scramble trajectory and reverses it into
+one-step simplification pairs:
+
+    scrambled_k -> scrambled_{k-1} -> ... -> expanded -> simple
+
+so each row still stores target in "simple" and source in "scrambled", but the
+target is only the next shorter verified step rather than the final answer.
+
+Validation and scope
+--------------------
+Generated pairs are checked numerically on random phase-space points in both
+Coulomb and covariant polarization modes by default. Token-length filtering is
+also applied before writing tokenized data. The code is intended to work for
+4 <= N <= 8 under the current two-scalar convention, i.e. the user-facing range
+9 > N > 3.
 """
 from __future__ import annotations
 
@@ -23,60 +115,23 @@ import ast as _ast
 import csv
 import json
 import math
-import multiprocessing as mp
-import os
 import random
 import re
 import time
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
-import sympy as sp
-
 from kinematics import generate_kinematics, mdot
 
 DOT = "·"
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Editable defaults
-# ─────────────────────────────────────────────────────────────────────────────
-# The command-line interface uses these values as defaults.  For day-to-day
-# generation you can usually edit this block only, then run
-#
-#     python3 gen_data.py
-#
-# with no extra flags.  CLI flags still exist and override these values when
-# provided.
-def knum(num: int):
-        if num > 1000:
-            return f"{num//1000}k"
-        else:
-            return f"{num}"
-# Output / run defaults
-DEFAULT_N_PARTICLES = 4
-DEFAULT_SAMPLES = 5000
-DEFAULT_SEED = 42
-DEFAULT_MASS = 2.0
-# Number of samples expressed in thousands (integer)
-NSAMPS = DEFAULT_SAMPLES // 1000
-DEFAULT_RAW_OUT_TEMPLATE = "gi_{N}pt_{NSAMPS}k.csv"
-DEFAULT_TOK_OUT_TEMPLATE = "gi_{N}pt_tok_{NSAMPS}k.csv"
-DEFAULT_LOG_OUT_TEMPLATE = "gen_data_{N}pt_{NSAMPS}k.log"
-DEFAULT_VALIDATE = True
-DEFAULT_TOKENISE = True
-DEFAULT_FULL_EXPAND_SCRAMBLED = True
-DEFAULT_OVERSAMPLE_FACTOR = 1.2
-DEFAULT_DATASET_KIND = "oneshot"
+SCALAR_COEFF_POOL = [c for c in range(-9, 10) if c != 0]
+TERM_COEFF_POOL = [c for c in range(-100, 101) if c != 0]
 DEFAULT_MAX_TOKENS = 2048
 DEFAULT_VALIDATION_POL_MODES = ("coulomb", "covariant")
 
-# Shape of generated expressions
-DEFAULT_MIN_TERMS = 1
-DEFAULT_MAX_TERMS = 2
-DEFAULT_USE_DENOMINATORS = True
-DEFAULT_MAX_ATTEMPTS_FACTOR = 12
-
-# Scrambling defaults
+# Scramble labels used by --scrambles and the curriculum run*.sh scripts.
+# The empty set with min_scr=max_scr=0 still produces step pairs of the form
+# expanded -> simple in --dataset-kind step mode.
 SCRAMBLE_MULTIPLY_ONE = "multiply_one"
 SCRAMBLE_WARD = "ward"
 SCRAMBLE_MOMENTUM = "momentum"
@@ -84,9 +139,6 @@ SCRAMBLE_COMMUTE_DOT = "commute_dot"
 SCRAMBLE_RATIO = "ratio"
 SCRAMBLE_MASS_SHELL_ZERO = "mass_shell_zero"
 SCRAMBLE_PARTIAL_FRACTION = "partial_fraction"
-SCRAMBLE_WARD_ALL = "ward_all"
-SCRAMBLE_POLARISATION_ZERO = "polarisation_zero"
-SCRAMBLE_TERM_REORDER = "term_reorder"
 DEFAULT_SCRAMBLES = (
     SCRAMBLE_MULTIPLY_ONE,
     SCRAMBLE_WARD,
@@ -95,61 +147,7 @@ DEFAULT_SCRAMBLES = (
     SCRAMBLE_RATIO,
     SCRAMBLE_MASS_SHELL_ZERO,
     SCRAMBLE_PARTIAL_FRACTION,
-    SCRAMBLE_WARD_ALL,
-    SCRAMBLE_POLARISATION_ZERO,
-    SCRAMBLE_TERM_REORDER,
 )
-DEFAULT_MIN_SCR = 1
-DEFAULT_MAX_SCR = 5
-DEFAULT_MAX_SCRAMBLED_LEN = 4000
-
-# Distribution knobs.
-# UNIT_PROBABILITY chooses top-level coefficients from {-1,+1}.
-# OLD_STYLE_PROBABILITY biases a sample toward the older two-term / single-F
-# dominated style without making the whole dataset old-style.
-# SPURIOUS_REPEAT_PROBABILITY controls hidden p·F-expansion spurious repeated
-# denominators such as (p_i·p_j)^2.  Keep this nonzero but subdominant.
-# SCALAR_POWER_PROBABILITY controls explicit numerator scalar powers such as
-# (p_i·p_j)^2.
-UNIT_PROBABILITY = 0.6
-OLD_STYLE_PROBABILITY = 0.25
-SPURIOUS_REPEAT_PROBABILITY = 0.15
-DENOM_REPEAT_PROBABILITY = SPURIOUS_REPEAT_PROBABILITY  # backwards-compatible alias
-SCALAR_POWER_PROBABILITY = 0.15
-
-# Coefficient pools used outside unit-coefficient mode.
-SCALAR_COEFF_POOL = [c for c in range(-9, 10) if c != 0]
-TERM_COEFF_POOL = [c for c in range(-100, 101) if c != 0]
-
-# Block-choice weights.  These are intentionally editable at the top because
-# they control how often traces and multi-F chains appear.
-# At four points, lower tr2 relative to singleF to avoid trace-heavy data.
-N4_BLOCK_WEIGHTS = {
-    "singleF": 8,
-    "doubleF": 2,
-    "tr2": 1,
-}
-OLD_STYLE_N4_BLOCK_WEIGHTS = {
-    "singleF": 8,
-    "doubleF": 2,
-    "tr2": 1,
-}
-GENERAL_BLOCK_WEIGHTS = {
-    "singleF": 1,
-    "tr2": 1,
-    "doubleF": 2,
-    "tr3": 1,
-    "tripleF": 1,
-    "tr4": 1,
-}
-
-# Parallel generation defaults
-DEFAULT_BATCH_SIZE = 1000
-DEFAULT_JOBS = "auto"  # integer as string, or "auto"
-DEFAULT_PROGRESS = True
-
-# Tokenisation defaults
-DEFAULT_TOKENIZER_MAX_PARTICLES = 8
 
 
 def dot(a: str, b: str) -> str:
@@ -198,31 +196,6 @@ class MonomialSpec:
     blocks: tuple[BlockSpec, ...]
     scalar_pairs: int
     numerator_mass_dim: int
-
-
-@dataclass(frozen=True)
-class BatchJob:
-    dataset_kind: str
-    N: int
-    num_samples: int
-    max_scr: int
-    min_scr: int
-    seed: int | None
-    unit_probability: float
-    old_style_probability: float
-    denom_repeat_probability: float
-    scalar_power_probability: float
-    use_denominators: bool
-    validate: bool
-    M: float
-    min_terms: int
-    max_terms: int
-    max_attempts_factor: int
-    full_expand_scrambled: bool
-    max_tokens: int | None
-    tokenizer_max_particles: int
-    validation_pol_modes: tuple[str, ...]
-    scramble_names: tuple[str, ...] | None
 
 
 _RE_pp = re.compile(r"p_(\d+)\s*·\s*p_(\d+)")
@@ -346,42 +319,15 @@ def canonicalise_gi_product(prod: str) -> str:
             factor = _canon_pp(factor)
         canon.append(factor)
     canon.sort(key=_factor_sort_key)
-    
-    # Combine duplicate factors into powers
-    factor_counts: dict[str, int] = {}
-    for factor in canon:
-        factor_counts[factor] = factor_counts.get(factor, 0) + 1
-    
-    result_parts: list[str] = []
-    for factor in sorted(factor_counts.keys(), key=_factor_sort_key):
-        count = factor_counts[factor]
-        if count == 1:
-            result_parts.append(factor)
-        else:
-            result_parts.append(f"({factor})^{count}")
-    
-    return "*".join(result_parts)
+    return "*".join(canon)
 
 
 def canonicalise_denominator(den: str) -> str:
     if not den:
         return den
     factors = [_canon_pp(f.strip()) for f in den.split("*") if f.strip()]
-    
-    # Combine duplicate factors into powers
-    factor_counts: dict[str, int] = {}
-    for factor in factors:
-        factor_counts[factor] = factor_counts.get(factor, 0) + 1
-    
-    result_parts: list[str] = []
-    for factor in sorted(factor_counts.keys()):
-        count = factor_counts[factor]
-        if count == 1:
-            result_parts.append(factor)
-        else:
-            result_parts.append(f"({factor})^{count}")
-    
-    return "*".join(result_parts)
+    factors.sort()
+    return "*".join(factors)
 
 
 def expand_simple_term(simple_term: str) -> str:
@@ -405,222 +351,6 @@ def expand_simple_expression(simple_expr: str) -> str:
     toks = _tokenize(simple_expr)
     tree = _Parser(toks).parse()
     return _ast_to_infix(_expand_ast(tree))
-
-
-@dataclass
-class _RatTerm:
-    coeff: float
-    numerators: list[str]
-    denominators: list[str]
-
-
-def _is_zero_coeff(value: float) -> bool:
-    return abs(value) < 1e-14
-
-
-def _format_number(value: float) -> str:
-    if abs(value - round(value)) < 1e-12:
-        return str(int(round(value)))
-    return repr(value)
-
-
-def _format_factor(expr: str) -> str:
-    expr = _strip_matched_outer_parens(expr.strip())
-    if not expr:
-        return expr
-    if any(op in expr for op in (" + ", " - ")):
-        return f"({expr})"
-    return expr
-
-
-def _node_to_factor(node) -> str:
-    return _format_factor(_ast_to_infix(node))
-
-
-def _negate_terms(terms: list[_RatTerm]) -> list[_RatTerm]:
-    return [_RatTerm(-term.coeff, term.numerators[:], term.denominators[:]) for term in terms]
-
-
-def _mul_terms(left: list[_RatTerm], right: list[_RatTerm]) -> list[_RatTerm]:
-    out: list[_RatTerm] = []
-    for a in left:
-        for b in right:
-            coeff = a.coeff * b.coeff
-            if _is_zero_coeff(coeff):
-                continue
-            out.append(
-                _RatTerm(
-                    coeff,
-                    a.numerators[:] + b.numerators[:],
-                    a.denominators[:] + b.denominators[:],
-                )
-            )
-    return out
-
-
-def _divide_terms(left: list[_RatTerm], right_node) -> list[_RatTerm]:
-    right_terms = _rational_terms(right_node)
-    out: list[_RatTerm] = []
-
-    if len(right_terms) == 1:
-        denom = right_terms[0]
-        if _is_zero_coeff(denom.coeff):
-            return []
-        for term in left:
-            out.append(
-                _RatTerm(
-                    term.coeff / denom.coeff,
-                    term.numerators[:] + denom.denominators[:],
-                    term.denominators[:] + denom.numerators[:],
-                )
-            )
-        return out
-
-    denom_factor = _node_to_factor(right_node)
-    for term in left:
-        out.append(
-            _RatTerm(
-                term.coeff,
-                term.numerators[:],
-                term.denominators[:] + [denom_factor],
-            )
-        )
-    return out
-
-
-def _rational_terms(node) -> list[_RatTerm]:
-    """Convert an expanded AST to a flat sum of rational monomial terms."""
-    if isinstance(node, _Num):
-        if _is_zero_coeff(node.value):
-            return []
-        return [_RatTerm(node.value, [], [])]
-
-    if isinstance(node, tuple) and node[0] == _DOT_TAG:
-        return [_RatTerm(1.0, [_node_to_factor(node)], [])]
-
-    if isinstance(node, _Vec):
-        return [_RatTerm(1.0, [_node_to_factor(node)], [])]
-
-    if isinstance(node, _UnaryOp):
-        terms = _rational_terms(node.operand)
-        return _negate_terms(terms) if node.op == "-" else terms
-
-    if isinstance(node, _BinOp):
-        if node.op == "+":
-            return _rational_terms(node.left) + _rational_terms(node.right)
-        if node.op == "-":
-            return _rational_terms(node.left) + _negate_terms(_rational_terms(node.right))
-        if node.op == "*":
-            return _mul_terms(_rational_terms(node.left), _rational_terms(node.right))
-        if node.op == "/":
-            return _divide_terms(_rational_terms(node.left), node.right)
-        if node.op == "**":
-            return [_RatTerm(1.0, [_node_to_factor(node)], [])]
-
-    return [_RatTerm(1.0, [_node_to_factor(node)], [])]
-
-
-def _format_rational_term(term: _RatTerm) -> tuple[str, str]:
-    sign = "-" if term.coeff < 0 else "+"
-    abs_coeff = abs(term.coeff)
-    factors = [_format_factor(factor) for factor in term.numerators if factor]
-    if abs(abs_coeff - 1.0) > 1e-12 or not factors:
-        factors.insert(0, _format_number(abs_coeff))
-
-    numerator = "*".join(factors)
-    if term.denominators:
-        denominator = "*".join(_format_factor(factor) for factor in term.denominators if factor)
-        body = f"({numerator})/({denominator})"
-    else:
-        body = numerator
-    return sign, body
-
-
-def full_expand_expression(expr: str) -> str:
-    """Fully distribute an expression into a flat sum of rational dot-product terms.
-
-    This keeps the expression in p/e dot-product form; it does not recover F-blocks.
-    """
-    toks = _tokenize(expr)
-    tree = _Parser(toks).parse()
-    expanded = _expand_ast(tree)
-    terms = [term for term in _rational_terms(expanded) if not _is_zero_coeff(term.coeff)]
-    if not terms:
-        return "0"
-
-    pieces: list[str] = []
-    for term in terms:
-        sign, body = _format_rational_term(term)
-        if not pieces:
-            pieces.append(body if sign == "+" else f"-{body}")
-        else:
-            pieces.append(f" {sign} {body}")
-    return "".join(pieces)
-
-
-def simplify_to_lowest_terms(expr: str) -> str:
-    """Cancel common numerator/denominator factors in each top-level term."""
-    trace_placeholders: dict[str, str] = {}
-    dot_placeholders: dict[str, str] = {}
-    symbol_names: set[str] = set()
-
-    def _replace_trace(match: re.Match) -> str:
-        name = f"TR_{len(trace_placeholders)}"
-        trace_placeholders[name] = match.group(0)
-        symbol_names.add(name)
-        return name
-
-    def _dot_symbol_name(left: str, right: str) -> str:
-        ltag, lidx = left.split("_", 1)
-        rtag, ridx = right.split("_", 1)
-        if ltag == rtag == "p":
-            a, b = sorted((int(lidx), int(ridx)))
-            return f"pp{a}_{b}"
-        if ltag == rtag == "e":
-            a, b = sorted((int(lidx), int(ridx)))
-            return f"ee{a}_{b}"
-        if ltag == "e" and rtag == "p":
-            return f"ep{int(lidx)}_{int(ridx)}"
-        return f"ep{int(ridx)}_{int(lidx)}"
-
-    def _dot_text(left: str, right: str) -> str:
-        ltag, lidx = left.split("_", 1)
-        rtag, ridx = right.split("_", 1)
-        if ltag == rtag == "p":
-            a, b = sorted((int(lidx), int(ridx)))
-            return f"p_{a} {DOT} p_{b}"
-        if ltag == rtag == "e":
-            a, b = sorted((int(lidx), int(ridx)))
-            return f"e_{a} {DOT} e_{b}"
-        if ltag == "e" and rtag == "p":
-            return f"e_{int(lidx)} {DOT} p_{int(ridx)}"
-        return f"e_{int(ridx)} {DOT} p_{int(lidx)}"
-
-    def _replace_dot(match: re.Match) -> str:
-        left, right = match.group(1), match.group(2)
-        name = _dot_symbol_name(left, right)
-        dot_placeholders[name] = _dot_text(left, right)
-        symbol_names.add(name)
-        return name
-
-    encoded = _RE_TrN.sub(_replace_trace, expr)
-    encoded = _RE_DOT.sub(_replace_dot, encoded)
-    encoded = encoded.replace("^", "**")
-
-    locals_map = {name: sp.Symbol(name) for name in symbol_names}
-    sym_expr = sp.sympify(encoded, locals=locals_map)
-    expanded = sp.expand(sym_expr)
-    pieces = [sp.cancel(term) for term in sp.Add.make_args(expanded)]
-    simplified = sp.Add(*pieces, evaluate=False) if pieces else sp.Integer(0)
-    rendered = sp.sstr(simplified)
-
-    substitutions = {
-        **{name: text for name, text in trace_placeholders.items()},
-        **{name: f"({text})" for name, text in dot_placeholders.items()},
-    }
-    for name in sorted(substitutions, key=len, reverse=True):
-        rendered = re.sub(rf"\b{re.escape(name)}\b", substitutions[name], rendered)
-    return rendered.replace("**", "^")
 
 
 class _Num:
@@ -667,6 +397,10 @@ _DOT_TAG = "DOT"
 _VEC_TAG = "VEC"
 
 
+class ExpressionParseError(ValueError):
+    """Raised when an amplitude expression cannot be parsed or evaluated."""
+
+
 class _Parser:
     """Recursive-descent parser for amplitude expressions."""
 
@@ -682,8 +416,18 @@ class _Parser:
         self.i += 1
         return tok
 
+    def _expect(self, expected: str) -> None:
+        tok = self.peek()
+        if tok != expected:
+            got = "end of input" if tok is None else repr(tok)
+            raise ExpressionParseError(f"Expected {expected!r}, got {got}")
+        self.pop()
+
     def parse(self):
-        return self._expr()
+        node = self._expr()
+        if self.peek() is not None:
+            raise ExpressionParseError(f"Unexpected token {self.peek()!r} at position {self.i}")
+        return node
 
     def _expr(self):
         node = self._term()
@@ -715,55 +459,59 @@ class _Parser:
 
     def _primary(self):
         tok = self.peek()
+        if tok is None:
+            raise ExpressionParseError("Unexpected end of input")
+
         if tok == "(":
             self.pop()
             node = self._expr()
-            if self.peek() == ")":
-                self.pop()
+            self._expect(")")
             return node
 
         if tok == "Tr":
             self.pop()
-            if self.peek() == "(":
-                self.pop()
-                parts = self._parse_F_chain()
-                if self.peek() == ")":
-                    self.pop()
-                vecs = [_Vec("F", int(re.search(r"\d+", t).group())) for t in parts]
-                return _DotChain(vecs + [_DotChain._TR])
-            return _Num(0.0)
+            self._expect("(")
+            parts = self._parse_F_chain()
+            self._expect(")")
+            vecs = [_Vec("F", int(re.search(r"\d+", t).group())) for t in parts]
+            return _DotChain(vecs + [_DotChain._TR])
 
         parts: list[_Vec] = []
-        while True:
-            current = self.peek()
-            if current and re.match(r"(p_|e_|F_)\d+", str(current)):
-                m = re.match(r"(p_|e_|F_)(\d+)", current)
+        if tok and re.fullmatch(r"(p_|e_|F_)\d+", str(tok)):
+            while True:
+                current = self.peek()
+                if not current or not re.fullmatch(r"(p_|e_|F_)\d+", str(current)):
+                    raise ExpressionParseError(f"Expected vector token at position {self.i}")
+                m = re.fullmatch(r"(p_|e_|F_)(\d+)", current)
                 parts.append(_Vec(m.group(1)[0], int(m.group(2))))
                 self.pop()
                 if self.peek() in ("·", "."):
                     self.pop()
+                    if self.peek() is None:
+                        raise ExpressionParseError("Dot operator at end of input")
                     continue
                 break
-            break
         if parts:
             return parts[0] if len(parts) == 1 else _DotChain(parts)
 
-        if tok and re.match(r"\d+(?:\.\d+)?", str(tok)):
+        if tok and re.fullmatch(r"\d+(?:\.\d+)?", str(tok)):
             self.pop()
             return _Num(float(tok))
 
-        if tok is not None:
-            self.pop()
-        return _Num(0.0)
+        raise ExpressionParseError(f"Unexpected token {tok!r} at position {self.i}")
 
     def _parse_F_chain(self) -> list[str]:
         out: list[str] = []
+        if not self.peek() or not re.fullmatch(r"F_\d+", str(self.peek())):
+            raise ExpressionParseError("Trace requires at least one F_i factor")
         while True:
             tok = self.peek()
-            if tok and re.match(r"F_\d+", str(tok)):
+            if tok and re.fullmatch(r"F_\d+", str(tok)):
                 out.append(self.pop())
                 if self.peek() in ("·", ".", ","):
                     self.pop()
+                    if not self.peek() or not re.fullmatch(r"F_\d+", str(self.peek())):
+                        raise ExpressionParseError("Trace separator must be followed by an F_i factor")
                     continue
                 break
             break
@@ -785,7 +533,7 @@ def _tokenize(expr: str) -> list[str]:
             toks.append(match.group(1))
             pos += match.end()
         else:
-            pos += 1
+            raise ExpressionParseError(f"Unrecognised character {expr[pos]!r} at position {pos}")
     return toks
 
 
@@ -848,7 +596,7 @@ def _expand_dotchain(dc: _DotChain):
             and isinstance(parts[-1], _Vec)
             and parts[-1].tag == "p"
         ):
-            return _Num(0.0)
+            raise ExpressionParseError("F chains must appear as p_i · F_j · ... · p_k or inside Tr(...)")
         left_idx = parts[0].idx
         right_idx = parts[-1].idx
         labels = [v.idx for v in F_vecs]
@@ -903,6 +651,8 @@ def eval_infix_numeric(expr: str, momenta, pols) -> float:
     def _eval(node):
         if isinstance(node, _Num):
             return node.value
+        if isinstance(node, _Vec):
+            raise ExpressionParseError(f"Bare vector {_vec(node.tag, node.idx)} cannot be numerically evaluated")
         if isinstance(node, _BinOp):
             left = _eval(node.left)
             right = _eval(node.right)
@@ -927,8 +677,10 @@ def eval_infix_numeric(expr: str, momenta, pols) -> float:
                 vb = P.get(f"p_{rhs[2]}") if rhs[1] == "p" else E.get(f"e_{rhs[2]}")
                 if va is not None and vb is not None:
                     return mdot(va, vb)
-            return 0.0
-        return 0.0
+            raise ExpressionParseError(
+                f"Unknown or unsupported dot product {_vec_name(lhs)} · {_vec_name(rhs)}"
+            )
+        raise ExpressionParseError(f"Unsupported AST node {type(node).__name__}")
 
     tree = _Parser(_tokenize(expr)).parse()
     expanded = _expand_ast(tree)
@@ -984,26 +736,10 @@ def _ast_to_infix(node, parent_prec: int = 0, is_right: bool = False) -> str:
     return "0"
 
 
-def _chain_endpoints(Fs: Sequence[int], N: int) -> tuple[int, int]:
-    """Choose endpoints for p·F...F·p chains without over-restricting them.
-
-    Gauge invariance only forces the immediately adjacent contractions
-    p_j·F_j and F_j·p_j to vanish for a massless transverse photon j.  Older
-    data sources also allow endpoints to be photons appearing elsewhere inside
-    the chain, and allow the two endpoints to be the same momentum.  Therefore
-    we exclude only the first photon from the left endpoint and only the last
-    photon from the right endpoint.
-    """
-    if not Fs:
-        raise ValueError("F-chain must contain at least one photon")
-    first, last = Fs[0], Fs[-1]
-    left_pool = [x for x in range(1, N + 1) if x != first]
-    right_pool = [x for x in range(1, N + 1) if x != last]
-    return random.choice(left_pool), random.choice(right_pool)
-
-
 def _singleF_block(j: int, N: int) -> tuple[str, BlockSpec]:
-    left, right = _chain_endpoints((j,), N)
+    pool = [x for x in range(1, N + 1) if x != j]
+    left = random.choice(pool)
+    right = random.choice(pool)
     return (
         f"{p(left)} {DOT} {F(j)} {DOT} {p(right)}",
         BlockSpec("chain", (j,), left, right),
@@ -1011,7 +747,9 @@ def _singleF_block(j: int, N: int) -> tuple[str, BlockSpec]:
 
 
 def _doubleF_block(j: int, k: int, N: int) -> tuple[str, BlockSpec]:
-    left, right = _chain_endpoints((j, k), N)
+    pool = [x for x in range(1, N + 1) if x not in (j, k)]
+    left = random.choice(pool)
+    right = random.choice(pool)
     return (
         f"{p(left)} {DOT} {F(j)} {DOT} {F(k)} {DOT} {p(right)}",
         BlockSpec("chain", (j, k), left, right),
@@ -1019,7 +757,9 @@ def _doubleF_block(j: int, k: int, N: int) -> tuple[str, BlockSpec]:
 
 
 def _tripleF_block(j: int, k: int, l: int, N: int) -> tuple[str, BlockSpec]:
-    left, right = _chain_endpoints((j, k, l), N)
+    pool = [x for x in range(1, N + 1) if x not in (j, k, l)]
+    left = random.choice(pool)
+    right = random.choice(pool)
     return (
         f"{p(left)} {DOT} {F(j)} {DOT} {F(k)} {DOT} {F(l)} {DOT} {p(right)}",
         BlockSpec("chain", (j, k, l), left, right),
@@ -1079,39 +819,7 @@ def _required_denominator_count(numerator_mass_dim: int, N: int) -> int | None:
     return delta // 2
 
 
-def _weighted_choice(weight_map: dict[str, int]) -> str:
-    choices: list[str] = []
-    for key, weight in weight_map.items():
-        if weight > 0:
-            choices.extend([key] * int(weight))
-    if not choices:
-        raise ValueError("At least one block-choice weight must be positive")
-    return random.choice(choices)
-
-
-def _block_choice_weights(N: int, remaining_count: int, *, old_style_blocks: bool) -> dict[str, int]:
-    """Return editable block weights compatible with the remaining photons."""
-    if N == 4:
-        base = OLD_STYLE_N4_BLOCK_WEIGHTS if old_style_blocks else N4_BLOCK_WEIGHTS
-    else:
-        base = GENERAL_BLOCK_WEIGHTS
-
-    allowed = {"singleF"}
-    if remaining_count >= 2:
-        allowed.update({"tr2", "doubleF"})
-    if remaining_count >= 3:
-        allowed.update({"tr3", "tripleF"})
-    if remaining_count >= 4:
-        allowed.add("tr4")
-    return {kind: int(weight) for kind, weight in base.items() if kind in allowed and int(weight) > 0}
-
-
-def _generate_gi_monomial_spec(
-    N: int,
-    *,
-    old_style_blocks: bool = False,
-    scalar_power_probability: float = SCALAR_POWER_PROBABILITY,
-) -> MonomialSpec:
+def _generate_gi_monomial_spec(N: int) -> MonomialSpec:
     remaining = photon_legs(N)
     random.shuffle(remaining)
     factors: list[str] = []
@@ -1119,7 +827,14 @@ def _generate_gi_monomial_spec(
 
     while remaining:
         r = len(remaining)
-        kind = _weighted_choice(_block_choice_weights(N, r, old_style_blocks=old_style_blocks))
+        choices: list[str] = ["singleF"]
+        if r >= 2:
+            choices.extend(["tr2", "doubleF", "doubleF"])
+        if r >= 3:
+            choices.extend(["tr3", "tripleF"])
+        if r >= 4:
+            choices.append("tr4")
+        kind = random.choice(choices)
 
         if kind == "tr4":
             chosen = random.sample(remaining, 4)
@@ -1163,25 +878,8 @@ def _generate_gi_monomial_spec(
         raise ValueError(f"Could not realise manifest dimension 4-{N} with current ansatz")
 
     scalar_pairs, numerator_mass_dim = random.choice(candidates)
-
-    # Add optional scalar p·p numerator factors.  With nonzero
-    # scalar_power_probability, preferentially repeat an existing physical pole
-    # factor.  After canonicalisation this deliberately creates numerator powers
-    # such as (p_2 · p_4)^2, which can then support a spurious repeated
-    # denominator factor without creating a physical double pole.
-    scalar_power_probability = max(0.0, min(1.0, scalar_power_probability))
-    scalar_factors: list[str] = []
-    physical_scalar_pool = _all_physical_poles(N)
     for _ in range(scalar_pairs):
-        repeatable = [term for term in scalar_factors if term in physical_scalar_pool]
-        if repeatable and random.random() < scalar_power_probability:
-            scalar_factors.append(random.choice(repeatable))
-            continue
-        if physical_scalar_pool and random.random() < 0.75:
-            scalar_factors.append(random.choice(physical_scalar_pool))
-        else:
-            scalar_factors.append(_canon_pp(_scalar_pp_factor(N)))
-    factors.extend(scalar_factors)
+        factors.append(_scalar_pp_factor(N))
 
     random.shuffle(factors)
     return MonomialSpec(
@@ -1228,220 +926,58 @@ def _photon_pole_choices(
     return choices
 
 
-def _explicit_scalar_pp_counts(product: str) -> dict[str, int]:
-    """Count manifest scalar p·p factors in a canonical GI product.
+def _physical_denominator_factors(spec: MonomialSpec, N: int) -> list[str]:
+    """Build a denominator ansatz with scalar-QED-like physical poles.
 
-    Only these factors can cancel an extra repeated denominator factor.  We do
-    *not* treat p·p factors that merely appear somewhere after expanding a
-    p·F...F·p chain as cancellations, because those are not guaranteed to be
-    common factors of the whole numerator.
-    """
-    counts: dict[str, int] = {}
-    for raw in _split_top_level(product, "*"):
-        factor = raw.strip()
-        if not factor:
-            continue
-
-        power_match = re.fullmatch(r"\((p_\d+\s*·\s*p_\d+)\)\^(\d+)", factor)
-        if power_match:
-            term = _canon_pp(power_match.group(1))
-            counts[term] = counts.get(term, 0) + int(power_match.group(2))
-            continue
-
-        stripped = _strip_matched_outer_parens(factor)
-        if stripped != factor and "*" in stripped:
-            for term, multiplicity in _explicit_scalar_pp_counts(stripped).items():
-                counts[term] = counts.get(term, 0) + multiplicity
-            continue
-
-        if _RE_pp.fullmatch(stripped):
-            term = _canon_pp(stripped)
-            counts[term] = counts.get(term, 0) + 1
-    return counts
-
-
-def _chain_expansion_spurious_pp_counts(spec: MonomialSpec, N: int) -> dict[str, int]:
-    """Count denominator poles that can be spurious after expanding F chains.
-
-    For a chain ``p_a · F_j · ...`` the expansion contains a branch with the
-    adjacent factor ``p_a · p_j``; in a gauge with ``p_a · e_j = 0`` this is the
-    visible scalar factor.  Similarly, ``... · F_k · p_b`` exposes
-    ``p_k · p_b`` in the corresponding right-end gauge.  A repeated denominator
-    copy of such an adjacent endpoint pole is therefore treated as spurious in
-    the sense relevant for the training data: it is not inserted because of an
-    explicit scalar numerator factor, but because it is hidden inside the
-    expanded gauge-invariant block.
-
-    The count is capped later so that generated denominators have at most one
-    extra copy of any such pole: ``D^2`` means one physical simple pole and one
-    expansion-spurious copy, not a physical double pole.
-    """
-    physical_pool = set(_all_physical_poles(N))
-    counts: dict[str, int] = {}
-
-    def add(a: int | None, b: int | None) -> None:
-        if a is None or b is None or a == b:
-            return
-        term = _canon_pp(dot(p(a), p(b)))
-        if term not in physical_pool:
-            return
-        counts[term] = counts.get(term, 0) + 1
-
-    for block in spec.blocks:
-        if block.kind != "chain" or not block.photons:
-            continue
-        add(block.left, block.photons[0])
-        add(block.right, block.photons[-1])
-
-    return counts
-
-
-def _physical_denominator_factors(
-    spec: MonomialSpec,
-    N: int,
-    *,
-    repeat_probability: float = DENOM_REPEAT_PROBABILITY,
-) -> list[str]:
-    """Build scalar-QED-like denominator poles with expansion-spurious repeats.
-
-    The total number of denominator factors is fixed by the target manifest
-    mass dimension.  Repeated denominator factors are generated only for poles
-    that are hidden in adjacent p·F-chain expansions.  Concretely, if a term
-    contains a block ``p_a · F_j · ...`` then the F_j expansion contains a branch
-    proportional to ``p_a · p_j``; in a gauge with ``p_a · e_j = 0`` that branch
-    makes the would-be pole look cancellable.  The right endpoint works
-    similarly for ``... · F_k · p_b``.
-
-    We therefore allow at most one extra denominator copy for such adjacent
-    endpoint poles.  Thus ``D^2`` means one simple physical pole and one
-    expansion-spurious copy.  Manifest scalar numerator factors are *not* used
-    to justify repeated denominators here, and repeated denominators whose pole
-    already appears as a manifest scalar numerator factor are suppressed, because
-    those would just generate trivial factors like ``D^2/D^2``.
+    The key enforced rule is that every photon appearing in a p·F…F·p block
+    contributes at least one pole involving its momentum.
     """
     factors: list[str] = []
-    counts: dict[str, int] = {}
-    spurious_counts = _chain_expansion_spurious_pp_counts(spec, N)
-    manifest_scalar_counts = _explicit_scalar_pp_counts(spec.numerator)
-
-    def canon(term: str) -> str:
-        return _canon_pp(term)
-
-    def multiplicity(term: str) -> int:
-        return counts.get(canon(term), 0)
-
-    def spurious_budget(term: str) -> int:
-        # Cap at one extra copy.  This is enough to make D^2 denominators while
-        # preventing genuine double-physical-pole training examples.  Do not use
-        # a manifest scalar numerator factor to justify the repeat, since that
-        # would create trivial D/D cancellations rather than the desired hidden
-        # p·F-expansion spurious pole.
-        cterm = canon(term)
-        if manifest_scalar_counts.get(cterm, 0) > 0:
-            return 0
-        return 1 if spurious_counts.get(cterm, 0) > 0 else 0
-
-    def max_allowed(term: str) -> int:
-        # One genuine physical pole may be present.  Additional copies require
-        # the p·F-chain expansion-spurious budget above.
-        return 1 + spurious_budget(term)
-
-    def can_add(term: str) -> bool:
-        cterm = canon(term)
-        return counts.get(cterm, 0) < max_allowed(cterm)
+    seen: set[str] = set()
 
     def add(term: str) -> None:
-        cterm = canon(term)
-        if not can_add(cterm):
-            raise ValueError(f"Would create a physical double pole in {cterm}")
-        factors.append(cterm)
-        counts[cterm] = counts.get(cterm, 0) + 1
+        canon = _canon_pp(term)
+        if canon not in seen:
+            seen.add(canon)
+            factors.append(canon)
+
+    chain_blocks = [blk for blk in spec.blocks if blk.kind == "chain"]
+    trace_blocks = [blk for blk in spec.blocks if blk.kind == "trace"]
+
+    for block in chain_blocks:
+        preferred = [x for x in (block.left, block.right) if x is not None]
+        for photon in block.photons:
+            choices = _photon_pole_choices(photon, N, preferred=preferred)
+            add(random.choice(choices))
+
+    if trace_blocks and random.random() < 0.55:
+        block = random.choice(trace_blocks)
+        photon = random.choice(block.photons)
+        add(random.choice(_photon_pole_choices(photon, N)))
 
     target = _required_denominator_count(spec.numerator_mass_dim, N)
     if target is None:
         raise ValueError(
             f"Numerator mass dimension {spec.numerator_mass_dim} cannot give 4-{N}"
         )
-
-    chain_blocks = [blk for blk in spec.blocks if blk.kind == "chain"]
-    trace_blocks = [blk for blk in spec.blocks if blk.kind == "trace"]
-
-    # Mandatory support: each photon appearing in a p·F...F·p block gets at
-    # least one pole involving its momentum.  We prefer endpoint-adjacent poles
-    # when available, because those are precisely the poles whose repeated copy
-    # can be expansion-spurious.
-    for block in chain_blocks:
-        preferred = [x for x in (block.left, block.right) if x is not None]
-        for photon in block.photons:
-            choices = [canon(x) for x in _photon_pole_choices(photon, N, preferred=preferred)]
-            viable = [x for x in choices if can_add(x)]
-            if not viable:
-                raise ValueError(f"No viable simple-pole denominator for photon {photon}")
-            adjacent = [x for x in viable if spurious_budget(x) > 0]
-            if adjacent and random.random() < 0.75:
-                add(random.choice(adjacent))
-            else:
-                add(random.choice(viable))
-
     if len(factors) > target:
-        raise ValueError(
-            f"Mandatory chain poles ({len(factors)}) exceed target denominator count ({target})"
-        )
+        factors = factors[:target]
+        seen = set(factors)
 
-    # Traces do not require a pole.  Add at most one trace-associated simple
-    # pole if there is still room.
-    if trace_blocks and len(factors) < target and random.random() < 0.55:
-        block = random.choice(trace_blocks)
-        photon = random.choice(block.photons)
-        choices = [canon(x) for x in _photon_pole_choices(photon, N)]
-        viable = [x for x in choices if can_add(x)]
-        if viable:
-            add(random.choice(viable))
+    pool = _all_physical_poles(N)
+    random.shuffle(pool)
 
-    pool = [canon(term) for term in _all_physical_poles(N)]
-    pool = list(dict.fromkeys(pool))
-    if not pool and target:
-        raise ValueError("No physical denominator poles available")
-
-    repeat_probability = max(0.0, min(1.0, repeat_probability))
-    while len(factors) < target:
-        remaining = target - len(factors)
-
-        # Insert D^2 directly when D is an expansion-spurious endpoint pole and
-        # no copy has yet been used.  This produces old-style apparent repeated
-        # poles without relying on explicit numerator factors.
-        pair_candidates = [
-            term
-            for term in pool
-            if spurious_budget(term) > 0 and multiplicity(term) == 0 and remaining >= 2
-        ]
-        if pair_candidates and random.random() < repeat_probability:
-            term = random.choice(pair_candidates)
-            add(term)
-            add(term)
-            continue
-
-        # Or, if a simple physical copy is already present, add exactly one
-        # expansion-spurious copy.
-        repeat_candidates = [
-            term
-            for term in set(factors)
-            if spurious_budget(term) > 0 and can_add(term)
-        ]
-        if repeat_candidates and random.random() < repeat_probability:
-            add(random.choice(repeat_candidates))
-            continue
-
-        viable_pool = [term for term in pool if can_add(term)]
-        if not viable_pool:
-            raise ValueError("No denominator factors left without creating physical double poles")
-        add(random.choice(viable_pool))
+    for term in pool:
+        if len(factors) >= target:
+            break
+        add(term)
 
     if len(factors) != target:
         raise ValueError(
             f"Failed to build {target} denominator factors from physical pole pool"
         )
     return factors
+
 
 def _term_signature(spec: MonomialSpec, denom_factors: Sequence[str]) -> tuple:
     trace_lengths = sorted(len(block.photons) for block in spec.blocks if block.kind == "trace")
@@ -1462,25 +998,9 @@ def _generate_term(
     N: int,
     *,
     use_denominators: bool,
-    old_style_blocks: bool = False,
-    denom_repeat_probability: float = DENOM_REPEAT_PROBABILITY,
-    scalar_power_probability: float = SCALAR_POWER_PROBABILITY,
 ) -> tuple[str, str, tuple]:
-    spec = _generate_gi_monomial_spec(
-        N,
-        old_style_blocks=old_style_blocks,
-        scalar_power_probability=scalar_power_probability,
-    )
-    den_factors = (
-        _physical_denominator_factors(
-            spec,
-            N,
-            repeat_probability=denom_repeat_probability,
-        )
-        if use_denominators
-        else []
-    )
-
+    spec = _generate_gi_monomial_spec(N)
+    den_factors = _physical_denominator_factors(spec, N) if use_denominators else []
     denominator = canonicalise_denominator("*".join(den_factors))
     simple_num = spec.numerator
     expanded_num = "*".join(rewrite_gi(f) for f in simple_num.split("*"))
@@ -1548,17 +1068,6 @@ def manifest_mass_dimension(simple_term: str) -> int:
         total = 0
         for factor in factors:
             factor = _strip_matched_outer_parens(factor)
-            
-            # Handle powers: (base)^n
-            power_match = re.fullmatch(r"\((.+)\)\^(\d+)", factor)
-            if power_match:
-                base = power_match.group(1)
-                power = int(power_match.group(2))
-                # Count dimension of base and multiply by power
-                base_dim = count_product_dim(base)
-                total += base_dim * power
-                continue
-            
             if re.fullmatch(r"-?\d+(?:\.\d+)?", factor):
                 continue
             match = _RE_TrN.fullmatch(factor)
@@ -1585,7 +1094,7 @@ def manifest_mass_dimension(simple_term: str) -> int:
             num, den = expr.split("/", 1)
             num_dim = count_product_dim(num)
             den_body = _strip_matched_outer_parens(den)
-            denom_dim = count_product_dim(den_body)
+            denom_dim = 2 * len([f for f in _split_top_level(den_body, "*") if f.strip()])
         else:
             num_dim = count_product_dim(expr)
             denom_dim = 0
@@ -1641,6 +1150,20 @@ def scr_mul_by_ratio(expr: str, N: int) -> str:
 
 
 def _mass_shell_zero_relation(N: int) -> str:
+    """Return a random mass-shell/momentum-conservation zero.
+
+    For any omitted leg a, momentum conservation gives:
+
+        p_a = -sum_{i != a} p_i
+
+    Squaring this and moving p_a^2 to the left gives:
+
+        0 = sum_{i != a} p_i^2 - p_a^2
+            + 2 sum_{i<j, i,j != a} p_i · p_j
+
+    The p_i^2 terms are written as p_i · p_i, so this works for every
+    labelling without introducing an explicit mass symbol.
+    """
     omitted = random.randint(1, N)
     legs = [i for i in range(1, N + 1) if i != omitted]
     terms: list[str] = [_canon_pp(dot(p(i), p(i))) for i in legs]
@@ -1783,95 +1306,7 @@ def scr_partial_fraction(expr: str) -> str:
     return f"{prefix}({numerator}/{den1} - {numerator}/{den2}){suffix}"
 
 
-def scr_ward_substitute_all(expr: str, Ngamma: int, N: int) -> str:
-    """Like scr_ward_substitute but replaces every occurrence of the chosen e_j·p_k."""
-    photon = random.randint(2, Ngamma + 1)
-    leg = random.randint(1, N)
-    target = re.escape(dot(e(photon), p(leg)))
-    repl = "-(" + " + ".join(dot(e(photon), p(s)) for s in range(1, N + 1) if s != leg) + ")"
-    return re.sub(target, repl, expr)
-
-
-def scr_add_polarisation_zero(expr: str, Ngamma: int, N: int) -> str:
-    """Add a multiple of the Ward-identity zero sum_s e_j·p_s = 0 to the expression."""
-    photon = random.randint(2, Ngamma + 1)
-    ward_sum = " + ".join(dot(e(photon), p(s)) for s in range(1, N + 1))
-    zero = f"({ward_sum})"
-
-    context = _random_context_factor(expr, N)
-    zero_term = zero if not context else f"{zero}*{context}"
-
-    denom_blocks = _find_denom_blocks(expr)
-    if denom_blocks and random.random() < 0.5:
-        _slash_pos, dopen, dclose = random.choice(denom_blocks)
-        denom = expr[dopen + 1 : dclose]
-        zero_term = f"({zero_term})/({denom})"
-
-    sign = "+" if random.random() < 0.5 else "-"
-    return f"({expr}) {sign} {zero_term}"
-
-
-def _split_signed_terms(expr: str) -> list[tuple[str, str]]:
-    """Split a flat additive expression into (sign, body) pairs.
-
-    Each sign is '+' or '-'.  The function respects parenthesis depth so that
-    operators inside sub-expressions are not treated as term separators.
-    """
-    expr = expr.strip()
-    terms: list[tuple[str, str]] = []
-    depth = 0
-    current: list[str] = []
-    sign = "+"
-
-    for i, ch in enumerate(expr):
-        if ch == "(":
-            depth += 1
-            current.append(ch)
-        elif ch == ")":
-            depth -= 1
-            current.append(ch)
-        elif depth == 0 and ch in "+-" and i > 0 and expr[i - 1] not in "*/^(":
-            # Binary additive operator: flush the current term.
-            body = "".join(current).strip()
-            if body:
-                terms.append((sign, body))
-            sign = ch
-            current = []
-        elif i == 0 and ch in "+-":
-            # Leading sign of the very first term.
-            sign = ch
-        else:
-            current.append(ch)
-
-    body = "".join(current).strip()
-    if body:
-        terms.append((sign, body))
-    return terms
-
-
-def _join_signed_terms(terms: list[tuple[str, str]]) -> str:
-    """Reconstruct a flat additive expression from (sign, body) pairs."""
-    if not terms:
-        return "0"
-    pieces: list[str] = []
-    for i, (sign, body) in enumerate(terms):
-        if i == 0:
-            pieces.append(f"-{body}" if sign == "-" else body)
-        else:
-            pieces.append(f" {sign} {body}")
-    return "".join(pieces)
-
-
-def scr_term_reorder(expr: str) -> str:
-    """Shuffle the top-level additive terms of a fully-expanded expression."""
-    terms = _split_signed_terms(expr)
-    if len(terms) <= 1:
-        return expr
-    random.shuffle(terms)
-    return _join_signed_terms(terms)
-
-
-_SCRAMBLER_BY_NAME = {
+_SCRAMBLERS = {
     SCRAMBLE_MULTIPLY_ONE: lambda expr, Ng, N: scr_mul_by_one(expr, N),
     SCRAMBLE_WARD: lambda expr, Ng, N: scr_ward_substitute(expr, Ng, N),
     SCRAMBLE_MOMENTUM: lambda expr, Ng, N: scr_momentum_substitute(expr, N),
@@ -1879,31 +1314,27 @@ _SCRAMBLER_BY_NAME = {
     SCRAMBLE_RATIO: lambda expr, Ng, N: scr_mul_by_ratio(expr, N),
     SCRAMBLE_MASS_SHELL_ZERO: lambda expr, Ng, N: scr_add_mass_shell_zero(expr, N),
     SCRAMBLE_PARTIAL_FRACTION: lambda expr, Ng, N: scr_partial_fraction(expr),
-    SCRAMBLE_WARD_ALL: lambda expr, Ng, N: scr_ward_substitute_all(expr, Ng, N),
-    SCRAMBLE_POLARISATION_ZERO: lambda expr, Ng, N: scr_add_polarisation_zero(expr, Ng, N),
-    SCRAMBLE_TERM_REORDER: lambda expr, Ng, N: scr_term_reorder(expr),
 }
 
 
-def normalise_scramble_names(scramble_names: Sequence[str] | None = None) -> tuple[str, ...]:
-    if scramble_names is None:
+def normalise_scramble_names(scrambles: Sequence[str] | None) -> tuple[str, ...]:
+    if scrambles is None:
         return DEFAULT_SCRAMBLES
     names: list[str] = []
-    for item in scramble_names:
+    for item in scrambles:
         for name in str(item).split(","):
             name = name.strip()
             if not name:
                 continue
             if name == "all":
-                names.extend(_SCRAMBLER_BY_NAME)
+                names.extend(DEFAULT_SCRAMBLES)
                 continue
             if name == "none":
                 continue
-            if name not in _SCRAMBLER_BY_NAME:
-                allowed = ", ".join(("all", "none", *_SCRAMBLER_BY_NAME))
+            if name not in _SCRAMBLERS:
+                allowed = ", ".join(("all", "none", *DEFAULT_SCRAMBLES))
                 raise ValueError(f"Unknown scramble {name!r}. Allowed: {allowed}")
             names.append(name)
-
     seen: set[str] = set()
     out: list[str] = []
     for name in names:
@@ -1913,8 +1344,9 @@ def normalise_scramble_names(scramble_names: Sequence[str] | None = None) -> tup
     return tuple(out)
 
 
-def _active_scramblers(scramble_names: Sequence[str] | None = None):
-    return tuple(_SCRAMBLER_BY_NAME[name] for name in normalise_scramble_names(scramble_names))
+def _active_scramblers(scrambles: Sequence[str] | None):
+    names = normalise_scramble_names(scrambles)
+    return tuple(_SCRAMBLERS[name] for name in names)
 
 
 def scramble(
@@ -1922,24 +1354,23 @@ def scramble(
     Ngamma: int,
     N: int,
     *,
-    min_scr: int = DEFAULT_MIN_SCR,
-    max_scr: int = DEFAULT_MAX_SCR,
-    max_len: int = DEFAULT_MAX_SCRAMBLED_LEN,
-    full_expand: bool = False,
-    scramble_names: Sequence[str] | None = None,
+    min_scr: int = 0,
+    max_scr: int = 3,
+    max_len: int = 4000,
+    scrambles: Sequence[str] | None = None,
 ) -> str:
     min_scr = max(0, int(min_scr))
     max_scr = max(min_scr, int(max_scr))
-    active_scramblers = _active_scramblers(scramble_names)
-    out = full_expand_expression(expr) if full_expand else expr
-    n_steps = random.randint(min_scr, max_scr) if max_scr > 0 and active_scramblers else 0
+    active = _active_scramblers(scrambles)
+    if not active:
+        return expr
+    out = expr
+    n_steps = random.randint(min_scr, max_scr) if max_scr > 0 else 0
     for _ in range(n_steps):
-        cand = random.choice(active_scramblers)(out, Ngamma, N)
-        if full_expand:
-            cand = full_expand_expression(cand)
+        cand = random.choice(active)(out, Ngamma, N)
         if len(cand) <= max_len:
             out = cand
-    return full_expand_expression(out) if full_expand else out
+    return out
 
 
 def scramble_trajectory(
@@ -1947,22 +1378,26 @@ def scramble_trajectory(
     Ngamma: int,
     N: int,
     *,
-    min_scr: int = DEFAULT_MIN_SCR,
-    max_scr: int = DEFAULT_MAX_SCR,
-    max_len: int = DEFAULT_MAX_SCRAMBLED_LEN,
-    full_expand: bool = False,
-    scramble_names: Sequence[str] | None = None,
+    min_scr: int = 0,
+    max_scr: int = 3,
+    max_len: int = 4000,
+    scrambles: Sequence[str] | None = None,
 ) -> tuple[str, ...]:
+    """Return the actual scramble path, starting at ``expr``.
+
+    The path records only accepted expression changes. It is used to build
+    reverse one-step training pairs for iterative simplification.
+    """
     min_scr = max(0, int(min_scr))
     max_scr = max(min_scr, int(max_scr))
-    active_scramblers = _active_scramblers(scramble_names)
-    out = full_expand_expression(expr) if full_expand else expr
-    path = [out]
-    n_steps = random.randint(min_scr, max_scr) if max_scr > 0 and active_scramblers else 0
+    active = _active_scramblers(scrambles)
+    out = expr
+    path = [expr]
+    if not active:
+        return tuple(path)
+    n_steps = random.randint(min_scr, max_scr) if max_scr > 0 else 0
     for _ in range(n_steps):
-        cand = random.choice(active_scramblers)(out, Ngamma, N)
-        if full_expand:
-            cand = full_expand_expression(cand)
+        cand = random.choice(active)(out, Ngamma, N)
         if cand != out and len(cand) <= max_len:
             out = cand
             path.append(out)
@@ -1996,17 +1431,6 @@ def _validate_pair(
     return True, ""
 
 
-def _make_tokenizer(tokenizer_max_particles: int, max_tokens: int | None):
-    if max_tokens is None:
-        return None
-    from Tokenizer import ScatteringAmplitudeTokenizer
-
-    return ScatteringAmplitudeTokenizer(
-        max_particles=tokenizer_max_particles,
-        max_sequence_length=max_tokens,
-    )
-
-
 def _within_token_budget(
     simple_expr: str,
     scrambled_expr: str,
@@ -2037,28 +1461,14 @@ def _format_poly(terms: Sequence[str], coeffs: Sequence[int]) -> str:
 def _build_base_expression(
     N: int,
     *,
-    unit_probability: float,
-    old_style_probability: float,
-    denom_repeat_probability: float,
-    scalar_power_probability: float,
     use_denominators: bool,
     min_terms: int,
     max_terms: int,
 ) -> tuple[str, str] | None:
-    use_old_style = random.random() < max(0.0, min(1.0, old_style_probability))
-    if use_old_style:
-        n_terms = 2
-        use_unit_coeffs = True
-    else:
-        n_terms = random.randint(min_terms, max_terms)
-        use_unit_coeffs = random.random() < max(0.0, min(1.0, unit_probability))
+    n_terms = random.randint(min_terms, max_terms)
 
     first_simple, first_expanded, _signature = _generate_term(
-        N,
-        use_denominators=use_denominators,
-        old_style_blocks=use_old_style,
-        denom_repeat_probability=denom_repeat_probability,
-        scalar_power_probability=scalar_power_probability,
+        N, use_denominators=use_denominators
     )
     if not _has_supported_physical_poles(first_simple):
         return None
@@ -2067,16 +1477,12 @@ def _build_base_expression(
 
     simple_terms = [first_simple]
     expanded_terms = [first_expanded]
-    coeffs = [random.choice((-1, 1)) if use_unit_coeffs else random.choice(SCALAR_COEFF_POOL)]
+    coeffs = [random.choice(SCALAR_COEFF_POOL)]
 
     for _ in range(n_terms - 1):
         for _attempt in range(80):
             cand_simple, cand_expanded, _cand_signature = _generate_term(
-                N,
-                use_denominators=use_denominators,
-                old_style_blocks=use_old_style,
-                denom_repeat_probability=denom_repeat_probability,
-                scalar_power_probability=scalar_power_probability,
+                N, use_denominators=use_denominators
             )
             if not _has_supported_physical_poles(cand_simple):
                 continue
@@ -2084,7 +1490,7 @@ def _build_base_expression(
                 continue
             simple_terms.append(cand_simple)
             expanded_terms.append(cand_expanded)
-            coeffs.append(random.choice((-1, 1)) if use_unit_coeffs else random.choice(TERM_COEFF_POOL))
+            coeffs.append(random.choice(TERM_COEFF_POOL))
             break
         else:
             return None
@@ -2092,29 +1498,35 @@ def _build_base_expression(
     return _format_poly(simple_terms, coeffs), _format_poly(expanded_terms, coeffs)
 
 
+def _make_tokenizer(tokenizer_max_particles: int, max_tokens: int | None):
+    if max_tokens is None:
+        return None
+    from Tokenizer import ScatteringAmplitudeTokenizer
+
+    return ScatteringAmplitudeTokenizer(
+        max_particles=tokenizer_max_particles,
+        max_sequence_length=max_tokens,
+    )
+
+
 def build_dataset(
     N: int,
     num_samples: int,
     *,
-    max_scr: int = DEFAULT_MAX_SCR,
-    min_scr: int = DEFAULT_MIN_SCR,
+    max_scr: int = 3,
+    min_scr: int = 0,
     seed: int | None = None,
-    unit_probability: float = UNIT_PROBABILITY,
-    old_style_probability: float = OLD_STYLE_PROBABILITY,
-    denom_repeat_probability: float = DENOM_REPEAT_PROBABILITY,
-    scalar_power_probability: float = SCALAR_POWER_PROBABILITY,
-    use_denominators: bool = DEFAULT_USE_DENOMINATORS,
-    validate: bool = DEFAULT_VALIDATE,
-    M: float = DEFAULT_MASS,
-    min_terms: int = DEFAULT_MIN_TERMS,
-    max_terms: int = DEFAULT_MAX_TERMS,
+    use_denominators: bool = True,
+    validate: bool = True,
+    M: float = 2.0,
+    min_terms: int = 1,
+    max_terms: int = 1,
     log_path: str | None = None,
-    max_attempts_factor: int = DEFAULT_MAX_ATTEMPTS_FACTOR,
-    full_expand_scrambled: bool = DEFAULT_FULL_EXPAND_SCRAMBLED,
+    max_attempts_factor: int = 12,
     max_tokens: int | None = DEFAULT_MAX_TOKENS,
-    tokenizer_max_particles: int = DEFAULT_TOKENIZER_MAX_PARTICLES,
+    tokenizer_max_particles: int = 8,
     validation_pol_modes: Sequence[str] = DEFAULT_VALIDATION_POL_MODES,
-    scramble_names: Sequence[str] | None = None,
+    scrambles: Sequence[str] | None = None,
 ) -> list[tuple[str, str]]:
     """Build a dataset of (simple, scrambled) pairs."""
     min_terms = max(1, int(min_terms))
@@ -2128,26 +1540,21 @@ def build_dataset(
         "attempts": 0,
         "parity_fail": 0,
         "scramble_fail": 0,
-        "simplify_fail": 0,
         "pole_fail": 0,
         "dimension_fail": 0,
         "token_fail": 0,
     }
     max_attempts = max(1, num_samples * max_attempts_factor)
     tokenizer = _make_tokenizer(tokenizer_max_particles, max_tokens)
-    scramble_names = normalise_scramble_names(scramble_names)
+    scramble_names = normalise_scramble_names(scrambles)
 
     if log_path:
         with open(log_path, "w", encoding="utf-8") as handle:
             handle.write(
                 f"# gen_data log N={N} target={num_samples} "
                 f"terms=[{min_terms},{max_terms}] scr=[{min_scr},{max_scr}] "
-                f"unit_probability={unit_probability} "
-                f"old_style_probability={old_style_probability} "
-                f"spurious_repeat_probability={denom_repeat_probability} "
-                f"scalar_power_probability={scalar_power_probability} "
-                f"full_expand_scrambled={full_expand_scrambled} seed={seed} "
-                f"max_tokens={max_tokens} pol_modes={','.join(validation_pol_modes)} "
+                f"seed={seed} max_tokens={max_tokens} "
+                f"pol_modes={','.join(validation_pol_modes)} "
                 f"scrambles={','.join(scramble_names) if scramble_names else 'none'}\n"
             )
 
@@ -2155,10 +1562,6 @@ def build_dataset(
         stats["attempts"] += 1
         built = _build_base_expression(
             N,
-            unit_probability=unit_probability,
-            old_style_probability=old_style_probability,
-            denom_repeat_probability=denom_repeat_probability,
-            scalar_power_probability=scalar_power_probability,
             use_denominators=use_denominators,
             min_terms=min_terms,
             max_terms=max_terms,
@@ -2169,7 +1572,13 @@ def build_dataset(
         simple_expr, expanded_expr = built
 
         if validate:
-            ok, _ = _validate_pair(simple_expr, expanded_expr, N, M, pol_modes=validation_pol_modes)
+            ok, _ = _validate_pair(
+                simple_expr,
+                expanded_expr,
+                N,
+                M,
+                pol_modes=validation_pol_modes,
+            )
             if not ok:
                 stats["parity_fail"] += 1
                 continue
@@ -2180,39 +1589,30 @@ def build_dataset(
             N,
             min_scr=min_scr,
             max_scr=max_scr,
-            full_expand=full_expand_scrambled,
-            scramble_names=scramble_names,
+            scrambles=scramble_names,
         )
 
         if validate:
-            ok, _ = _validate_pair(expanded_expr, scrambled, N, M, pol_modes=validation_pol_modes)
+            ok, _ = _validate_pair(
+                expanded_expr,
+                scrambled,
+                N,
+                M,
+                pol_modes=validation_pol_modes,
+            )
             if not ok:
                 stats["scramble_fail"] += 1
                 continue
 
         try:
-            simplified_scrambled = simplify_to_lowest_terms(scrambled)
-            if simplified_scrambled.strip() == "0":
-                raise ValueError("simplified scrambled expression is bare 0")
-        except Exception:
-            stats["simplify_fail"] += 1
-            simplified_scrambled = scrambled.replace("**", "^")
-
-        if validate:
-            ok, _ = _validate_pair(simple_expr, simplified_scrambled, N, M, pol_modes=validation_pol_modes)
-            if not ok:
-                stats["simplify_fail"] += 1
-                continue
-
-        try:
-            if not _within_token_budget(simple_expr, simplified_scrambled, tokenizer, max_tokens):
+            if not _within_token_budget(simple_expr, scrambled, tokenizer, max_tokens):
                 stats["token_fail"] += 1
                 continue
         except ValueError:
             stats["token_fail"] += 1
             continue
 
-        data.append((simple_expr, simplified_scrambled))
+        data.append((simple_expr, scrambled))
 
     if log_path:
         with open(log_path, "a", encoding="utf-8") as handle:
@@ -2220,7 +1620,6 @@ def build_dataset(
                 "# SUMMARY "
                 f"accepted={len(data)} parity_fail={stats['parity_fail']} "
                 f"scramble_fail={stats['scramble_fail']} pole_fail={stats['pole_fail']} "
-                f"simplify_fail={stats['simplify_fail']} "
                 f"dimension_fail={stats['dimension_fail']} token_fail={stats['token_fail']} "
                 f"attempts={stats['attempts']}\n"
             )
@@ -2231,27 +1630,27 @@ def build_step_dataset(
     N: int,
     num_samples: int,
     *,
-    max_scr: int = DEFAULT_MAX_SCR,
-    min_scr: int = DEFAULT_MIN_SCR,
+    max_scr: int = 5,
+    min_scr: int = 1,
     seed: int | None = None,
-    unit_probability: float = UNIT_PROBABILITY,
-    old_style_probability: float = OLD_STYLE_PROBABILITY,
-    denom_repeat_probability: float = DENOM_REPEAT_PROBABILITY,
-    scalar_power_probability: float = SCALAR_POWER_PROBABILITY,
-    use_denominators: bool = DEFAULT_USE_DENOMINATORS,
-    validate: bool = DEFAULT_VALIDATE,
-    M: float = DEFAULT_MASS,
-    min_terms: int = DEFAULT_MIN_TERMS,
-    max_terms: int = DEFAULT_MAX_TERMS,
+    use_denominators: bool = True,
+    validate: bool = True,
+    M: float = 2.0,
+    min_terms: int = 1,
+    max_terms: int = 1,
     log_path: str | None = None,
-    max_attempts_factor: int = DEFAULT_MAX_ATTEMPTS_FACTOR,
-    full_expand_scrambled: bool = DEFAULT_FULL_EXPAND_SCRAMBLED,
+    max_attempts_factor: int = 12,
     max_tokens: int | None = DEFAULT_MAX_TOKENS,
-    tokenizer_max_particles: int = DEFAULT_TOKENIZER_MAX_PARTICLES,
+    tokenizer_max_particles: int = 8,
     validation_pol_modes: Sequence[str] = DEFAULT_VALIDATION_POL_MODES,
-    scramble_names: Sequence[str] | None = None,
+    scrambles: Sequence[str] | None = None,
 ) -> list[tuple[str, str]]:
-    """Build one-step simplification pairs as (target_step, source_step)."""
+    """Build one-step simplification pairs as (target_step, source_step).
+
+    The CSV convention remains ``simple,scrambled``. For step-model data,
+    ``scrambled`` is the current expression and ``simple`` is exactly one
+    verified shorter step toward the compact target.
+    """
     min_terms = max(1, int(min_terms))
     max_terms = max(min_terms, int(max_terms))
     if seed is not None:
@@ -2270,19 +1669,15 @@ def build_step_dataset(
     }
     max_attempts = max(1, num_samples * max_attempts_factor)
     tokenizer = _make_tokenizer(tokenizer_max_particles, max_tokens)
-    scramble_names = normalise_scramble_names(scramble_names)
+    scramble_names = normalise_scramble_names(scrambles)
 
     if log_path:
         with open(log_path, "w", encoding="utf-8") as handle:
             handle.write(
                 f"# gen_data step log N={N} target_pairs={num_samples} "
                 f"terms=[{min_terms},{max_terms}] scr=[{min_scr},{max_scr}] "
-                f"unit_probability={unit_probability} "
-                f"old_style_probability={old_style_probability} "
-                f"spurious_repeat_probability={denom_repeat_probability} "
-                f"scalar_power_probability={scalar_power_probability} "
-                f"full_expand_scrambled={full_expand_scrambled} seed={seed} "
-                f"max_tokens={max_tokens} pol_modes={','.join(validation_pol_modes)} "
+                f"seed={seed} max_tokens={max_tokens} "
+                f"pol_modes={','.join(validation_pol_modes)} "
                 f"scrambles={','.join(scramble_names) if scramble_names else 'none'}\n"
             )
 
@@ -2295,10 +1690,6 @@ def build_step_dataset(
         stats["attempts"] += 1
         built = _build_base_expression(
             N,
-            unit_probability=unit_probability,
-            old_style_probability=old_style_probability,
-            denom_repeat_probability=denom_repeat_probability,
-            scalar_power_probability=scalar_power_probability,
             use_denominators=use_denominators,
             min_terms=min_terms,
             max_terms=max_terms,
@@ -2307,10 +1698,15 @@ def build_step_dataset(
             stats["base_fail"] += 1
             continue
         simple_expr, expanded_expr = built
-        expanded_start = full_expand_expression(expanded_expr) if full_expand_scrambled else expanded_expr
 
         if validate:
-            ok, _ = _validate_pair(simple_expr, expanded_start, N, M, pol_modes=validation_pol_modes)
+            ok, _ = _validate_pair(
+                simple_expr,
+                expanded_expr,
+                N,
+                M,
+                pol_modes=validation_pol_modes,
+            )
             if not ok:
                 stats["parity_fail"] += 1
                 continue
@@ -2321,34 +1717,45 @@ def build_step_dataset(
             N,
             min_scr=min_scr,
             max_scr=max_scr,
-            full_expand=full_expand_scrambled,
-            scramble_names=scramble_names,
+            scrambles=scramble_names,
         )
         if len(trajectory) <= 1:
             stats["trajectory_fail"] += 1
 
-        candidate_pairs: list[tuple[str, str]] = [(expanded_start, simple_expr)]
+        candidate_pairs: list[tuple[str, str]] = []
+        # expanded -> simple
+        candidate_pairs.append((expanded_expr, simple_expr))
+        # scrambled_i -> scrambled_{i-1}, from hardest back toward expanded
         for i in range(len(trajectory) - 1, 0, -1):
             candidate_pairs.append((trajectory[i], trajectory[i - 1]))
 
         for source_expr, target_expr in candidate_pairs:
             if len(data) >= num_samples:
                 break
-            source_expr = source_expr.replace("**", "^")
-            target_expr = target_expr.replace("**", "^")
             try:
-                if not _within_token_budget(target_expr, source_expr, tokenizer, max_tokens):
+                if max_tokens is not None and not _within_token_budget(
+                    target_expr,
+                    source_expr,
+                    tokenizer,
+                    max_tokens,
+                ):
                     stats["token_fail"] += 1
                     continue
                 if token_len(target_expr) >= token_len(source_expr):
                     stats["not_shorter"] += 1
                     continue
-            except ValueError:
+            except (ExpressionParseError, ValueError):
                 stats["token_fail"] += 1
                 continue
 
             if validate:
-                ok, _ = _validate_pair(source_expr, target_expr, N, M, pol_modes=validation_pol_modes)
+                ok, _ = _validate_pair(
+                    source_expr,
+                    target_expr,
+                    N,
+                    M,
+                    pol_modes=validation_pol_modes,
+                )
                 if not ok:
                     stats["equiv_fail"] += 1
                     continue
@@ -2365,166 +1772,6 @@ def build_step_dataset(
                 f"token_fail={stats['token_fail']} attempts={stats['attempts']}\n"
             )
     return data
-
-
-def _batch_sizes(total: int, batch_size: int) -> list[int]:
-    total = max(0, int(total))
-    batch_size = max(1, int(batch_size))
-    out: list[int] = []
-    remaining = total
-    while remaining > 0:
-        take = min(batch_size, remaining)
-        out.append(take)
-        remaining -= take
-    return out
-
-
-def _progress(iterable, *, total: int, enabled: bool, desc: str):
-    if not enabled:
-        return iterable
-    try:
-        from tqdm import tqdm
-
-        return tqdm(iterable, total=total, desc=desc, unit="batch")
-    except Exception:
-        return iterable
-
-
-def _worker_build_dataset(job: BatchJob) -> list[tuple[str, str]]:
-    builder = build_step_dataset if job.dataset_kind == "step" else build_dataset
-    return builder(
-        job.N,
-        job.num_samples,
-        max_scr=job.max_scr,
-        min_scr=job.min_scr,
-        seed=job.seed,
-        unit_probability=job.unit_probability,
-        old_style_probability=job.old_style_probability,
-        denom_repeat_probability=job.denom_repeat_probability,
-        scalar_power_probability=job.scalar_power_probability,
-        use_denominators=job.use_denominators,
-        validate=job.validate,
-        M=job.M,
-        min_terms=job.min_terms,
-        max_terms=job.max_terms,
-        log_path=None,
-        max_attempts_factor=job.max_attempts_factor,
-        full_expand_scrambled=job.full_expand_scrambled,
-        max_tokens=job.max_tokens,
-        tokenizer_max_particles=job.tokenizer_max_particles,
-        validation_pol_modes=job.validation_pol_modes,
-        scramble_names=job.scramble_names,
-    )
-
-
-def build_dataset_batched(
-    N: int,
-    num_samples: int,
-    *,
-    dataset_kind: str = DEFAULT_DATASET_KIND,
-    max_scr: int = DEFAULT_MAX_SCR,
-    min_scr: int = DEFAULT_MIN_SCR,
-    seed: int | None = None,
-    unit_probability: float = UNIT_PROBABILITY,
-    old_style_probability: float = OLD_STYLE_PROBABILITY,
-    denom_repeat_probability: float = DENOM_REPEAT_PROBABILITY,
-    scalar_power_probability: float = SCALAR_POWER_PROBABILITY,
-    use_denominators: bool = DEFAULT_USE_DENOMINATORS,
-    validate: bool = DEFAULT_VALIDATE,
-    M: float = DEFAULT_MASS,
-    min_terms: int = DEFAULT_MIN_TERMS,
-    max_terms: int = DEFAULT_MAX_TERMS,
-    log_path: str | None = None,
-    max_attempts_factor: int = DEFAULT_MAX_ATTEMPTS_FACTOR,
-    full_expand_scrambled: bool = DEFAULT_FULL_EXPAND_SCRAMBLED,
-    max_tokens: int | None = DEFAULT_MAX_TOKENS,
-    tokenizer_max_particles: int = DEFAULT_TOKENIZER_MAX_PARTICLES,
-    validation_pol_modes: Sequence[str] = DEFAULT_VALIDATION_POL_MODES,
-    scramble_names: Sequence[str] | None = None,
-    batch_size: int = DEFAULT_BATCH_SIZE,
-    jobs: int | str = DEFAULT_JOBS,
-    progress: bool = DEFAULT_PROGRESS,
-) -> list[tuple[str, str]]:
-    """Build a dataset in independent batches, optionally using multiple CPUs."""
-    if dataset_kind not in {"oneshot", "step"}:
-        raise ValueError("dataset_kind must be 'oneshot' or 'step'")
-    batch_counts = _batch_sizes(num_samples, batch_size)
-    if not batch_counts:
-        return []
-
-    jobs = _resolve_jobs(jobs) if isinstance(jobs, str) else max(1, int(jobs))
-    base_seed = seed if seed is not None else random.randrange(1, 2**31 - 1)
-    seeds = [base_seed + 1000003 * i for i in range(len(batch_counts))]
-    normalised_scrambles = normalise_scramble_names(scramble_names)
-    validation_pol_modes = tuple(validation_pol_modes)
-    job_specs = [
-        BatchJob(
-            dataset_kind=dataset_kind,
-            N=N,
-            num_samples=count,
-            max_scr=max_scr,
-            min_scr=min_scr,
-            seed=seeds[i],
-            unit_probability=unit_probability,
-            old_style_probability=old_style_probability,
-            denom_repeat_probability=denom_repeat_probability,
-            scalar_power_probability=scalar_power_probability,
-            use_denominators=use_denominators,
-            validate=validate,
-            M=M,
-            min_terms=min_terms,
-            max_terms=max_terms,
-            max_attempts_factor=max_attempts_factor,
-            full_expand_scrambled=full_expand_scrambled,
-            max_tokens=max_tokens,
-            tokenizer_max_particles=tokenizer_max_particles,
-            validation_pol_modes=validation_pol_modes,
-            scramble_names=normalised_scrambles,
-        )
-        for i, count in enumerate(batch_counts)
-    ]
-
-    if log_path:
-        with open(log_path, "w", encoding="utf-8") as handle:
-            handle.write(
-                f"# gen_data batched log N={N} target={num_samples} "
-                f"dataset_kind={dataset_kind} "
-                f"batches={len(job_specs)} batch_size={batch_size} jobs={jobs} "
-                f"terms=[{min_terms},{max_terms}] scr=[{min_scr},{max_scr}] "
-                f"unit_probability={unit_probability} "
-                f"old_style_probability={old_style_probability} "
-                f"spurious_repeat_probability={denom_repeat_probability} "
-                f"scalar_power_probability={scalar_power_probability} "
-                f"full_expand_scrambled={full_expand_scrambled} seed={seed} base_seed={base_seed} "
-                f"max_tokens={max_tokens} tokenizer_max_particles={tokenizer_max_particles} "
-                f"pol_modes={','.join(validation_pol_modes)} "
-                f"scrambles={','.join(normalised_scrambles) if normalised_scrambles else 'none'}\n"
-            )
-
-    pairs: list[tuple[str, str]] = []
-    if jobs == 1:
-        iterator = (_worker_build_dataset(job) for job in job_specs)
-        for batch_pairs in _progress(iterator, total=len(job_specs), enabled=progress, desc="generating"):
-            pairs.extend(batch_pairs)
-    else:
-        with mp.Pool(processes=jobs) as pool:
-            iterator = pool.imap_unordered(_worker_build_dataset, job_specs)
-            for batch_pairs in _progress(iterator, total=len(job_specs), enabled=progress, desc="generating"):
-                pairs.extend(batch_pairs)
-
-    if log_path:
-        with open(log_path, "a", encoding="utf-8") as handle:
-            handle.write(
-                f"# SUMMARY accepted={len(pairs)} requested={num_samples} "
-                f"batches={len(job_specs)} jobs={jobs}\n"
-            )
-    return pairs
-
-
-def _resolve_jobs(value: str) -> int:
-    if str(value).lower() == "auto":
-        return max(1, (os.cpu_count() or 2) - 1)
-    return max(1, int(value))
 
 
 def dedupe_pairs(
@@ -2559,7 +1806,7 @@ def tokenise_csv(
     inp: str,
     out: str,
     *,
-    max_particles: int = DEFAULT_TOKENIZER_MAX_PARTICLES,
+    max_particles: int = 8,
     max_sequence_length: int | None = DEFAULT_MAX_TOKENS,
 ) -> None:
     from Tokenizer import ScatteringAmplitudeTokenizer
@@ -2643,79 +1890,20 @@ def _strip_matched_outer_parens(s: str) -> str:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate scalar-QED-like amplitude data.")
-    parser.add_argument("N", nargs="?", type=int, default=DEFAULT_N_PARTICLES, help="Number of external legs.")
-    parser.add_argument("--samples", type=int, default=DEFAULT_SAMPLES)
-    parser.add_argument("--max-scr", type=int, default=DEFAULT_MAX_SCR)
-    parser.add_argument("--min-scr", type=int, default=DEFAULT_MIN_SCR)
-    parser.add_argument("--min-terms", type=int, default=DEFAULT_MIN_TERMS)
-    parser.add_argument("--max-terms", type=int, default=DEFAULT_MAX_TERMS)
+    parser.add_argument("N", nargs="?", type=int, default=4, help="Number of external legs.")
+    parser.add_argument("--samples", type=int, default=5000)
+    parser.add_argument("--max-scr", type=int, default=5)
+    parser.add_argument("--min-scr", type=int, default=0)
+    parser.add_argument("--min-terms", type=int, default=1)
+    parser.add_argument("--max-terms", type=int, default=4)
     parser.add_argument(
         "--dataset-kind",
         choices=["oneshot", "step"],
-        default=DEFAULT_DATASET_KIND,
+        default="oneshot",
         help="Generate direct scrambled->simple pairs or one-step simplification pairs.",
     )
-    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    parser.add_argument(
-        "--unit-probability",
-        type=float,
-        default=UNIT_PROBABILITY,
-        help=(
-            "Probability that a generated expression uses only unit coefficients "
-            "(+1 or -1) for all top-level terms. Default: %(default)s"
-        ),
-    )
-    parser.add_argument(
-        "--old-style-probability",
-        type=float,
-        default=OLD_STYLE_PROBABILITY,
-        help=(
-            "Probability of old-source-like samples: two terms, ±1 top-level "
-            "coefficients, and 4pt block weights biased toward single-F chains. "
-            "Default: %(default)s"
-        ),
-    )
-    parser.add_argument(
-        "--denom-repeat-probability",
-        "--spurious-repeat-probability",
-        type=float,
-        default=DENOM_REPEAT_PROBABILITY,
-        help=(
-            "Probability of adding a repeated denominator pole when the extra copy "
-            "is spurious because the pole appears in an adjacent p·F-chain "
-            "expansion. Default: %(default)s"
-        ),
-    )
-    parser.add_argument(
-        "--scalar-power-probability",
-        type=float,
-        default=SCALAR_POWER_PROBABILITY,
-        help=(
-            "Probability, when adding optional scalar p·p numerator factors, "
-            "of repeating an existing physical-pole scalar factor. This creates "
-            "manifest numerator powers like (p_i · p_j)^2. Repeated denominators "
-            "are generated separately from hidden p·F-chain factors, not from "
-            "these trivial scalar cancellations. Default: %(default)s"
-        ),
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=DEFAULT_BATCH_SIZE,
-        help="Number of accepted pairs per generation batch. Default: %(default)s",
-    )
-    parser.add_argument(
-        "--jobs",
-        type=str,
-        default=DEFAULT_JOBS,
-        help="Number of worker processes, or 'auto'. Default: %(default)s",
-    )
-    parser.add_argument(
-        "--no-progress",
-        action="store_true",
-        help="Disable the tqdm progress bar.",
-    )
-    parser.add_argument("--mass", type=float, default=DEFAULT_MASS)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--mass", type=float, default=2.0)
     parser.add_argument("--raw-out", type=str, default=None)
     parser.add_argument("--tok-out", type=str, default=None)
     parser.add_argument("--log-out", type=str, default=None)
@@ -2725,7 +1913,7 @@ if __name__ == "__main__":
         default=DEFAULT_MAX_TOKENS,
         help="Maximum tokenized length per expression. Use 0 to disable filtering.",
     )
-    parser.add_argument("--tokenizer-max-particles", type=int, default=DEFAULT_TOKENIZER_MAX_PARTICLES)
+    parser.add_argument("--tokenizer-max-particles", type=int, default=8)
     parser.add_argument(
         "--validation-pol-modes",
         nargs="+",
@@ -2737,54 +1925,40 @@ if __name__ == "__main__":
         "--scrambles",
         nargs="*",
         default=None,
-        choices=["all", "none", *list(_SCRAMBLER_BY_NAME)],
+        choices=["all", "none", *DEFAULT_SCRAMBLES],
         help=(
-            "Enabled scramble labels. Omit for the default set. "
+            "Enabled scramble labels. Omit for the default full set. "
             "Use --scrambles none with --min-scr 0 --max-scr 0 for expanded->simple only."
         ),
     )
     parser.add_argument("--no-validate", action="store_true")
     parser.add_argument("--no-tokenise", action="store_true")
-    parser.add_argument(
-        "--grouped-scrambled",
-        action="store_true",
-        help="Keep the old grouped scrambled style instead of fully expanding scrambled expressions.",
-    )
     args = parser.parse_args()
 
-    nsamps = args.samples // 1000
-    raw_out = args.raw_out or DEFAULT_RAW_OUT_TEMPLATE.format(N=args.N, NSAMPS=nsamps)
-    tok_out = args.tok_out or DEFAULT_TOK_OUT_TEMPLATE.format(N=args.N, NSAMPS=nsamps)
-    log_out = args.log_out or DEFAULT_LOG_OUT_TEMPLATE.format(N=args.N, NSAMPS=nsamps)
+    raw_out = args.raw_out or f"gi_{args.N}pt.csv"
+    tok_out = args.tok_out or f"gi_{args.N}pt_tok.csv"
+    log_out = args.log_out or f"gen_data_{args.N}pt.log"
 
     t0 = time.perf_counter()
-    oversample = int(round(args.samples * DEFAULT_OVERSAMPLE_FACTOR))
+    oversample = int(round(args.samples * 1.2))
     max_tokens = None if args.max_tokens <= 0 else args.max_tokens
-    pairs = build_dataset_batched(
+    builder = build_step_dataset if args.dataset_kind == "step" else build_dataset
+    pairs = builder(
         args.N,
         oversample,
-        dataset_kind=args.dataset_kind,
         max_scr=args.max_scr,
         min_scr=args.min_scr,
         seed=args.seed,
-        unit_probability=args.unit_probability,
-        old_style_probability=args.old_style_probability,
-        denom_repeat_probability=args.denom_repeat_probability,
-        scalar_power_probability=args.scalar_power_probability,
-        use_denominators=DEFAULT_USE_DENOMINATORS,
+        use_denominators=True,
         validate=not args.no_validate,
         M=args.mass,
         min_terms=args.min_terms,
         max_terms=args.max_terms,
         log_path=log_out,
-        full_expand_scrambled=(not args.grouped_scrambled) if DEFAULT_FULL_EXPAND_SCRAMBLED else False,
         max_tokens=max_tokens,
         tokenizer_max_particles=args.tokenizer_max_particles,
         validation_pol_modes=tuple(args.validation_pol_modes),
-        scramble_names=args.scrambles,
-        batch_size=args.batch_size,
-        jobs=_resolve_jobs(args.jobs),
-        progress=DEFAULT_PROGRESS and not args.no_progress,
+        scrambles=args.scrambles,
     )
     t1 = time.perf_counter()
 
@@ -2792,7 +1966,7 @@ if __name__ == "__main__":
     pairs, removed = dedupe_pairs(pairs)
     pairs = pairs[: args.samples]
     write_csv(pairs, raw_out)
-    if DEFAULT_TOKENISE and not args.no_tokenise:
+    if not args.no_tokenise:
         tokenise_csv(
             raw_out,
             tok_out,
