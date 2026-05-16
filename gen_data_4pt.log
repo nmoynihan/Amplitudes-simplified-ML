@@ -1,8 +1,0 @@
-# mixed gen_data.sh profile
-# broad=300000 sqed_cover=60000 hard=40000 total=400000
-# gen_data batched log N=4 target=360000 dataset_kind=oneshot batches=180 batch_size=2000 jobs=8 terms=[1,3] scr=[1,5] unit_probability=0.9 old_style_probability=0.4 spurious_repeat_probability=0.35 scalar_power_probability=0.15 full_expand_scrambled=True seed=42 base_seed=42 max_tokens=1024 tokenizer_max_particles=8 pol_modes=coulomb,covariant scrambles=multiply_one,ward,momentum,commute_dot,ratio,mass_shell_zero,partial_fraction,ward_all,polarisation_zero,term_reorder
-# SUMMARY accepted=360000 requested=360000 batches=180 jobs=8
-# gen_data batched log N=4 target=72000 dataset_kind=oneshot batches=36 batch_size=2000 jobs=8 terms=[1,2] scr=[1,5] unit_probability=1.0 old_style_probability=0.65 spurious_repeat_probability=0.15 scalar_power_probability=0.1 full_expand_scrambled=True seed=1000045 base_seed=1000045 max_tokens=1024 tokenizer_max_particles=8 pol_modes=coulomb,covariant scrambles=multiply_one,ward,momentum,commute_dot,ratio
-# SUMMARY accepted=72000 requested=72000 batches=36 jobs=8
-# gen_data batched log N=4 target=48000 dataset_kind=oneshot batches=24 batch_size=2000 jobs=8 terms=[3,3] scr=[3,5] unit_probability=0.9 old_style_probability=0.4 spurious_repeat_probability=0.35 scalar_power_probability=0.15 full_expand_scrambled=True seed=2000048 base_seed=2000048 max_tokens=1024 tokenizer_max_particles=8 pol_modes=coulomb,covariant scrambles=multiply_one,ward,momentum,commute_dot,ratio,mass_shell_zero,partial_fraction,ward_all,polarisation_zero,term_reorder
-# SUMMARY accepted=48000 requested=48000 batches=24 jobs=8
