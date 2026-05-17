@@ -194,6 +194,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
     )
     parser.add_argument("--beam-size", type=int, default=None)
+    parser.add_argument("--p-nucleus", type=float, default=None)
+    parser.add_argument("--temperature-nucleus", type=float, default=None)
     parser.add_argument(
         "--rerank-numerical",
         action=argparse.BooleanOptionalAction,
@@ -318,18 +320,33 @@ def apply_cli_config(args: argparse.Namespace) -> None:
         beam_size = args.beam_size if args.beam_size is not None else 1
         if args.decoding_method == "greedy":
             beam_size = 1
+        default_cfg = next(
+            (cfg for cfg in DECODE_RUNS if cfg.decoding_method == args.decoding_method),
+            DECODE_RUNS[0],
+        )
         DECODE_RUNS = [
             DecodeConfig(
                 name=args.decoding_method,
                 enabled=True,
                 decoding_method=args.decoding_method,
                 beam_size=beam_size,
+                p_nucleus=args.p_nucleus if args.p_nucleus is not None else default_cfg.p_nucleus,
+                temperature_nucleus=(
+                    args.temperature_nucleus
+                    if args.temperature_nucleus is not None
+                    else default_cfg.temperature_nucleus
+                ),
                 evaluate_beam_hypotheses=args.decoding_method in {"beam", "nucleus"},
                 max_beams_to_check=None,
                 rerank_numerical_equiv=bool(args.rerank_numerical),
             )
         ]
-    elif args.beam_size is not None or args.rerank_numerical is not None:
+    elif (
+        args.beam_size is not None
+        or args.rerank_numerical is not None
+        or args.p_nucleus is not None
+        or args.temperature_nucleus is not None
+    ):
         DECODE_RUNS = [
             DecodeConfig(
                 name=cfg.name,
@@ -337,8 +354,12 @@ def apply_cli_config(args: argparse.Namespace) -> None:
                 decoding_method=cfg.decoding_method,
                 max_length=cfg.max_length,
                 beam_size=args.beam_size if cfg.decoding_method in {"beam", "nucleus"} else cfg.beam_size,
-                p_nucleus=cfg.p_nucleus,
-                temperature_nucleus=cfg.temperature_nucleus,
+                p_nucleus=args.p_nucleus if args.p_nucleus is not None else cfg.p_nucleus,
+                temperature_nucleus=(
+                    args.temperature_nucleus
+                    if args.temperature_nucleus is not None
+                    else cfg.temperature_nucleus
+                ),
                 evaluate_beam_hypotheses=cfg.evaluate_beam_hypotheses,
                 max_beams_to_check=cfg.max_beams_to_check,
                 rerank_numerical_equiv=(
@@ -403,6 +424,8 @@ def resolve_device() -> str:
 
 def ensure_output_dirs() -> None:
     (DATA_TESTING_DIR / OUTPUT_SUBDIR).mkdir(parents=True, exist_ok=True)
+    for path in (RAW_CSV_PATH, TOK_CSV_PATH, GEN_LOG_PATH, SUMMARY_CSV_PATH):
+        path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def strip_special_tokens(seq: list[int], *, keep_eos: bool = False) -> list[int]:
