@@ -3,7 +3,7 @@ set -euo pipefail
 
 MODE="${1:-${MODE:-train_eval}}"
 
-N_PARTICLES="${N_PARTICLES:-4}"
+N_PARTICLES="${N_PARTICLES:-5}"
 SAMPLES="${SAMPLES:-500000}"
 MIN_SCR="${MIN_SCR:-1}"
 MAX_SCR="${MAX_SCR:-4}"
@@ -15,7 +15,7 @@ TOKENIZER_MAX_PARTICLES="${TOKENIZER_MAX_PARTICLES:-8}"
 DATASET_KIND="${DATASET_KIND:-oneshot}"
 SCRAMBLES="${SCRAMBLES:-}"
 USER_SET_SKIP_DATA_GEN="${SKIP_DATA_GEN+x}"
-SKIP_DATA_GEN="${SKIP_DATA_GEN:-0}"
+SKIP_DATA_GEN="${SKIP_DATA_GEN:-1}"
 
 # SQED-compatible broad default profile.  This keeps a broad slice while
 # reducing nuisance coefficient variation that is absent from sqed_oneshot_150.
@@ -52,11 +52,11 @@ truthy() {
   esac
 }
 
-RUN_NAME="${RUN_NAME:-unit_500k}"
-EPOCHS="${EPOCHS:-30}"
-BATCH_SIZE="${BATCH_SIZE:-8}"
+RUN_NAME="${RUN_NAME:-fivept_500k}"
+EPOCHS="${EPOCHS:-45}"
+BATCH_SIZE="${BATCH_SIZE:-64}"
 TRAIN_MAX_LENGTH="${TRAIN_MAX_LENGTH:-}"
-TRAIN_SPLIT="${TRAIN_SPLIT:-0.8}"
+TRAIN_SPLIT="${TRAIN_SPLIT:-0.9}"
 TRAIN_SAMPLE_SEED="${TRAIN_SAMPLE_SEED:-$SEED}"
 TRAIN_TOK_SUBSET="${TRAIN_TOK_SUBSET:-data/${RUN_NAME}_train_${SAMPLES}_tok.csv}"
 EMBEDDING_DIM="${EMBEDDING_DIM:-384}"
