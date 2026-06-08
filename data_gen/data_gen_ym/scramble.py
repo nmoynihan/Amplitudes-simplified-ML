@@ -5,8 +5,8 @@ import random
 import re
 from typing import Sequence
 
-from notation import *
-from algebra import *
+from .notation import *
+from .algebra import *
 
 SCRAMBLE_MULTIPLY_ONE = "multiply_one"
 
