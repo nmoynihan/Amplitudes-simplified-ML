@@ -6,8 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Sequence
 
-from notation import *
-from algebra import *
+from .notation import *
+from .algebra import *
 
 
 class _AnsatzInfeasible(ValueError):

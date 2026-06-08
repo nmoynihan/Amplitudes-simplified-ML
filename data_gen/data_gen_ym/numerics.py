@@ -4,9 +4,9 @@ from __future__ import annotations
 import math
 from typing import Sequence
 
-from notation import *
-from algebra import *
-from kinematics import generate_kinematics, mdot
+from .notation import *
+from .algebra import *
+from .kinematics import generate_kinematics, mdot
 
 DEFAULT_VALIDATION_POL_MODES = ("coulomb", "covariant")
 

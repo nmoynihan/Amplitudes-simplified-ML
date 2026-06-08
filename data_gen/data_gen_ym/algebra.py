@@ -7,7 +7,7 @@ from typing import Sequence
 
 import sympy as sp
 
-from notation import *
+from .notation import *
 
 def _canon_pp(term: str) -> str:
     m = _RE_pp.fullmatch(term)

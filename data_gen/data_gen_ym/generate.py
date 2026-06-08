@@ -11,12 +11,12 @@ import time
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
-from notation import *
-from algebra import *
-from kinematics import generate_kinematics, mdot
-from numerics import *
-from scramble import *
-from expr_model import *
+from .notation import *
+from .algebra import *
+from .kinematics import generate_kinematics, mdot
+from .numerics import *
+from .scramble import *
+from .expr_model import *
 
 DEFAULT_N_PARTICLES = 4
 
