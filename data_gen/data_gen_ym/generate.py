@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse
 import csv
+import gzip
 import json
 import multiprocessing as mp
 import os
@@ -435,8 +436,15 @@ def dedupe_pairs(
     return out, len(pairs) - len(out)
 
 
+def _open_csv(path: str, mode: str):
+    """Open a CSV path for text r/w, transparently gzip-compressed if it ends .gz."""
+    if str(path).endswith(".gz"):
+        return gzip.open(path, mode + "t", newline="", encoding="utf-8")
+    return open(path, mode, newline="", encoding="utf-8")
+
+
 def write_csv(pairs: Iterable[tuple[str, str]], path: str) -> None:
-    with open(path, "w", newline="", encoding="utf-8") as handle:
+    with _open_csv(path, "w") as handle:
         writer = csv.writer(handle)
         writer.writerow(["simple", "scrambled"])
         for simple, scrambled in pairs:
@@ -456,9 +464,7 @@ def tokenise_csv(
         max_particles=max_particles,
         max_sequence_length=max_sequence_length,
     )
-    with open(inp, newline="", encoding="utf-8") as fin, open(
-        out, "w", newline="", encoding="utf-8"
-    ) as fout:
+    with _open_csv(inp, "r") as fin, _open_csv(out, "w") as fout:
         reader = csv.DictReader(fin)
         writer = csv.DictWriter(fout, fieldnames=["simple", "scrambled"])
         writer.writeheader()
