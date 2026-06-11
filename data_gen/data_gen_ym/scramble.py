@@ -23,6 +23,9 @@ SCRAMBLE_COMMUTE_DOT = "commute_dot"
 SCRAMBLE_RATIO = "ratio"
 
 
+SCRAMBLE_MASS_SHELL_ZERO = "mass_shell_zero"
+
+
 SCRAMBLE_PARTIAL_FRACTION = "partial_fraction"
 
 
@@ -35,12 +38,16 @@ SCRAMBLE_POLARISATION_ZERO = "polarisation_zero"
 SCRAMBLE_TERM_REORDER = "term_reorder"
 
 
+# NB: SCRAMBLE_RATIO is intentionally NOT in the default set. It multiplies by a
+# 2-term (A+B)/(A+B) "dressed-up 1" which full_expand distributes over every term
+# (~2.4x per application, compounding) — the dominant cause of >30k-char blowups,
+# with no algebraic content. Still available via explicit --scrambles ratio.
 DEFAULT_SCRAMBLES = (
     SCRAMBLE_MULTIPLY_ONE,
     SCRAMBLE_WARD,
     SCRAMBLE_MOMENTUM,
     SCRAMBLE_COMMUTE_DOT,
-    SCRAMBLE_RATIO,
+    SCRAMBLE_MASS_SHELL_ZERO,
     SCRAMBLE_PARTIAL_FRACTION,
     SCRAMBLE_WARD_ALL,
     SCRAMBLE_POLARISATION_ZERO,
@@ -54,7 +61,12 @@ DEFAULT_MIN_SCR = 1
 DEFAULT_MAX_SCR = 5
 
 
-DEFAULT_MAX_SCRAMBLED_LEN = 4000
+# Char-length cap on a scramble candidate (pre-simplify). Raised from the sQED
+# value of 4000 because all-gluon base expansions are already ~10k chars, so 4000
+# would reject every scramble (scrambling never happens). 30000 lets the non-ratio
+# scrambles apply on the big bases while still cutting off rare runaways (which would
+# fail the token budget after simplify anyway).
+DEFAULT_MAX_SCRAMBLED_LEN = 30000
 
 
 def scr_mul_by_one(expr: str, N: int) -> str:
@@ -78,7 +90,9 @@ def scr_momentum_substitute(expr: str, N: int) -> str:
     match = random.choice(matches)
     a = int(match.group(1))
     b = int(match.group(2))
-    repl = "-(" + " + ".join(dot(p(s), p(b)) for s in range(1, N + 1) if s != a) + ")"
+    # p_a·p_b = -Σ_{s≠a} p_s·p_b (Σp=0). For massless gluons drop the s=b term too
+    # (p_b·p_b = 0) so no spurious p_i·p_i factor is introduced.
+    repl = "-(" + " + ".join(dot(p(s), p(b)) for s in range(1, N + 1) if s not in (a, b)) + ")"
     return expr[: match.start()] + repl + expr[match.end() :]
 
 
@@ -99,6 +113,33 @@ def scr_mul_by_ratio(expr: str, N: int) -> str:
     return f"({expr})*{denom}/{denom}"
 
 
+def _mass_shell_zero_relation(N: int) -> str:
+    """A multiple of the massless momentum-conservation zero  2·Σ_{i<j≠ω} p_i·p_j = 0.
+
+    From (Σ_{i≠ω} p_i)² = p_ω² together with p_i² = 0 (massless gluons), the cross-term
+    sum 2·Σ_{i<j, i,j≠ω} p_i·p_j vanishes.  We build ONLY the cross terms — no spurious
+    p_i·p_i factors (those would be identically zero for massless legs).
+    """
+    omitted = random.randint(1, N)
+    legs = [i for i in range(1, N + 1) if i != omitted]
+    terms: list[str] = []
+    coeffs: list[int] = []
+
+    pairs = [(legs[i], legs[j]) for i in range(len(legs)) for j in range(i + 1, len(legs))]
+    for i, j in pairs:
+        terms.append(_canon_pp(dot(p(i), p(j))))
+        coeffs.append(2)
+
+    assert len(terms) == len(coeffs)  # 3.9-safe guard (replaces zip(strict=True), 3.10+)
+    shuffled = list(zip(terms, coeffs))
+    random.shuffle(shuffled)
+    terms = [term for term, _coeff in shuffled]
+    coeffs = [coeff for _term, coeff in shuffled]
+    if random.random() < 0.5:
+        coeffs = [-coeff for coeff in coeffs]
+    return f"({_format_poly(terms, coeffs)})"
+
+
 def _random_context_factor(expr: str, N: int, max_factors: int = 2) -> str:
     factors: list[str] = []
     existing_dots = [m.group(0) for m in _RE_DOT.finditer(expr)]
@@ -115,6 +156,21 @@ def _random_context_factor(expr: str, N: int, max_factors: int = 2) -> str:
             factors.append(dot(p(i), p(j)))
 
     return "*".join(factors)
+
+
+def scr_add_mass_shell_zero(expr: str, N: int) -> str:
+    zero = _mass_shell_zero_relation(N)
+    context = _random_context_factor(expr, N)
+    zero_term = zero if not context else f"{zero}*{context}"
+
+    denom_blocks = _find_denom_blocks(expr)
+    if denom_blocks and random.random() < 0.5:
+        _slash_pos, dopen, dclose = random.choice(denom_blocks)
+        denom = expr[dopen + 1 : dclose]
+        zero_term = f"({zero_term})/({denom})"
+
+    sign = "+" if random.random() < 0.5 else "-"
+    return f"({expr}) {sign} {zero_term}"
 
 
 def _find_denom_blocks(expr: str) -> list[tuple[int, int, int]]:
@@ -277,6 +333,7 @@ _SCRAMBLER_BY_NAME = {
     SCRAMBLE_MOMENTUM: lambda expr, N: scr_momentum_substitute(expr, N),
     SCRAMBLE_COMMUTE_DOT: lambda expr, N: scr_commute_dot(expr),
     SCRAMBLE_RATIO: lambda expr, N: scr_mul_by_ratio(expr, N),
+    SCRAMBLE_MASS_SHELL_ZERO: lambda expr, N: scr_add_mass_shell_zero(expr, N),
     SCRAMBLE_PARTIAL_FRACTION: lambda expr, N: scr_partial_fraction(expr),
     SCRAMBLE_WARD_ALL: lambda expr, N: scr_ward_substitute_all(expr, N),
     SCRAMBLE_POLARISATION_ZERO: lambda expr, N: scr_add_polarisation_zero(expr, N),
@@ -345,6 +402,7 @@ __all__ = [
     'SCRAMBLE_MOMENTUM',
     'SCRAMBLE_COMMUTE_DOT',
     'SCRAMBLE_RATIO',
+    'SCRAMBLE_MASS_SHELL_ZERO',
     'SCRAMBLE_PARTIAL_FRACTION',
     'SCRAMBLE_WARD_ALL',
     'SCRAMBLE_POLARISATION_ZERO',
@@ -358,7 +416,9 @@ __all__ = [
     'scr_momentum_substitute',
     'scr_commute_dot',
     'scr_mul_by_ratio',
+    '_mass_shell_zero_relation',
     '_random_context_factor',
+    'scr_add_mass_shell_zero',
     '_find_denom_blocks',
     '_find_paren_block_ending_at',
     'scr_partial_fraction',
