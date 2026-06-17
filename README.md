@@ -1,5 +1,7 @@
-# sturdy-couscous
+# Amplitudes-simplified-ML
 Simplifying Amplitudes using ML
+
+Note: this project is still under development.
 
 We recommend using a virtual environment, whose setup is described in the `environment` folder. 
 Ensure this venv is activated, then follow the instructions below to generate data, then train a Transformer on the data.
