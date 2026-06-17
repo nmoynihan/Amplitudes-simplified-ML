@@ -52,9 +52,9 @@ Two generators share the machinery:
 
 Preliminary. The full generate → validate → train → check loop works end-to-end.
 
-A 5pt sQED, 500k pairs, ??-param model trained on GPU cluster reached token accuracy ≈ ??%.
+A 5pt sQED, 500k pairs, ~16M-param model trained on GPU cluster reached token accuracy ≈ 93%.
 
-A 4pt Yang-Mills, 50k pairs, ~4M-param model trained on an Apple M2 GPU (MPS) reached token accuracy ≈ 86%.
+A 4pt Yang-Mills, 50k pairs, ~4M-param model trained on an Apple M2 GPU reached token accuracy ≈ 86%.
 
 Open: scaling up, 6+ legs (multi-particle poles).
 
