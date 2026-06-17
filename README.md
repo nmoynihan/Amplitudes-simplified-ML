@@ -48,6 +48,8 @@ Two generators share the machinery:
 
 ## Status / results
 
+> ⚠️ Trained models are too large to be uploaded on GitHub. They will be available through other means once results are published.
+
 Preliminary. The full generate → validate → train → check loop works end-to-end.
 
 A 5pt sQED, 500k pairs, ??-param model trained on GPU cluster reached token accuracy ≈ ??%.
