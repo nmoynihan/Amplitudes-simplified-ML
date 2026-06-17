@@ -52,21 +52,21 @@ Two generators share the machinery:
 
 Preliminary. The full generate → validate → train → check loop works end-to-end.
 
-A 5pt sQED, 500k pairs, ~16M-param model trained on GPU cluster reached token accuracy ≈ 93%.
+A 5pt sQED, 500k pairs, ~16M-param model trained on GPU cluster reached accuracy ≈ 93%.
 
-A 4pt Yang-Mills, 50k pairs, ~4M-param model trained on an Apple M2 GPU reached token accuracy ≈ 86%.
+A 4pt Yang-Mills, 50k pairs, ~4M-param model trained on an Apple M2 GPU reached accuracy ≈ 86%.
 
 Open: scaling up, 6+ legs (multi-particle poles).
 
-## Setup & usage
+## Setup and usage
 
-Python 3.9. `conda create -n ml_amplitudes && conda activate ml_amplitudes && pip install -r environment/requirements.txt`.
+`pip install -r environment/requirements.txt`.
 
-Run from the repo root:
+Example runs from the repo root:
 
 ```bash
-# Generate — scalar QED (4-point, 10k) and Yang–Mills (4-gluon, 50k, compressed)
-python3 data_gen/gen_data.py 4 --samples 10000 --seed 42 \
+# Generate — scalar QED (4-point, 50k) and Yang–Mills (4-gluon, 50k)
+python3 data_gen/gen_data.py 4 --samples 50000 --seed 42 \
     --raw-out data/sqed_4pt_10k.csv --tok-out data/sqed_4pt_10k_tok.csv
 SAMPLES=50000 SEED=7 ./data_gen/data_gen_ym/run_ym.sh 4 \
     --raw-out data/data_ym/ym_4pt_50k.csv.gz --tok-out data/data_ym/ym_4pt_50k_tok.csv.gz
