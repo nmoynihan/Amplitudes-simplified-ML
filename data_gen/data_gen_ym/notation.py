@@ -10,7 +10,7 @@ DOT = "·"
 DEFAULT_MIN_TERMS = 1
 
 
-DEFAULT_MAX_TERMS = 2
+DEFAULT_MAX_TERMS = 3
 
 
 DEFAULT_USE_DENOMINATORS = True
@@ -42,28 +42,13 @@ SCALAR_COEFF_POOL = [c for c in range(-9, 10) if c != 0]
 TERM_COEFF_POOL = [c for c in range(-100, 101) if c != 0]
 
 
-N4_BLOCK_WEIGHTS = {
-    "singleF": 8,
-    "doubleF": 2,
-    "tr2": 1,
-}
-
-
-OLD_STYLE_N4_BLOCK_WEIGHTS = {
-    "singleF": 8,
-    "doubleF": 2,
-    "tr2": 1,
-}
-
-
-GENERAL_BLOCK_WEIGHTS = {
-    "singleF": 1,
-    "tr2": 1,
-    "doubleF": 2,
-    "tr3": 1,
-    "tripleF": 1,
-    "tr4": 1,
-}
+# Block-choice weights, keyed by number of field-strengths (n_F) in the block.
+# CHAIN_WEIGHTS: open chains  p · F^n · p   (n>=1)  — n=1 "singleF", n=2 "doubleF", n=3 "tripleF".
+# TRACE_WEIGHTS: closed traces  Tr(F^n)     (n>=2)  — n=2 "tr2", n=3 "tr3", n=4 "tr4".
+# Editable. CHAIN_WEIGHTS MUST keep a positive weight at n=1: an arity-1 chain is the only
+# block that can consume a single leftover leg, so the monomial loop always terminates.
+CHAIN_WEIGHTS = {1: 1, 2: 1, 3: 2}
+TRACE_WEIGHTS = {2: 1, 3: 2, 4: 3}
 
 
 def dot(a: str, b: str) -> str:
@@ -195,9 +180,8 @@ __all__ = [
     'SCALAR_POWER_PROBABILITY',
     'SCALAR_COEFF_POOL',
     'TERM_COEFF_POOL',
-    'N4_BLOCK_WEIGHTS',
-    'OLD_STYLE_N4_BLOCK_WEIGHTS',
-    'GENERAL_BLOCK_WEIGHTS',
+    'CHAIN_WEIGHTS',
+    'TRACE_WEIGHTS',
     'DEFAULT_MIN_TERMS',
     'DEFAULT_MAX_TERMS',
     'DEFAULT_USE_DENOMINATORS',

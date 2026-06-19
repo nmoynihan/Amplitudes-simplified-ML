@@ -16,3 +16,4 @@ PLAN.mddata_gen/
 *.png
 *.log
 *.txt
+data/data_ym/heavy_data/*

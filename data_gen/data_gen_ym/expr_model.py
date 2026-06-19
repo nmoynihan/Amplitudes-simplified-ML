@@ -126,40 +126,18 @@ def _chain_endpoints(Fs: Sequence[int], N: int) -> tuple[int, int]:
     return random.choice(left_pool), random.choice(right_pool)
 
 
-def _singleF_block(j: int, N: int) -> tuple[str, BlockSpec]:
-    left, right = _chain_endpoints((j,), N)
-    return (
-        f"{p(left)} {DOT} {F(j)} {DOT} {p(right)}",
-        BlockSpec("chain", (j,), left, right),
-    )
+def _chain_block(Fs: Sequence[int], N: int) -> tuple[str, BlockSpec]:
+    """Open chain  p_left · F_{Fs[0]} · … · F_{Fs[-1]} · p_right  for any number of F's."""
+    Fs = tuple(Fs)
+    left, right = _chain_endpoints(Fs, N)
+    inner = f" {DOT} ".join(F(i) for i in Fs)
+    return f"{p(left)} {DOT} {inner} {DOT} {p(right)}", BlockSpec("chain", Fs, left, right)
 
 
-def _doubleF_block(j: int, k: int, N: int) -> tuple[str, BlockSpec]:
-    left, right = _chain_endpoints((j, k), N)
-    return (
-        f"{p(left)} {DOT} {F(j)} {DOT} {F(k)} {DOT} {p(right)}",
-        BlockSpec("chain", (j, k), left, right),
-    )
-
-
-def _tripleF_block(j: int, k: int, l: int, N: int) -> tuple[str, BlockSpec]:
-    left, right = _chain_endpoints((j, k, l), N)
-    return (
-        f"{p(left)} {DOT} {F(j)} {DOT} {F(k)} {DOT} {F(l)} {DOT} {p(right)}",
-        BlockSpec("chain", (j, k, l), left, right),
-    )
-
-
-def _tr2_block(j: int, k: int) -> tuple[str, BlockSpec]:
-    return Tr(F(j), F(k)), BlockSpec("trace", (j, k))
-
-
-def _tr3_block(j: int, k: int, l: int) -> tuple[str, BlockSpec]:
-    return Tr(F(j), F(k), F(l)), BlockSpec("trace", (j, k, l))
-
-
-def _tr4_block(j: int, k: int, l: int, m: int) -> tuple[str, BlockSpec]:
-    return Tr(F(j), F(k), F(l), F(m)), BlockSpec("trace", (j, k, l, m))
+def _trace_block(Fs: Sequence[int]) -> tuple[str, BlockSpec]:
+    """Closed trace  Tr(F_{Fs[0]} · … · F_{Fs[-1]})  for any number of F's."""
+    Fs = tuple(Fs)
+    return Tr(*(F(i) for i in Fs)), BlockSpec("trace", Fs)
 
 
 def _scalar_pp_factor(N: int) -> str:
@@ -207,31 +185,24 @@ def _required_denominator_count(numerator_mass_dim: int, N: int) -> int | None:
     return delta // 2
 
 
-def _weighted_choice(weight_map: dict[str, int]) -> str:
-    choices: list[str] = []
-    for key, weight in weight_map.items():
-        if weight > 0:
-            choices.extend([key] * int(weight))
-    if not choices:
-        raise ValueError("At least one block-choice weight must be positive")
-    return random.choice(choices)
+def _block_candidates(remaining_count: int) -> list[tuple[str, int, int]]:
+    """Editable block menu as (family, n_F, weight) entries that fit the remaining legs.
+
+    Generic over arity: a chain/trace of n_F field-strengths is eligible iff n_F legs
+    remain (n_F <= remaining_count). This subsumes the old per-label dispatch — chains
+    cover singleF/doubleF/tripleF (n_F=1,2,3), traces cover tr2/tr3/tr4 (n_F=2,3,4).
+    """
+    cands = [("chain", n, w) for n, w in CHAIN_WEIGHTS.items() if w > 0 and n <= remaining_count]
+    cands += [("trace", n, w) for n, w in TRACE_WEIGHTS.items() if w > 0 and n <= remaining_count]
+    if not cands:
+        raise ValueError("No block fits remaining legs; check CHAIN_WEIGHTS/TRACE_WEIGHTS")
+    return cands
 
 
-def _block_choice_weights(N: int, remaining_count: int, *, old_style_blocks: bool) -> dict[str, int]:
-    """Return editable block weights compatible with the remaining photons."""
-    if N == 4:
-        base = OLD_STYLE_N4_BLOCK_WEIGHTS if old_style_blocks else N4_BLOCK_WEIGHTS
-    else:
-        base = GENERAL_BLOCK_WEIGHTS
-
-    allowed = {"singleF"}
-    if remaining_count >= 2:
-        allowed.update({"tr2", "doubleF"})
-    if remaining_count >= 3:
-        allowed.update({"tr3", "tripleF"})
-    if remaining_count >= 4:
-        allowed.add("tr4")
-    return {kind: int(weight) for kind, weight in base.items() if kind in allowed and int(weight) > 0}
+def _weighted_pick(candidates: list[tuple[str, int, int]]) -> tuple[str, int]:
+    """Weighted choice over (family, n_F, weight) candidates, returning (family, n_F)."""
+    pool = [(family, arity) for family, arity, weight in candidates for _ in range(int(weight))]
+    return random.choice(pool)
 
 
 def _generate_gi_monomial_spec(
@@ -246,28 +217,10 @@ def _generate_gi_monomial_spec(
     blocks: list[BlockSpec] = []
 
     while remaining:
-        r = len(remaining)
-        kind = _weighted_choice(_block_choice_weights(N, r, old_style_blocks=old_style_blocks))
-
-        if kind == "tr4":
-            chosen = random.sample(remaining, 4)
-            block_str, spec = _tr4_block(*chosen)
-        elif kind == "tr3":
-            chosen = random.sample(remaining, 3)
-            block_str, spec = _tr3_block(*chosen)
-        elif kind == "tripleF":
-            chosen = random.sample(remaining, 3)
-            block_str, spec = _tripleF_block(*chosen, N)
-        elif kind == "tr2":
-            chosen = random.sample(remaining, 2)
-            block_str, spec = _tr2_block(*chosen)
-        elif kind == "doubleF":
-            chosen = random.sample(remaining, 2)
-            block_str, spec = _doubleF_block(*chosen, N)
-        else:
-            chosen = [remaining[-1]]
-            block_str, spec = _singleF_block(chosen[0], N)
-
+        family, arity = _weighted_pick(_block_candidates(len(remaining)))
+        chosen = random.sample(remaining, arity)
+        block_str, spec = (_trace_block(chosen) if family == "trace"
+                           else _chain_block(chosen, N))
         factors.append(block_str)
         blocks.append(spec)
         remaining = [x for x in remaining if x not in chosen]
@@ -671,18 +624,14 @@ __all__ = [
     'rewrite_gi',
     'expand_simple_term',
     '_chain_endpoints',
-    '_singleF_block',
-    '_doubleF_block',
-    '_tripleF_block',
-    '_tr2_block',
-    '_tr3_block',
-    '_tr4_block',
+    '_chain_block',
+    '_trace_block',
     '_scalar_pp_factor',
     '_block_mass_dimension',
     '_all_physical_poles',
     '_required_denominator_count',
-    '_weighted_choice',
-    '_block_choice_weights',
+    '_weighted_pick',
+    '_block_candidates',
     '_generate_gi_monomial_spec',
     '_AnsatzInfeasible',
     '_dot_legs',
