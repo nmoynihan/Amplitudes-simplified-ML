@@ -47,8 +47,8 @@ TERM_COEFF_POOL = [c for c in range(-100, 101) if c != 0]
 # TRACE_WEIGHTS: closed traces  Tr(F^n)     (n>=2)  — n=2 "tr2", n=3 "tr3", n=4 "tr4".
 # Editable. CHAIN_WEIGHTS MUST keep a positive weight at n=1: an arity-1 chain is the only
 # block that can consume a single leftover leg, so the monomial loop always terminates.
-CHAIN_WEIGHTS = {1: 1, 2: 1, 3: 2}
-TRACE_WEIGHTS = {2: 1, 3: 2, 4: 3}
+CHAIN_WEIGHTS = {1: 1, 2: 1, 3: 2, 4: 2, 5: 3}
+TRACE_WEIGHTS = {2: 1, 3: 2, 4: 3, 5: 4}
 
 
 def dot(a: str, b: str) -> str:
