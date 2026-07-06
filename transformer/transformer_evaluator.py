@@ -1,9 +1,11 @@
 import os
 import sys
-import torch
 
-# Set CUDA memory allocator to reduce fragmentation (helps with OOM issues)
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+# Set CUDA memory allocator to reduce fragmentation (helps with OOM issues).
+# PYTORCH_CUDA_ALLOC_CONF is deprecated in newer PyTorch releases.
+os.environ.setdefault('PYTORCH_ALLOC_CONF', 'expandable_segments:True')
+
+import torch
 
 # Detect and set number of CPU threads for PyTorch
 n_threads = int(os.environ.get('OMP_NUM_THREADS', torch.get_num_threads()))
@@ -11,8 +13,13 @@ torch.set_num_threads(n_threads)
 print(f"Using {n_threads} CPU threads for PyTorch.")
 from transformer_functions import TransformerRegressor, load_transformer_model, decode_with_model, clean_seq
 
-# Add data_generation to path for imports
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'data_generation'))
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_THIS_DIR)
+_DATA_GEN_DIR = os.path.join(_REPO_ROOT, 'data_gen')
+if not os.path.isdir(_DATA_GEN_DIR):
+    raise FileNotFoundError(f"Could not find repo data_gen directory at {_DATA_GEN_DIR}")
+if _DATA_GEN_DIR not in sys.path:
+    sys.path.insert(0, _DATA_GEN_DIR)
 from Tokenizer import ScatteringAmplitudeTokenizer
 
 # Settings
@@ -171,7 +178,7 @@ def main():
     # and regenerating the same 3 phase-space points (seed=42 is fixed) each time.
     # Now we import once and cache the points for the whole evaluation run.
     import importlib, importlib.util as _iutil
-    _data_gen_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data_generation')
+    _data_gen_dir = _DATA_GEN_DIR
 
     def _local_import(mod_name):
         try:
