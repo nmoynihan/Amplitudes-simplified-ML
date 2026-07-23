@@ -33,7 +33,10 @@ from typing import Iterable, Sequence
 
 import sympy as sp
 
-from kinematics import generate_kinematics, mdot
+try:
+    from .kinematics import generate_kinematics, mdot
+except ImportError:  # Preserve direct ``python data_gen/gen_data.py`` use.
+    from kinematics import generate_kinematics, mdot
 
 DOT = "·"
 

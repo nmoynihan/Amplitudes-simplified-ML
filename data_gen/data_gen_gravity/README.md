@@ -53,6 +53,11 @@ As in the existing generators, the 4096 limit counts expression tokens.
 Training reserves two additional sequence positions for BOS/EOS so a valid
 4096-token row is never silently truncated.
 
+The gravity run defaults to micro-batches of 2 with 12-step gradient
+accumulation, giving an effective training batch of 24 without materializing
+24 long attention matrices at once. Override these with `BATCH_SIZE` and
+`GRAD_ACCUM_STEPS`.
+
 Evaluation reports exact match, numerical equivalence, token reduction, and
 breakdowns by process and scramble depth:
 

@@ -485,8 +485,11 @@ def train_step(
     amp_enabled=False,
     amp_dtype=torch.float16,
     grad_clip=None,
+    loss_divisor=1,
+    zero_grad=True,
+    optimizer_step=True,
 ):
-    """Single training step"""
+    """Single training micro-step, optionally accumulating gradients."""
     model.train()
     
     # Move batch to model's device
@@ -498,7 +501,8 @@ def train_step(
     tgt_output = tgt[:, 1:]  # All but first token (shifted)
     
     # Forward pass
-    optimizer.zero_grad(set_to_none=True)
+    if zero_grad:
+        optimizer.zero_grad(set_to_none=True)
     with torch.amp.autocast(
         device_type=model.device.type,
         dtype=amp_dtype,
@@ -521,18 +525,21 @@ def train_step(
         accuracy = correct.sum().item() / mask.sum().item() if mask.sum().item() > 0 else 0.0
     
     # Backward pass
+    backward_loss = loss / max(1, int(loss_divisor))
     if scaler is not None and scaler.is_enabled():
-        scaler.scale(loss).backward()
-        if grad_clip is not None:
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-        scaler.step(optimizer)
-        scaler.update()
+        scaler.scale(backward_loss).backward()
+        if optimizer_step:
+            if grad_clip is not None:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            scaler.step(optimizer)
+            scaler.update()
     else:
-        loss.backward()
-        if grad_clip is not None:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-        optimizer.step()
+        backward_loss.backward()
+        if optimizer_step:
+            if grad_clip is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            optimizer.step()
     
     return loss.item(), accuracy
 
@@ -592,6 +599,7 @@ def train_model(
     initial_best_val_loss=None,
     scheduler=None,
     grad_clip=None,
+    gradient_accumulation_steps=1,
 ):
     """Trains a transformer model with optional checkpointing after each epoch and optional early stopping.
 
@@ -637,6 +645,8 @@ def train_model(
     total_steps = epochs * steps_per_epoch
     pbar = tqdm(total=total_steps, desc=f"Training {run_name}", unit="batch", dynamic_ncols=True)
 
+    gradient_accumulation_steps = max(1, int(gradient_accumulation_steps))
+
     for local_epoch in range(epochs):
         epoch = start_epoch + local_epoch
         # Training
@@ -644,6 +654,15 @@ def train_model(
         train_loss = 0
         train_acc = 0
         for batch_idx, batch in enumerate(train_loader, 1):
+            window_index = (batch_idx - 1) % gradient_accumulation_steps
+            window_start = batch_idx - window_index
+            window_size = min(
+                gradient_accumulation_steps,
+                len(train_loader) - window_start + 1,
+            )
+            take_optimizer_step = (
+                window_index + 1 == window_size or batch_idx == len(train_loader)
+            )
             loss, acc = train_step(
                 model,
                 batch,
@@ -653,6 +672,9 @@ def train_model(
                 amp_enabled=amp_enabled,
                 amp_dtype=amp_dtype,
                 grad_clip=grad_clip,
+                loss_divisor=window_size,
+                zero_grad=window_index == 0,
+                optimizer_step=take_optimizer_step,
             )
             train_loss += loss
             train_acc += acc
