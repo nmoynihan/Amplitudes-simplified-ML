@@ -1,0 +1,37 @@
+{
+  "training": {
+    "seed": 42,
+    "rows": 100000,
+    "unique_pairs": 100000,
+    "unknown_tokens": 0,
+    "max_tokens": 4096,
+    "benchmark_leaks": 0,
+    "worst_relative_error": 1.7067475229405006e-08,
+    "counts": {
+      "3s2h/oneshot": 25004,
+      "3s2h/staged": 25004,
+      "4s1h/oneshot": 25004,
+      "4s1h/staged": 24988
+    }
+  },
+  "paper_benchmarks": {
+    "seed": 240804720,
+    "rows": 200,
+    "rows_per_amplitude": 100,
+    "rows_per_process_and_depth": 20,
+    "unique_scrambles": 200,
+    "unknown_tokens": 0,
+    "max_tokens": 4080,
+    "worst_relative_error": 8.678163953395072e-12,
+    "expanded_terms": {
+      "3s2h": 32,
+      "4s1h_integer_normalized": 12
+    }
+  },
+  "smoke_test": {
+    "rows": 8,
+    "epochs": 1,
+    "device": "cpu",
+    "completed": true
+  }
+}

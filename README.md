@@ -38,13 +38,16 @@ $F_i^{\mu\nu} = p_i^\mu e_i^\nu - e_i^\mu p_i^\nu$, with mass dimension $4-N$. T
 (Ward $\sum_s e_j\cdot p_s = 0$, momentum conservation $\sum_i p_i = 0$, partial fractions, …) change
 the form but not the value.
 
-Two generators share the machinery:
+Three generators share the machinery:
 
 - **Scalar QED** (`data_gen/gen_data.py`): 2 massive scalars + $(N{-}2)$ massless photons; poles
   $p_i\cdot p_j$ allowed between any pair.
 - **Colour-ordered Yang–Mills** (`data_gen/data_gen_ym/`): all $N$ legs massless gluons, one fixed
   colour ordering (no colour factors), so only **planar adjacent poles** $p_i\cdot p_{i+1}$ (cyclic)
   are physical.
+- **Five-point gravity** (`data_gen/data_gen_gravity/`): either three scalars plus two
+  same-helicity gravitons or four scalars plus one graviton. Each graviton is represented by two
+  separate $p\cdot F_i\cdot p$ contractions and checked with complex spinor kinematics.
 
 ## Status / results
 
@@ -70,6 +73,11 @@ python3 data_gen/gen_data.py 4 --samples 50000 --seed 42 \
     --raw-out data/sqed_4pt_10k.csv --tok-out data/sqed_4pt_10k_tok.csv
 SAMPLES=50000 SEED=7 ./data_gen/data_gen_ym/run_ym.sh 4 \
     --raw-out data/data_ym/ym_4pt_50k.csv.gz --tok-out data/data_ym/ym_4pt_50k_tok.csv.gz
+
+# Generate/train/evaluate the balanced five-point gravity workflow
+./run_gravity_100k.sh data
+./run_gravity_100k.sh train
+./run_gravity_100k.sh eval
 
 # Train (--data-files resolves under ./data; transformer_trainer_paolo.py is the Apple-MPS variant)
 python3 transformer/transformer_trainer.py --data-files "sqed_4pt_10k_tok.csv"        --run-name sqed_4pt_10k

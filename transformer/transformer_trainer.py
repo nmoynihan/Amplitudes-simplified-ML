@@ -42,6 +42,12 @@ def parse_args():
     parser.add_argument("--dropout", type=float, default=0.025)
     parser.add_argument("--grad-clip", type=float, default=1.0,
                         help="Max gradient norm for clipping. Set to 0 to disable.")
+    parser.add_argument(
+        "--gradient-accumulation-steps",
+        type=int,
+        default=1,
+        help="Number of micro-batches per optimizer step.",
+    )
     parser.add_argument("--label-smoothing", type=float, default=0.1)
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--amp-dtype", choices=["fp16", "bf16"], default="bf16")
@@ -89,6 +95,9 @@ def main():
         "amp_dtype": args.amp_dtype,
         "resume_from": args.resume_from,
         "grad_clip": args.grad_clip if args.grad_clip > 0 else None,
+        "gradient_accumulation_steps": max(
+            1, args.gradient_accumulation_steps
+        ),
         "label_smoothing": args.label_smoothing,
     }
     model_hyperparams = {
@@ -179,6 +188,9 @@ def main():
         initial_best_val_loss=initial_best_val_loss,
         scheduler=scheduler,
         grad_clip=training_hyperparams["grad_clip"],
+        gradient_accumulation_steps=training_hyperparams[
+            "gradient_accumulation_steps"
+        ],
     )
 
 
