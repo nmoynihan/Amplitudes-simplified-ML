@@ -4,8 +4,9 @@ Evaluate one trained transformer on freshly generated amplitude data.
 
 All configuration lives in this file. The script:
 
-1. Generates new raw data on disk, or imports an existing raw CSV.
-2. Tokenises that data on disk.
+1. Generates new raw data, imports a raw CSV, or imports a single-amplitude
+   token CSV.
+2. Tokenises raw expressions, or normalises the already-tokenised input.
 3. Loads one model checkpoint.
 4. Runs one or more decoding modes (greedy by default, optional beam/nucleus).
 5. Reports exact-match and numerical-equivalence metrics against both the
@@ -17,9 +18,10 @@ from __future__ import annotations
 
 import csv
 import argparse
+import gzip
 import json
 import math
-import os
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -42,10 +44,11 @@ OUTPUT_SUBDIR = "outputs"
 #MODEL_PATH = ROOT / "models" / "best_model.pt"
 # MODEL_PATH = ROOT / "models" / "fivek_newtest" / "best_model.pt"
 MODEL_PATH = ROOT / "models" / "unit_500k" / "best_model.pt"
-# "auto" chooses CUDA when available, otherwise CPU. Set explicitly for repeatable timing/debugging.
-DEVICE = "auto"  # "auto", "cpu", "cuda"
+# "auto" chooses CUDA, then Apple MPS, then CPU. Set explicitly for repeatable timing/debugging.
+DEVICE = "auto"  # "auto", "cpu", "cuda", "mps"
 
-# Generated evaluation set shape. N_PARTICLES=4 means two photon legs in this setup.
+# Number of external legs. For scalar QED, N=4 means two photon legs; for
+# Yang-Mills, all N legs are gluons.
 N_PARTICLES = 4
 NUM_SAMPLES = 100
 # Seed controls the generated evaluation examples, so changing it changes the test set.
@@ -59,9 +62,10 @@ RAW_CSV_PATH = DATA_TESTING_DIR / OUTPUT_SUBDIR / f"{DATA_FILENAME_STEM}.csv"
 TOK_CSV_PATH = DATA_TESTING_DIR / OUTPUT_SUBDIR / f"{DATA_FILENAME_STEM}_tok.csv"
 GEN_LOG_PATH = DATA_TESTING_DIR / OUTPUT_SUBDIR / f"{DATA_FILENAME_STEM}.log"
 SUMMARY_CSV_PATH = DATA_TESTING_DIR / OUTPUT_SUBDIR / f"{DATA_FILENAME_STEM}_summary.csv"
-# Data source for this evaluation. Use "generate" for fresh synthetic data or
-# "csv" for an existing raw CSV with columns named simple and scrambled.
-DATA_SOURCE = "csv"  # "generate", "csv"
+# Data source for this evaluation. Use "generate" for fresh synthetic data,
+# "csv" for an existing raw CSV with columns named simple and scrambled, or
+# "single-amplitude" for one amplitude per row in token or Feynman format.
+DATA_SOURCE = "csv"  # "generate", "csv", "single-amplitude"
 # Used only when DATA_SOURCE="csv". Relative paths are resolved from repo root.
 # EXISTING_RAW_CSV_PATH = DATA_STORAGE_DIR / "sqed_w0110_mM00M_den6_maxD2_20000_phys_oneshot.csv" # Paolo's 20k dataset
 # EXISTING_RAW_CSV_PATH = DATA_STORAGE_DIR / "gi_4pt_oneshot_5k_val.csv" # Nathan's 5k dataset
@@ -69,11 +73,22 @@ DATA_SOURCE = "csv"  # "generate", "csv"
 # EXISTING_RAW_CSV_PATH = DATA_STORAGE_DIR / "sqed_oneshot_150.csv" # Paolo's 20k dataset
 EXISTING_RAW_CSV_PATH = DATA_STORAGE_DIR / "sqed_4ptseed_oneshot.csv" # 100 scrambled amplitudes
 
+# Used only when DATA_SOURCE="single-amplitude". The input may be .csv or
+# .csv.gz. "tokens" expects a header and a JSON list of integer token IDs in
+# SINGLE_AMPLITUDE_TOKENS_COLUMN. "feyn" expects headerless id,expression rows
+# such as gluon5feyn12345.csv.gz. "auto" distinguishes those two layouts.
+# In both cases the same amplitude is used as target and scrambled input.
+SINGLE_AMPLITUDE_INPUT_CSV_PATH: Path | None = None
+SINGLE_AMPLITUDE_INPUT_FORMAT = "auto"  # "auto", "tokens", "feyn"
+SINGLE_AMPLITUDE_TOKENS_COLUMN = "tokens"
+SINGLE_AMPLITUDE_EXPRESSION_COLUMN = 1
 
-# Optional row cap for imported CSVs. None evaluates every row in the file.
+
+# Optional row cap for imported raw simple/scrambled CSVs.
+# None evaluates every row in the file.
 EXISTING_CSV_MAX_ROWS = 100 
 
-# Optional exact-pair dedupe for imported CSVs before tokenization/evaluation.
+# Optional exact-pair dedupe for imported raw CSVs before tokenization/evaluation.
 EXISTING_CSV_DEDUPE = True
 
 ### Special dataset testing. Comment it all out to use one of the above real datasets instead.
@@ -94,7 +109,12 @@ GEN_MASS = 2.0
 
 # Evaluation batching. Larger is faster if the selected device has enough memory.
 BATCH_SIZE = 8
-# None means pad/decode up to this generated dataset's longest source/target sequence.
+# Maximum scrambled-input content tokens, excluding the BOS/EOS tokens added by
+# TransformerDataset. None means the evaluator imposes no input cap; the loaded
+# model's max_seq_len remains a hard positional-encoding limit.
+INPUT_TOKEN_LIMIT: int | None = None
+# Maximum generated output length, including BOS/EOS. None falls back to the
+# prepared dataset's longest source/target sequence. This does not truncate input.
 MAX_SEQ_LENGTH_OVERRIDE = None
 # Number of example rows printed per decode mode; full details are always written to CSV.
 PRINT_EXAMPLES = 3
@@ -105,13 +125,20 @@ HUMAN_CSV = True
 # When True, generate diagnostic plots alongside the evaluation outputs.
 PLOTS = True
 
-# Numeric equivalence check for model predictions. These samples are independent of generation.
+# Numeric equivalence check for model predictions. "sqed" uses two massive
+# scalar endpoint legs; "ym" uses all-massless gluon kinematics and e_1...e_N.
+NUMERIC_BACKEND = "sqed"  # "sqed", "ym"
 NUMERIC_EQUIV_SAMPLES = 3
 NUMERIC_EQUIV_SEED = 151
 NUMERIC_EQUIV_MASS = 2.0
-# Equivalence passes if either absolute or relative tolerance is met on every numeric sample.
-NUMERIC_TOL_ABS = 1e-12
-NUMERIC_TOL_REL = 1e-10
+NUMERIC_EQUIV_ENERGY_SCALE = 2.0
+# None chooses ("coulomb",) for sqed and ("coulomb", "covariant") for ym.
+NUMERIC_EQUIV_POL_MODES: tuple[str, ...] | None = None
+# Equivalence passes if either absolute or relative tolerance is met on every
+# numeric sample. None selects backend defaults: sqed=(1e-12, 1e-10) and
+# ym=(1e-10, 1e-8), matching data_gen_ym.numerics._validate_pair.
+NUMERIC_TOL_ABS: float | None = None
+NUMERIC_TOL_REL: float | None = None
 BEAM_SIZE = 50
 
 
@@ -122,7 +149,8 @@ class DecodeConfig:
     enabled: bool
     # Supported by decode_with_model: "greedy", "beam", or "nucleus".
     decoding_method: str
-    # Per-mode override. None falls back to MAX_SEQ_LENGTH_OVERRIDE or dataset.max_length.
+    # Per-mode override. None falls back to MAX_SEQ_LENGTH_OVERRIDE or the
+    # longest prepared source/target sequence.
     max_length: int | None = None
     # Number of retained hypotheses for beam search and nucleus sampling.
     beam_size: int = BEAM_SIZE
@@ -172,15 +200,84 @@ CLI_SCRAMBLES: list[str] | None = None
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate a trained transformer on generated amplitude data.")
     parser.add_argument("--model-path", type=str, default=None)
-    parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default=None)
+    parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default=None)
     parser.add_argument("--n-particles", type=int, default=None)
+    parser.add_argument(
+        "--numeric-backend",
+        choices=["sqed", "ym", "yang-mills"],
+        default=None,
+        help="Kinematics and expression evaluator used for numerical equivalence.",
+    )
+    parser.add_argument(
+        "--numeric-pol-modes",
+        nargs="+",
+        choices=["coulomb", "covariant"],
+        default=None,
+        help=(
+            "Polarisation modes used for numerical checks. Defaults to coulomb "
+            "for sqed and both coulomb/covariant for ym."
+        ),
+    )
+    parser.add_argument(
+        "--numeric-mass",
+        type=float,
+        default=None,
+        help="Mass of the two scalar endpoint legs for sqed numerical checks.",
+    )
+    parser.add_argument(
+        "--numeric-energy-scale",
+        type=float,
+        default=None,
+        help="Overall energy scale for all-massless Yang-Mills numerical checks.",
+    )
+    parser.add_argument(
+        "--numeric-tol-abs",
+        type=float,
+        default=None,
+        help="Absolute tolerance for numerical equivalence.",
+    )
+    parser.add_argument(
+        "--numeric-tol-rel",
+        type=float,
+        default=None,
+        help="Relative tolerance for numerical equivalence.",
+    )
     parser.add_argument("--num-samples", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--min-scr", type=int, default=None)
     parser.add_argument("--max-scr", type=int, default=None)
     parser.add_argument("--min-terms", type=int, default=None)
     parser.add_argument("--max-terms", type=int, default=None)
-    parser.add_argument("--max-tokens", type=int, default=None)
+    parser.add_argument(
+        "--input-token-limit",
+        "--max-input-tokens",
+        dest="input_token_limit",
+        type=int,
+        default=None,
+        help=(
+            "Maximum scrambled-input content tokens, excluding BOS/EOS. "
+            "Use 0 or a negative value for no evaluator-imposed limit."
+        ),
+    )
+    parser.add_argument(
+        "--max-tokens",
+        dest="max_tokens",
+        type=int,
+        default=None,
+        help=(
+            "Legacy content-token cap: limits input content to N and output to "
+            "N content tokens plus BOS/EOS, unless a dedicated option overrides it."
+        ),
+    )
+    parser.add_argument(
+        "--max-decode-tokens",
+        type=int,
+        default=None,
+        help=(
+            "Maximum generated output length, including BOS/EOS. "
+            "Use 0 or a negative value to infer it from the dataset."
+        ),
+    )
     parser.add_argument("--tokenizer-max-particles", type=int, default=None)
     parser.add_argument(
         "--max-steps",
@@ -225,11 +322,56 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--data-source",
-        choices=["generate", "csv"],
+        choices=["generate", "csv", "single-amplitude"],
         default=None,
-        help="Use generated synthetic data or import an existing raw CSV.",
+        help=(
+            "Use generated synthetic data, import a raw simple/scrambled CSV, "
+            "or import a token/Feynman-format single-amplitude CSV."
+        ),
     )
     parser.add_argument("--existing-raw-csv", type=str, default=None)
+    parser.add_argument(
+        "--single-amplitude-input-csv",
+        "--single-amplitude-csv",
+        dest="single_amplitude_input_csv",
+        type=str,
+        default=None,
+        help=(
+            "Input .csv or .csv.gz containing either JSON token lists or "
+            "headerless id,expression Feynman rows."
+        ),
+    )
+    parser.add_argument(
+        "--single-amplitude-output-csv",
+        type=str,
+        default=None,
+        help=(
+            "Optional path for the normalized simple/scrambled token CSV. "
+            "Defaults to the token CSV derived from --output-stem."
+        ),
+    )
+    parser.add_argument(
+        "--single-amplitude-input-format",
+        "--single-amplitude-format",
+        choices=["auto", "tokens", "feyn"],
+        default=None,
+        help=(
+            "Single-amplitude CSV layout. 'tokens' expects a named JSON-token "
+            "column; 'feyn' expects headerless id,expression rows; 'auto' detects it."
+        ),
+    )
+    parser.add_argument(
+        "--tokens-column",
+        type=str,
+        default=None,
+        help="Column containing token lists in a single-amplitude input (default: tokens).",
+    )
+    parser.add_argument(
+        "--single-amplitude-expression-column",
+        type=int,
+        default=None,
+        help="Zero-based expression column for a Feynman-format single-amplitude CSV.",
+    )
     parser.add_argument("--existing-csv-max-rows", type=int, default=None)
     parser.add_argument("--no-dedupe", action="store_true")
     parser.add_argument("--batch-size", type=int, default=None)
@@ -258,9 +400,34 @@ def apply_cli_config(args: argparse.Namespace) -> None:
     global MODEL_PATH, DEVICE, N_PARTICLES, NUM_SAMPLES, GENERATION_SEED
     global TOKENIZER_MAX_PARTICLES, DATA_FILENAME_STEM, RAW_CSV_PATH, TOK_CSV_PATH
     global GEN_LOG_PATH, SUMMARY_CSV_PATH, DATA_SOURCE, EXISTING_RAW_CSV_PATH
+    global SINGLE_AMPLITUDE_INPUT_CSV_PATH, SINGLE_AMPLITUDE_INPUT_FORMAT
+    global SINGLE_AMPLITUDE_TOKENS_COLUMN, SINGLE_AMPLITUDE_EXPRESSION_COLUMN
     global EXISTING_CSV_MAX_ROWS, EXISTING_CSV_DEDUPE, GEN_MIN_TERMS, GEN_MAX_TERMS
-    global GEN_MIN_SCRAMBLES, GEN_MAX_SCRAMBLES, BATCH_SIZE, MAX_SEQ_LENGTH_OVERRIDE
+    global GEN_MIN_SCRAMBLES, GEN_MAX_SCRAMBLES, BATCH_SIZE, INPUT_TOKEN_LIMIT
+    global MAX_SEQ_LENGTH_OVERRIDE, NUMERIC_BACKEND, NUMERIC_EQUIV_POL_MODES
+    global NUMERIC_EQUIV_MASS, NUMERIC_EQUIV_ENERGY_SCALE
+    global NUMERIC_TOL_ABS, NUMERIC_TOL_REL
     global DECODE_RUNS, CLI_SCRAMBLES, SIMPLE_SUMMARY, HUMAN_CSV, PLOTS
+
+    single_amplitude_args_used = any(
+        value is not None
+        for value in (
+            args.single_amplitude_input_csv,
+            args.single_amplitude_output_csv,
+            args.single_amplitude_input_format,
+            args.tokens_column,
+            args.single_amplitude_expression_column,
+        )
+    )
+    if (
+        single_amplitude_args_used
+        and args.data_source is not None
+        and args.data_source != "single-amplitude"
+    ):
+        raise ValueError(
+            "Single-amplitude CSV options require "
+            "--data-source single-amplitude (or no explicit --data-source)"
+        )
 
     if args.model_path is not None:
         MODEL_PATH = resolve_input_path(args.model_path)
@@ -268,6 +435,20 @@ def apply_cli_config(args: argparse.Namespace) -> None:
         DEVICE = args.device
     if args.n_particles is not None:
         N_PARTICLES = args.n_particles
+    if args.numeric_backend is not None:
+        NUMERIC_BACKEND = (
+            "ym" if args.numeric_backend == "yang-mills" else args.numeric_backend
+        )
+    if args.numeric_pol_modes is not None:
+        NUMERIC_EQUIV_POL_MODES = tuple(dict.fromkeys(args.numeric_pol_modes))
+    if args.numeric_mass is not None:
+        NUMERIC_EQUIV_MASS = args.numeric_mass
+    if args.numeric_energy_scale is not None:
+        NUMERIC_EQUIV_ENERGY_SCALE = args.numeric_energy_scale
+    if args.numeric_tol_abs is not None:
+        NUMERIC_TOL_ABS = args.numeric_tol_abs
+    if args.numeric_tol_rel is not None:
+        NUMERIC_TOL_REL = args.numeric_tol_rel
     if args.num_samples is not None:
         NUM_SAMPLES = args.num_samples
     if args.seed is not None:
@@ -283,11 +464,34 @@ def apply_cli_config(args: argparse.Namespace) -> None:
     if args.max_scr is not None:
         GEN_MAX_SCRAMBLES = args.max_scr
     if args.max_tokens is not None:
-        MAX_SEQ_LENGTH_OVERRIDE = None if args.max_tokens <= 0 else args.max_tokens
+        legacy_limit = None if args.max_tokens <= 0 else args.max_tokens
+        MAX_SEQ_LENGTH_OVERRIDE = (
+            None if legacy_limit is None else legacy_limit + 2
+        )
+        if args.input_token_limit is None:
+            INPUT_TOKEN_LIMIT = legacy_limit
+    if args.input_token_limit is not None:
+        INPUT_TOKEN_LIMIT = (
+            None if args.input_token_limit <= 0 else args.input_token_limit
+        )
+    if args.max_decode_tokens is not None:
+        MAX_SEQ_LENGTH_OVERRIDE = (
+            None if args.max_decode_tokens <= 0 else args.max_decode_tokens
+        )
     if args.batch_size is not None:
         BATCH_SIZE = args.batch_size
     if args.existing_raw_csv is not None:
         EXISTING_RAW_CSV_PATH = resolve_input_path(args.existing_raw_csv)
+    if args.single_amplitude_input_csv is not None:
+        SINGLE_AMPLITUDE_INPUT_CSV_PATH = resolve_input_path(args.single_amplitude_input_csv)
+    if args.single_amplitude_input_format is not None:
+        SINGLE_AMPLITUDE_INPUT_FORMAT = args.single_amplitude_input_format
+    if args.tokens_column is not None:
+        if not args.tokens_column.strip():
+            raise ValueError("--tokens-column cannot be empty")
+        SINGLE_AMPLITUDE_TOKENS_COLUMN = args.tokens_column
+    if args.single_amplitude_expression_column is not None:
+        SINGLE_AMPLITUDE_EXPRESSION_COLUMN = args.single_amplitude_expression_column
     if args.existing_csv_max_rows is not None:
         EXISTING_CSV_MAX_ROWS = args.existing_csv_max_rows
     if args.no_dedupe:
@@ -295,6 +499,8 @@ def apply_cli_config(args: argparse.Namespace) -> None:
 
     if args.data_source is not None:
         DATA_SOURCE = args.data_source
+    elif single_amplitude_args_used:
+        DATA_SOURCE = "single-amplitude"
     elif any(
         value is not None
         for value in (
@@ -315,6 +521,8 @@ def apply_cli_config(args: argparse.Namespace) -> None:
         TOK_CSV_PATH = DATA_TESTING_DIR / OUTPUT_SUBDIR / f"{DATA_FILENAME_STEM}_tok.csv"
         GEN_LOG_PATH = DATA_TESTING_DIR / OUTPUT_SUBDIR / f"{DATA_FILENAME_STEM}.log"
         SUMMARY_CSV_PATH = DATA_TESTING_DIR / OUTPUT_SUBDIR / f"{DATA_FILENAME_STEM}_summary.csv"
+    if args.single_amplitude_output_csv is not None:
+        TOK_CSV_PATH = resolve_input_path(args.single_amplitude_output_csv)
 
     if args.decoding_method is not None:
         beam_size = args.beam_size if args.beam_size is not None else 1
@@ -393,8 +601,13 @@ sys.path.insert(0, str(ROOT / "transformer"))
 
 import gen_data as gd
 from Tokenizer import ScatteringAmplitudeTokenizer
-from data_import import TransformerDataset
-from kinematics import generate_kinematics
+from data_import import TransformerDataset, dynamic_pad_collate
+from data_gen_ym.kinematics import generate_kinematics as generate_ym_kinematics
+from data_gen_ym.numerics import eval_infix_numeric as eval_ym_infix_numeric
+from kinematics import generate_kinematics as generate_sqed_kinematics
+from single_amplitude_test_set_to_simple_scrambled import (
+    convert_file as convert_single_amplitude_file,
+)
 from transformer_functions import (
     TransformerRegressor,
     clean_seq,
@@ -417,8 +630,20 @@ def resolve_device() -> str:
         if not torch.cuda.is_available():
             raise RuntimeError("DEVICE='cuda' but CUDA is not available")
         return "cuda"
+    if DEVICE == "mps":
+        if not (
+            hasattr(torch.backends, "mps")
+            and torch.backends.mps.is_available()
+        ):
+            raise RuntimeError("DEVICE='mps' but Apple Metal/MPS is not available")
+        return "mps"
     if torch.cuda.is_available():
         return "cuda"
+    if (
+        hasattr(torch.backends, "mps")
+        and torch.backends.mps.is_available()
+    ):
+        return "mps"
     return "cpu"
 
 
@@ -446,8 +671,16 @@ def safe_decode_infix(tokenizer: ScatteringAmplitudeTokenizer, seq: list[int]) -
         return False, "", f"{type(exc).__name__}: {exc}"
 
 
+def open_csv_text(path: Path, mode: str):
+    """Open a plain or gzip-compressed CSV as UTF-8 text."""
+    text_mode = mode if "t" in mode else f"{mode}t"
+    if path.suffix == ".gz":
+        return gzip.open(path, text_mode, newline="", encoding="utf-8")
+    return path.open(text_mode, newline="", encoding="utf-8")
+
+
 def load_raw_rows(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="", encoding="utf-8") as handle:
+    with open_csv_text(path, "r") as handle:
         return list(csv.DictReader(handle))
 
 
@@ -459,7 +692,7 @@ def resolve_input_path(path: Path | str) -> Path:
 
 
 def read_raw_pairs(path: Path) -> list[tuple[str, str]]:
-    with path.open(newline="", encoding="utf-8") as handle:
+    with open_csv_text(path, "r") as handle:
         reader = csv.DictReader(handle)
         required = {"simple", "scrambled"}
         if reader.fieldnames is None:
@@ -483,7 +716,7 @@ def read_raw_pairs(path: Path) -> list[tuple[str, str]]:
 
 def load_token_rows(path: Path) -> list[dict[str, list[int]]]:
     rows: list[dict[str, list[int]]] = []
-    with path.open(newline="", encoding="utf-8") as handle:
+    with open_csv_text(path, "r") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
             rows.append(
@@ -495,15 +728,140 @@ def load_token_rows(path: Path) -> list[dict[str, list[int]]]:
     return rows
 
 
-def precompute_kinematics() -> list[tuple[Any, Any]]:
-    return [
-        generate_kinematics(
-            N_PARTICLES,
-            M=NUMERIC_EQUIV_MASS,
-            seed=NUMERIC_EQUIV_SEED + i,
+def validate_input_token_rows(rows: list[dict[str, list[int]]]) -> int:
+    if not rows:
+        raise ValueError("The tokenised evaluation dataset contains no rows")
+
+    max_content_tokens = 0
+    for row_number, row in enumerate(rows, start=2):
+        tokens = row.get("scrambled")
+        if not isinstance(tokens, list) or any(type(token) is not int for token in tokens):
+            raise ValueError(
+                f"{TOK_CSV_PATH}:{row_number} scrambled input must be a JSON list of integers"
+            )
+        token_count = len(tokens)
+        max_content_tokens = max(max_content_tokens, token_count)
+        if INPUT_TOKEN_LIMIT is not None and token_count > INPUT_TOKEN_LIMIT:
+            raise ValueError(
+                f"{TOK_CSV_PATH}:{row_number} has {token_count} input content tokens "
+                f"({token_count + 2} with BOS/EOS), exceeding "
+                f"INPUT_TOKEN_LIMIT={INPUT_TOKEN_LIMIT}"
+            )
+    return max_content_tokens
+
+
+def resolve_numeric_pol_modes() -> tuple[str, ...]:
+    modes = NUMERIC_EQUIV_POL_MODES
+    if modes is None:
+        modes = ("coulomb", "covariant") if NUMERIC_BACKEND == "ym" else ("coulomb",)
+    if not modes:
+        raise ValueError("NUMERIC_EQUIV_POL_MODES must contain at least one mode")
+    invalid = sorted(set(modes) - {"coulomb", "covariant"})
+    if invalid:
+        raise ValueError(f"Unsupported numerical polarisation modes: {invalid}")
+    return tuple(dict.fromkeys(modes))
+
+
+def resolve_numeric_tolerances() -> tuple[float, float]:
+    default_abs, default_rel = (
+        (1e-10, 1e-8) if NUMERIC_BACKEND == "ym" else (1e-12, 1e-10)
+    )
+    tol_abs = default_abs if NUMERIC_TOL_ABS is None else NUMERIC_TOL_ABS
+    tol_rel = default_rel if NUMERIC_TOL_REL is None else NUMERIC_TOL_REL
+    if not math.isfinite(tol_abs) or tol_abs < 0:
+        raise ValueError("NUMERIC_TOL_ABS must be finite and non-negative")
+    if not math.isfinite(tol_rel) or tol_rel < 0:
+        raise ValueError("NUMERIC_TOL_REL must be finite and non-negative")
+    if tol_abs == 0 and tol_rel == 0:
+        raise ValueError("At least one numerical tolerance must be positive")
+    return tol_abs, tol_rel
+
+
+def validate_runtime_config() -> None:
+    global INPUT_TOKEN_LIMIT, MAX_SEQ_LENGTH_OVERRIDE, NUMERIC_BACKEND
+
+    if NUMERIC_BACKEND == "yang-mills":
+        NUMERIC_BACKEND = "ym"
+    if NUMERIC_BACKEND not in {"sqed", "ym"}:
+        raise ValueError(
+            f"NUMERIC_BACKEND must be 'sqed' or 'ym', got {NUMERIC_BACKEND!r}"
         )
-        for i in range(NUMERIC_EQUIV_SAMPLES)
-    ]
+    if N_PARTICLES < 4:
+        raise ValueError("N_PARTICLES must be at least 4 for the configured kinematics generators")
+    if NUMERIC_EQUIV_SAMPLES < 1:
+        raise ValueError("NUMERIC_EQUIV_SAMPLES must be at least 1")
+    if NUMERIC_BACKEND == "sqed":
+        if not math.isfinite(NUMERIC_EQUIV_MASS) or NUMERIC_EQUIV_MASS <= 0:
+            raise ValueError("NUMERIC_EQUIV_MASS must be finite and positive")
+    else:
+        if (
+            not math.isfinite(NUMERIC_EQUIV_ENERGY_SCALE)
+            or NUMERIC_EQUIV_ENERGY_SCALE <= 0
+        ):
+            raise ValueError("NUMERIC_EQUIV_ENERGY_SCALE must be finite and positive")
+        if DATA_SOURCE == "generate":
+            raise ValueError(
+                "DATA_SOURCE='generate' currently creates scalar-QED data; "
+                "use a CSV source when NUMERIC_BACKEND='ym'"
+            )
+    resolve_numeric_pol_modes()
+    resolve_numeric_tolerances()
+
+    if SINGLE_AMPLITUDE_INPUT_FORMAT not in {"auto", "tokens", "feyn"}:
+        raise ValueError(
+            "SINGLE_AMPLITUDE_INPUT_FORMAT must be 'auto', 'tokens', or 'feyn'"
+        )
+    if SINGLE_AMPLITUDE_EXPRESSION_COLUMN < 0:
+        raise ValueError("SINGLE_AMPLITUDE_EXPRESSION_COLUMN must be non-negative")
+
+    if INPUT_TOKEN_LIMIT is not None:
+        if not isinstance(INPUT_TOKEN_LIMIT, int):
+            raise ValueError("INPUT_TOKEN_LIMIT must be an integer or None")
+        if INPUT_TOKEN_LIMIT <= 0:
+            INPUT_TOKEN_LIMIT = None
+    if MAX_SEQ_LENGTH_OVERRIDE is not None:
+        if not isinstance(MAX_SEQ_LENGTH_OVERRIDE, int):
+            raise ValueError("MAX_SEQ_LENGTH_OVERRIDE must be an integer or None")
+        if MAX_SEQ_LENGTH_OVERRIDE <= 0:
+            MAX_SEQ_LENGTH_OVERRIDE = None
+
+
+def precompute_kinematics() -> list[tuple[Any, Any]]:
+    modes = resolve_numeric_pol_modes()
+    cached: list[tuple[Any, Any]] = []
+    for pol_mode in modes:
+        for sample_idx in range(NUMERIC_EQUIV_SAMPLES):
+            seed = NUMERIC_EQUIV_SEED + sample_idx
+            if NUMERIC_BACKEND == "ym":
+                kinematics = generate_ym_kinematics(
+                    N_PARTICLES,
+                    E_scale=NUMERIC_EQUIV_ENERGY_SCALE,
+                    pol_mode=pol_mode,
+                    seed=seed,
+                )
+            elif NUMERIC_BACKEND == "sqed":
+                kinematics = generate_sqed_kinematics(
+                    N_PARTICLES,
+                    M=NUMERIC_EQUIV_MASS,
+                    pol_mode=pol_mode,
+                    seed=seed,
+                )
+            else:
+                raise ValueError(
+                    f"NUMERIC_BACKEND must be 'sqed' or 'ym', got {NUMERIC_BACKEND!r}"
+                )
+            cached.append(kinematics)
+    return cached
+
+
+def eval_numeric_expr(expr: str, momenta: Any, pols: Any) -> float:
+    if NUMERIC_BACKEND == "ym":
+        # Strict mode prevents unknown/free model symbols from silently becoming
+        # numeric zero and producing false-positive equivalence or reranking.
+        return eval_ym_infix_numeric(expr, momenta, pols, strict=True)
+    if NUMERIC_BACKEND == "sqed":
+        return gd.eval_infix_numeric(expr, momenta, pols)
+    raise ValueError(f"Unknown numerical backend: {NUMERIC_BACKEND!r}")
 
 
 def numerically_equivalent_exprs(
@@ -511,15 +869,16 @@ def numerically_equivalent_exprs(
     expr_b: str,
     cached_kinematics: list[tuple[Any, Any]],
 ) -> bool:
+    tol_abs, tol_rel = resolve_numeric_tolerances()
     try:
         for momenta, pols in cached_kinematics:
-            val_a = gd.eval_infix_numeric(expr_a, momenta, pols)
-            val_b = gd.eval_infix_numeric(expr_b, momenta, pols)
+            val_a = eval_numeric_expr(expr_a, momenta, pols)
+            val_b = eval_numeric_expr(expr_b, momenta, pols)
             if not (math.isfinite(val_a) and math.isfinite(val_b)):
                 return False
             diff = abs(val_a - val_b)
             scale = max(abs(val_a), abs(val_b), 1.0)
-            if not (diff <= NUMERIC_TOL_ABS or diff / scale <= NUMERIC_TOL_REL):
+            if not (diff <= tol_abs or diff / scale <= tol_rel):
                 return False
         return True
     except Exception:
@@ -552,21 +911,50 @@ def generate_test_data() -> None:
         max_terms=GEN_MAX_TERMS,
         log_path=str(GEN_LOG_PATH),
         scramble_names=CLI_SCRAMBLES,
-        max_tokens=MAX_SEQ_LENGTH_OVERRIDE,
+        # The evaluator's input cap applies only to scrambled/source tokens.
+        # build_dataset's max_tokens also caps the simple target, so filter the
+        # source explicitly below instead of using that combined budget.
+        max_tokens=None,
         tokenizer_max_particles=TOKENIZER_MAX_PARTICLES,
     )
     pairs, removed = gd.dedupe_pairs(pairs)
+    input_limit_removed = 0
+    if INPUT_TOKEN_LIMIT is not None:
+        tokenizer = ScatteringAmplitudeTokenizer(
+            max_particles=TOKENIZER_MAX_PARTICLES,
+            max_sequence_length=None,
+        )
+        limited_pairs = [
+            pair
+            for pair in pairs
+            if len(tokenizer.encode_infix(pair[1])) <= INPUT_TOKEN_LIMIT
+        ]
+        input_limit_removed = len(pairs) - len(limited_pairs)
+        pairs = limited_pairs
+        if not pairs:
+            raise ValueError(
+                "No generated examples fit "
+                f"INPUT_TOKEN_LIMIT={INPUT_TOKEN_LIMIT}; raise the limit or generate again"
+            )
+        if input_limit_removed and len(pairs) < NUM_SAMPLES:
+            raise ValueError(
+                f"Only {len(pairs)} / {NUM_SAMPLES} generated examples fit "
+                f"INPUT_TOKEN_LIMIT={INPUT_TOKEN_LIMIT}; raise the limit rather than "
+                "evaluating a silently reduced test set"
+            )
     pairs = pairs[:NUM_SAMPLES]
     gd.write_csv(pairs, str(RAW_CSV_PATH))
     gd.tokenise_csv(
         str(RAW_CSV_PATH),
         str(TOK_CSV_PATH),
         max_particles=TOKENIZER_MAX_PARTICLES,
-        max_sequence_length=MAX_SEQ_LENGTH_OVERRIDE,
+        max_sequence_length=None,
     )
     print(f"Wrote raw data to {RAW_CSV_PATH}")
     print(f"Wrote tokenised data to {TOK_CSV_PATH}")
     print(f"Dedupe removed {removed} duplicate pairs")
+    if INPUT_TOKEN_LIMIT is not None:
+        print(f"Input-token limit removed {input_limit_removed} generated pairs")
 
 
 def import_existing_test_data() -> None:
@@ -586,7 +974,7 @@ def import_existing_test_data() -> None:
         str(RAW_CSV_PATH),
         str(TOK_CSV_PATH),
         max_particles=TOKENIZER_MAX_PARTICLES,
-        max_sequence_length=MAX_SEQ_LENGTH_OVERRIDE,
+        max_sequence_length=None,
     )
 
     with GEN_LOG_PATH.open("w", encoding="utf-8") as handle:
@@ -600,13 +988,198 @@ def import_existing_test_data() -> None:
         print(f"Dedupe removed {removed} duplicate pairs")
 
 
+def detect_single_amplitude_input_format(source_path: Path) -> str:
+    if SINGLE_AMPLITUDE_INPUT_FORMAT != "auto":
+        return SINGLE_AMPLITUDE_INPUT_FORMAT
+
+    with open_csv_text(source_path, "r") as handle:
+        first_row = next(csv.reader(handle), None)
+    if first_row is None:
+        raise ValueError(f"{source_path} is empty")
+    return "tokens" if SINGLE_AMPLITUDE_TOKENS_COLUMN in first_row else "feyn"
+
+
+def write_token_rows(path: Path, rows: list[dict[str, list[int]]]) -> None:
+    with open_csv_text(path, "w") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["simple", "scrambled"])
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(
+                {
+                    "simple": json.dumps(row["simple"]),
+                    "scrambled": json.dumps(row["scrambled"]),
+                }
+            )
+
+
+def tokenise_feyn_single_amplitudes(
+    source_path: Path,
+) -> tuple[list[dict[str, list[int]]], list[str]]:
+    tokenizer = ScatteringAmplitudeTokenizer(
+        max_particles=TOKENIZER_MAX_PARTICLES,
+        max_sequence_length=None,
+    )
+    token_rows: list[dict[str, list[int]]] = []
+    source_exprs: list[str] = []
+
+    with open_csv_text(source_path, "r") as handle:
+        reader = csv.reader(handle)
+        for row_number, row in enumerate(reader, start=1):
+            if not row:
+                continue
+            if SINGLE_AMPLITUDE_EXPRESSION_COLUMN >= len(row):
+                raise ValueError(
+                    f"{source_path}:{row_number} has no expression at zero-based "
+                    f"column {SINGLE_AMPLITUDE_EXPRESSION_COLUMN}"
+                )
+            expr = row[SINGLE_AMPLITUDE_EXPRESSION_COLUMN].strip()
+            if not expr:
+                raise ValueError(f"{source_path}:{row_number} has an empty expression")
+            tokens = tokenizer.encode_infix(expr)
+            if not tokens:
+                raise ValueError(
+                    f"{source_path}:{row_number} did not contain a tokenisable expression"
+                )
+            if INPUT_TOKEN_LIMIT is not None and len(tokens) > INPUT_TOKEN_LIMIT:
+                raise ValueError(
+                    f"{source_path}:{row_number} has {len(tokens)} input content tokens, "
+                    f"exceeding --input-token-limit={INPUT_TOKEN_LIMIT}"
+                )
+            token_rows.append({"simple": tokens, "scrambled": tokens.copy()})
+            source_exprs.append(expr)
+
+    if not token_rows:
+        raise ValueError(f"{source_path} contains no amplitude rows")
+    write_token_rows(TOK_CSV_PATH, token_rows)
+    return token_rows, source_exprs
+
+
+def import_single_amplitude_test_data() -> None:
+    if SINGLE_AMPLITUDE_INPUT_CSV_PATH is None:
+        raise ValueError(
+            "DATA_SOURCE='single-amplitude' requires "
+            "--single-amplitude-input-csv (or SINGLE_AMPLITUDE_INPUT_CSV_PATH)"
+        )
+
+    source_path = resolve_input_path(SINGLE_AMPLITUDE_INPUT_CSV_PATH)
+    source_resolved = source_path.resolve()
+    preparation_outputs = {
+        RAW_CSV_PATH.resolve(),
+        TOK_CSV_PATH.resolve(),
+        GEN_LOG_PATH.resolve(),
+        SUMMARY_CSV_PATH.resolve(),
+    }
+    if source_resolved in preparation_outputs:
+        raise ValueError(
+            "The single-amplitude input must be different from every evaluation output file"
+        )
+    if TOK_CSV_PATH.resolve() in {
+        RAW_CSV_PATH.resolve(),
+        GEN_LOG_PATH.resolve(),
+        SUMMARY_CSV_PATH.resolve(),
+    }:
+        raise ValueError(
+            "The normalized single-amplitude token output conflicts with another "
+            "evaluation output path"
+        )
+
+    input_format = detect_single_amplitude_input_format(source_path)
+    print(f"Using single-amplitude {input_format} data from {source_path}")
+    source_exprs: list[str] | None = None
+    if input_format == "tokens":
+        converted_count = convert_single_amplitude_file(
+            source_path,
+            TOK_CSV_PATH,
+            tokens_column=SINGLE_AMPLITUDE_TOKENS_COLUMN,
+        )
+        token_rows = load_token_rows(TOK_CSV_PATH)
+    else:
+        token_rows, source_exprs = tokenise_feyn_single_amplitudes(source_path)
+        converted_count = len(token_rows)
+
+    if not token_rows:
+        raise ValueError(f"{source_path} contains no data rows")
+    if len(token_rows) != converted_count:
+        raise ValueError(
+            "Converted single-amplitude row count does not match the normalized token CSV"
+        )
+
+    tokenizer = ScatteringAmplitudeTokenizer(
+        max_particles=TOKENIZER_MAX_PARTICLES,
+        max_sequence_length=None,
+    )
+    raw_pairs: list[tuple[str, str]] = []
+    special_ids = set(SPECIAL_TOKENS.values()) | {1}
+    valid_ids = set(tokenizer.id_to_token)
+
+    for row_index, row in enumerate(token_rows):
+        row_number = row_index + (1 if input_format == "feyn" else 2)
+        tokens = row["simple"]
+        if not tokens:
+            raise ValueError(f"{source_path}:{row_number} has an empty token list")
+        if any(type(token) is not int for token in tokens):
+            raise ValueError(
+                f"{source_path}:{row_number} token list must contain integers, not booleans"
+            )
+
+        invalid_ids = sorted(set(tokens) - valid_ids)
+        if invalid_ids:
+            raise ValueError(
+                f"{source_path}:{row_number} contains token IDs outside the configured "
+                f"vocabulary: {invalid_ids}. Check --tokenizer-max-particles."
+            )
+
+        embedded_special_ids = sorted(set(tokens) & special_ids)
+        if embedded_special_ids:
+            raise ValueError(
+                f"{source_path}:{row_number} contains special token IDs "
+                f"{embedded_special_ids}; source rows must exclude PAD/UNK/BOS/EOS"
+            )
+
+        if INPUT_TOKEN_LIMIT is not None and len(tokens) > INPUT_TOKEN_LIMIT:
+            raise ValueError(
+                f"{source_path}:{row_number} has {len(tokens)} input content tokens, "
+                f"exceeding --input-token-limit={INPUT_TOKEN_LIMIT}"
+            )
+
+        decode_ok, expr, decode_error = safe_decode_infix(tokenizer, tokens)
+        if not decode_ok:
+            raise ValueError(
+                f"{source_path}:{row_number} is not a valid prefix expression: {decode_error}"
+            )
+        source_expr = source_exprs[row_index] if source_exprs is not None else expr
+        raw_pairs.append((source_expr, source_expr))
+
+    # Both input layouts are now normalized to the exact simple=scrambled token
+    # structure expected by TransformerDataset. The raw copy supplies infix
+    # expressions for numerical metrics and readable output.
+    gd.write_csv(raw_pairs, str(RAW_CSV_PATH))
+    with GEN_LOG_PATH.open("w", encoding="utf-8") as handle:
+        handle.write(f"# imported single-amplitude CSV: {source_path}\n")
+        handle.write(f"# input_format={input_format}\n")
+        handle.write(f"# tokens_column={SINGLE_AMPLITUDE_TOKENS_COLUMN}\n")
+        handle.write(
+            f"# expression_column={SINGLE_AMPLITUDE_EXPRESSION_COLUMN}\n"
+        )
+        handle.write(f"# rows_used={len(token_rows)}\n")
+
+    print(f"Imported {len(token_rows)} token rows")
+    print(f"Wrote raw expression data to {RAW_CSV_PATH}")
+    print(f"Wrote normalized token data to {TOK_CSV_PATH}")
+
+
 def prepare_test_data() -> None:
     if DATA_SOURCE == "generate":
         generate_test_data()
     elif DATA_SOURCE == "csv":
         import_existing_test_data()
+    elif DATA_SOURCE == "single-amplitude":
+        import_single_amplitude_test_data()
     else:
-        raise ValueError(f"DATA_SOURCE must be 'generate' or 'csv', got {DATA_SOURCE!r}")
+        raise ValueError(
+            "DATA_SOURCE must be 'generate', 'csv', or 'single-amplitude', "
+            f"got {DATA_SOURCE!r}"
+        )
 
 
 def load_model(device: str):
@@ -626,13 +1199,117 @@ def get_max_decode_length(dataset: TransformerDataset, decode_cfg: DecodeConfig)
         return decode_cfg.max_length
     if MAX_SEQ_LENGTH_OVERRIDE is not None:
         return MAX_SEQ_LENGTH_OVERRIDE
-    return dataset.max_length
+    return max(
+        max(len(seq) for seq in dataset.simple_sequences),
+        max(len(seq) for seq in dataset.scrambled_sequences),
+    )
+
+
+def positional_encoding_capacity(model: Any, attribute: str) -> int:
+    encoding = getattr(model, attribute, None)
+    pe = getattr(encoding, "pe", None)
+    if pe is not None:
+        if hasattr(pe, "num_embeddings"):
+            return int(pe.num_embeddings)
+        shape = getattr(pe, "shape", None)
+        if shape is not None and len(shape) >= 2:
+            return int(shape[1])
+    capacity = getattr(model, "max_seq_len", None)
+    if capacity is None:
+        raise ValueError(
+            f"Cannot determine positional capacity from model.{attribute} or model.max_seq_len"
+        )
+    return int(capacity)
+
+
+def validate_model_sequence_capacity(
+    model: Any,
+    dataset: TransformerDataset,
+) -> None:
+    source_capacity = positional_encoding_capacity(model, "src_pos_encoding")
+    target_capacity = positional_encoding_capacity(model, "tgt_pos_encoding")
+    longest_source_length = max(len(seq) for seq in dataset.scrambled_sequences)
+
+    if longest_source_length > source_capacity:
+        raise ValueError(
+            f"The longest source sequence is {longest_source_length} tokens after "
+            f"BOS/EOS, but the checkpoint supports only {source_capacity}. "
+            "Unlimited input removes the evaluator cap but cannot exceed the model's "
+            "positional-encoding capacity."
+        )
+
+    for decode_cfg in DECODE_RUNS:
+        if not decode_cfg.enabled:
+            continue
+        max_decode_length = get_max_decode_length(dataset, decode_cfg)
+        if max_decode_length < 2:
+            raise ValueError(
+                f"Decode mode {decode_cfg.name!r} needs max_length >= 2, "
+                f"got {max_decode_length}"
+            )
+        if max_decode_length > target_capacity:
+            raise ValueError(
+                f"Decode mode {decode_cfg.name!r} requests {max_decode_length} tokens, "
+                f"but the checkpoint target positional capacity is {target_capacity}"
+            )
+
+
+def validate_numeric_reference_rows(
+    raw_rows: list[dict[str, str]],
+    cached_kinematics: list[tuple[Any, Any]],
+) -> None:
+    """Fail fast when the chosen backend/N cannot evaluate the reference data."""
+    if not cached_kinematics:
+        raise ValueError("No numerical kinematics were prepared")
+    momenta, pols = cached_kinematics[0]
+    seen: set[str] = set()
+    for row_number, row in enumerate(raw_rows, start=2):
+        for column in ("simple", "scrambled"):
+            expr = (row.get(column) or "").strip()
+            if expr in seen:
+                continue
+            seen.add(expr)
+            if NUMERIC_BACKEND == "sqed":
+                endpoint_gluon = re.search(
+                    rf"\b(?:e|F)_(?:1|{N_PARTICLES})\b",
+                    expr,
+                )
+                if endpoint_gluon:
+                    raise ValueError(
+                        f"Reference {column} expression at "
+                        f"{RAW_CSV_PATH}:{row_number} uses "
+                        f"{endpoint_gluon.group(0)}, but SQED treats legs 1 and "
+                        f"{N_PARTICLES} as scalar endpoints. This appears to be "
+                        "all-gluon data; use --numeric-backend ym."
+                    )
+            try:
+                value = eval_numeric_expr(expr, momenta, pols)
+            except Exception as exc:
+                raise ValueError(
+                    f"Reference {column} expression at {RAW_CSV_PATH}:{row_number} "
+                    f"cannot be evaluated with numeric_backend={NUMERIC_BACKEND!r}, "
+                    f"N_PARTICLES={N_PARTICLES}: {type(exc).__name__}: {exc}. "
+                    "Check --numeric-backend and --n-particles."
+                ) from exc
+            if not math.isfinite(value):
+                raise ValueError(
+                    f"Reference {column} expression at {RAW_CSV_PATH}:{row_number} "
+                    "evaluated to a non-finite value on the validation kinematics"
+                )
 
 
 def summarize_mode(rows: list[dict[str, Any]], mode_name: str) -> dict[str, Any]:
     total = len(rows)
+    tol_abs, tol_rel = resolve_numeric_tolerances()
     summary = {
         "mode": mode_name,
+        "numeric_backend": NUMERIC_BACKEND,
+        "numeric_pol_modes": ",".join(resolve_numeric_pol_modes()),
+        "numeric_tol_abs": tol_abs,
+        "numeric_tol_rel": tol_rel,
+        "input_token_limit": (
+            "unlimited" if INPUT_TOKEN_LIMIT is None else INPUT_TOKEN_LIMIT
+        ),
         "total_examples": total,
         "top1_exact_token_matches": sum(int(r["top1_exact_token_match"]) for r in rows),
         "top1_exact_string_matches": sum(int(r["top1_exact_string_match"]) for r in rows),
@@ -745,7 +1422,12 @@ def evaluate_mode(
     cached_kinematics: list[tuple[Any, Any]],
     decode_cfg: DecodeConfig,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False)
+    loader = DataLoader(
+        dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        collate_fn=dynamic_pad_collate,
+    )
     max_length = get_max_decode_length(dataset, decode_cfg)
     detail_rows: list[dict[str, Any]] = []
     row_idx = 0
@@ -884,6 +1566,7 @@ def evaluate_mode(
                 {
                     "row_id": row_idx,
                     "mode": decode_cfg.name,
+                    "numeric_backend": NUMERIC_BACKEND,
                     "input_scrambled": target_scrambled_expr,
                     "target_simple": target_simple_expr,
                     "target_simple_token_count": len(target_simple_tokens),
@@ -1129,6 +1812,7 @@ def print_examples(detail_rows: list[dict[str, Any]], count: int) -> None:
 def main() -> None:
     args = parse_args()
     apply_cli_config(args)
+    validate_runtime_config()
 
     t0 = time.perf_counter()
     ensure_output_dirs()
@@ -1141,11 +1825,42 @@ def main() -> None:
     token_rows = load_token_rows(TOK_CSV_PATH)
     if len(raw_rows) != len(token_rows):
         raise ValueError("Raw and tokenised row counts do not match")
+    max_input_tokens = validate_input_token_rows(token_rows)
 
-    tokenizer = ScatteringAmplitudeTokenizer(max_particles=TOKENIZER_MAX_PARTICLES)
-    dataset = TransformerDataset(str(TOK_CSV_PATH), max_length=MAX_SEQ_LENGTH_OVERRIDE)
+    tokenizer = ScatteringAmplitudeTokenizer(
+        max_particles=TOKENIZER_MAX_PARTICLES,
+        max_sequence_length=None,
+    )
+    # Input limits are validated explicitly above. Dynamic padding keeps source
+    # and target lengths separate and avoids silently truncating either sequence.
+    dataset = TransformerDataset(
+        str(TOK_CSV_PATH),
+        max_length=None,
+        dynamic_padding=True,
+    )
+
+    pol_modes = resolve_numeric_pol_modes()
+    tol_abs, tol_rel = resolve_numeric_tolerances()
+    scale_name = "mass" if NUMERIC_BACKEND == "sqed" else "energy_scale"
+    scale_value = (
+        NUMERIC_EQUIV_MASS
+        if NUMERIC_BACKEND == "sqed"
+        else NUMERIC_EQUIV_ENERGY_SCALE
+    )
+    input_limit_text = "unlimited" if INPUT_TOKEN_LIMIT is None else str(INPUT_TOKEN_LIMIT)
+    print(
+        f"Input token limit: {input_limit_text}; longest input: "
+        f"{max_input_tokens} content / {max_input_tokens + 2} with BOS/EOS"
+    )
+    print(
+        f"Numerical evaluator: {NUMERIC_BACKEND} "
+        f"({scale_name}={scale_value}; pol_modes={','.join(pol_modes)}; "
+        f"tol_abs={tol_abs:g}; tol_rel={tol_rel:g})"
+    )
     cached_kinematics = precompute_kinematics()
+    validate_numeric_reference_rows(raw_rows, cached_kinematics)
     model = load_model(device)
+    validate_model_sequence_capacity(model, dataset)
 
     summary_rows: list[dict[str, Any]] = []
     for decode_cfg in DECODE_RUNS:

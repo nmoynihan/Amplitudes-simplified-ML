@@ -120,6 +120,15 @@ class TransformerRegressor(nn.Module):
         if "enable_nested_tensor" in inspect.signature(nn.Transformer.__init__).parameters:
             _transformer_kwargs["enable_nested_tensor"] = False
         self.transformer = nn.Transformer(**_transformer_kwargs)
+        # Some PyTorch releases expose the nested-tensor toggle only on the
+        # encoder created internally by nn.Transformer. Disable that optional
+        # optimisation explicitly: it is not implemented on Apple MPS for
+        # src_key_padding_mask and does not change model semantics.
+        encoder = self.transformer.encoder
+        if hasattr(encoder, "enable_nested_tensor"):
+            encoder.enable_nested_tensor = False
+        if hasattr(encoder, "use_nested_tensor"):
+            encoder.use_nested_tensor = False
         
         # Output projection
         self.output_projection = nn.Linear(embedding_dim, vocab_size)
