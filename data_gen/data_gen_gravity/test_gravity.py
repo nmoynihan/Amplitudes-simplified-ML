@@ -61,9 +61,13 @@ class KinematicsTests(unittest.TestCase):
                 eval_expression(BENCHMARKS[process], point)
                 for point in (kin, alternate, shifted)
             ]
-            scale = max(1.0, *(abs(value) for value in values))
-            self.assertLess(abs(values[0] - values[1]) / scale, 1e-9)
-            self.assertLess(abs(values[0] - values[2]) / scale, 1e-9)
+            for candidate in values[1:]:
+                difference = abs(values[0] - candidate)
+                tolerance = max(
+                    1e-12,
+                    1e-9 * max(abs(values[0]), abs(candidate)),
+                )
+                self.assertLessEqual(difference, tolerance)
 
 
 class BenchmarkTests(unittest.TestCase):

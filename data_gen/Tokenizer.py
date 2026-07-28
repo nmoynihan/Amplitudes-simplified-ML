@@ -350,8 +350,12 @@ def numerically_equivalent(
             va = _gd.eval_infix_numeric(expr_a, mom, pol)
             vb = _gd.eval_infix_numeric(expr_b, mom, pol)
             diff = abs(va - vb)
-            scale = max(abs(va), abs(vb), 1.0)
-            passed = diff <= tol_abs or diff / scale <= tol_rel
+            passed = _gd.numeric_values_close(
+                va,
+                vb,
+                tol_abs=tol_abs,
+                tol_rel=tol_rel,
+            )
             details["samples"].append(
                 {"pol_mode": pol_mode, "va": va, "vb": vb, "diff": diff, "passed": passed}
             )

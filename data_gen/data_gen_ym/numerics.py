@@ -8,6 +8,11 @@ from .notation import *
 from .algebra import *
 from .kinematics import generate_kinematics, mdot
 
+try:
+    from ..numeric_utils import numeric_values_close
+except ImportError:  # Preserve imports when data_gen is placed directly on sys.path.
+    from numeric_utils import numeric_values_close
+
 DEFAULT_VALIDATION_POL_MODES = ("coulomb", "covariant")
 
 
@@ -250,14 +255,19 @@ def _validate_pair(
         for _ in range(n_checks):
             mom, pol = generate_kinematics(N, E_scale=M, pol_mode=pol_mode)
             try:
-                va = eval_infix_numeric(expr_a, mom, pol)
-                vb = eval_infix_numeric(expr_b, mom, pol)
+                va = eval_infix_numeric(expr_a, mom, pol, strict=True)
+                vb = eval_infix_numeric(expr_b, mom, pol, strict=True)
             except Exception as exc:
                 return False, f"{pol_mode}:exception:{exc}"
             if not (math.isfinite(va) and math.isfinite(vb)):
                 return False, f"{pol_mode}:non-finite"
             diff = abs(va - vb)
-            if diff > max(tol_abs, tol_rel * max(1.0, abs(va), abs(vb))):
+            if not numeric_values_close(
+                va,
+                vb,
+                tol_abs=tol_abs,
+                tol_rel=tol_rel,
+            ):
                 return False, f"{pol_mode}:mismatch:{diff:.3e}"
     return True, ""
 

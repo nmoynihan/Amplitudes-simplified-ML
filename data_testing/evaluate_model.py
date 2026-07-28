@@ -600,6 +600,7 @@ sys.path.insert(0, str(ROOT / "data_gen"))
 sys.path.insert(0, str(ROOT / "transformer"))
 
 import gen_data as gd
+from numeric_utils import numeric_values_close
 from Tokenizer import ScatteringAmplitudeTokenizer
 from data_import import TransformerDataset, dynamic_pad_collate
 from data_gen_ym.kinematics import generate_kinematics as generate_ym_kinematics
@@ -860,7 +861,7 @@ def eval_numeric_expr(expr: str, momenta: Any, pols: Any) -> float:
         # numeric zero and producing false-positive equivalence or reranking.
         return eval_ym_infix_numeric(expr, momenta, pols, strict=True)
     if NUMERIC_BACKEND == "sqed":
-        return gd.eval_infix_numeric(expr, momenta, pols)
+        return gd.eval_infix_numeric(expr, momenta, pols, strict=True)
     raise ValueError(f"Unknown numerical backend: {NUMERIC_BACKEND!r}")
 
 
@@ -876,9 +877,12 @@ def numerically_equivalent_exprs(
             val_b = eval_numeric_expr(expr_b, momenta, pols)
             if not (math.isfinite(val_a) and math.isfinite(val_b)):
                 return False
-            diff = abs(val_a - val_b)
-            scale = max(abs(val_a), abs(val_b), 1.0)
-            if not (diff <= tol_abs or diff / scale <= tol_rel):
+            if not numeric_values_close(
+                val_a,
+                val_b,
+                tol_abs=tol_abs,
+                tol_rel=tol_rel,
+            ):
                 return False
         return True
     except Exception:

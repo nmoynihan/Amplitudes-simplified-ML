@@ -126,9 +126,48 @@ class GluonAmplitudeRoundTripTests(unittest.TestCase):
         tolerance = max(
             self.ABS_TOL,
             self.REL_TOL
-            * max(1.0, abs(reference_value), abs(candidate_value)),
+            * max(abs(reference_value), abs(candidate_value)),
         )
         return difference <= tolerance, difference, tolerance
+
+    def test_near_zero_comparison_has_no_unit_scale_floor(self) -> None:
+        """Independently guard the regression that made 1e-9 equal to zero."""
+        cases = (
+            (0.0, 0.5e-10, True),
+            (1.0, 1.0 + 0.5e-8, True),
+            (0.0, 1e-9, False),
+            (0.0, 1e-8, False),
+        )
+        for reference, candidate, expected in cases:
+            with self.subTest(reference=reference, candidate=candidate):
+                # math.isclose is independent of the production comparator and
+                # implements the documented abs/rel tolerance convention.
+                independent = math.isclose(
+                    reference,
+                    candidate,
+                    abs_tol=self.ABS_TOL,
+                    rel_tol=self.REL_TOL,
+                )
+                self.assertEqual(independent, expected)
+
+                actual, difference, tolerance = self._equivalent_at_point(
+                    reference,
+                    candidate,
+                )
+                self.assertEqual(actual, independent)
+                self.assertEqual(difference, abs(reference - candidate))
+                self.assertEqual(
+                    tolerance,
+                    max(
+                        self.ABS_TOL,
+                        self.REL_TOL
+                        * max(abs(reference), abs(candidate)),
+                    ),
+                )
+
+        reference = 2.0 * self.ABS_TOL
+        self.assertGreater(reference, self.ABS_TOL)
+        self.assertFalse(self._equivalent_at_point(reference, 0.0)[0])
 
     def test_independent_scrambles_survive_tokenizer_round_trip(self) -> None:
         random_state = random.getstate()

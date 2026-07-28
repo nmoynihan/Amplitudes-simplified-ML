@@ -35,8 +35,10 @@ import sympy as sp
 
 try:
     from .kinematics import generate_kinematics, mdot
+    from .numeric_utils import numeric_values_close
 except ImportError:  # Preserve direct ``python data_gen/gen_data.py`` use.
     from kinematics import generate_kinematics, mdot
+    from numeric_utils import numeric_values_close
 
 DOT = "·"
 
@@ -792,6 +794,187 @@ def _tokenize(expr: str) -> list[str]:
     return toks
 
 
+def _strict_tokenize(expr: str) -> list[str]:
+    """Tokenize without silently skipping unsupported syntax."""
+    text = expr.replace("^", "**")
+    pos = 0
+    tokens: list[str] = []
+    while pos < len(text):
+        match = _TOKEN_RE.match(text, pos)
+        if match is None:
+            if not text[pos:].strip():
+                break
+            excerpt = text[pos : pos + 24]
+            raise ValueError(
+                f"eval_infix_numeric: unsupported syntax near {excerpt!r}"
+            )
+        tokens.append(match.group(1))
+        pos = match.end()
+    if not tokens:
+        raise ValueError("eval_infix_numeric: empty expression")
+    return tokens
+
+
+def _validate_strict_token_sequence(tokens: list[str]) -> None:
+    """Reject missing operands that the permissive parser represents as zero."""
+    multiplicative_ops = {"*", "/", "**"}
+    bad_neighbor = {")", "*", "/", "**", "·", ".", ","}
+    for index, token in enumerate(tokens):
+        previous = tokens[index - 1] if index else None
+        following = tokens[index + 1] if index + 1 < len(tokens) else None
+
+        if token in {"+", "-"}:
+            if following is None or following in bad_neighbor:
+                raise ValueError(
+                    f"eval_infix_numeric: operator {token!r} has no right operand"
+                )
+        elif token in multiplicative_ops:
+            if (
+                previous is None
+                or previous
+                in {"(", "+", "-", "*", "/", "**", "·", ".", ",", "Tr"}
+                or following is None
+                or following in bad_neighbor
+            ):
+                raise ValueError(
+                    f"eval_infix_numeric: operator {token!r} has a missing operand"
+                )
+        elif token == "Tr" and following != "(":
+            raise ValueError("eval_infix_numeric: Tr must be followed by '('")
+        elif token == "(" and following == ")":
+            raise ValueError("eval_infix_numeric: empty parentheses are not valid")
+        elif token in {"·", ".", ","} and (
+            previous is None
+            or previous
+            in {"(", "+", "-", "*", "/", "**", "·", ".", ",", "Tr"}
+            or following is None
+            or following in {")", "+", "-", "*", "/", "**", "·", ".", ","}
+        ):
+            raise ValueError(
+                f"eval_infix_numeric: separator {token!r} has a missing operand"
+            )
+
+
+def _validate_sqed_vector(vec: _Vec, N: int) -> None:
+    """Validate one vector against scalar-QED external-leg assignments."""
+    if vec.tag == "p":
+        if 1 <= vec.idx <= N:
+            return
+        raise KeyError(
+            f"eval_infix_numeric: unknown momentum p_{vec.idx} (N={N})"
+        )
+    if vec.tag in {"e", "F"}:
+        if 2 <= vec.idx <= N - 1:
+            return
+        raise KeyError(
+            f"eval_infix_numeric: {vec.tag}_{vec.idx} is not a photon leg "
+            f"(SQED photon legs are 2..{N - 1})"
+        )
+    raise ValueError(
+        f"eval_infix_numeric: unsupported vector tag {vec.tag!r}"
+    )
+
+
+def _validate_sqed_source_ast(node, N: int) -> None:
+    """Require a supported scalar-QED scalar before expanding F-blocks."""
+    if isinstance(node, _Num):
+        return
+    if isinstance(node, _UnaryOp):
+        if node.op != "-":
+            raise ValueError(
+                f"eval_infix_numeric: unsupported unary operator {node.op!r}"
+            )
+        _validate_sqed_source_ast(node.operand, N)
+        return
+    if isinstance(node, _BinOp):
+        if node.op not in {"+", "-", "*", "/", "**"}:
+            raise ValueError(
+                f"eval_infix_numeric: unsupported operator {node.op!r}"
+            )
+        _validate_sqed_source_ast(node.left, N)
+        _validate_sqed_source_ast(node.right, N)
+        return
+    if isinstance(node, _Vec):
+        _validate_sqed_vector(node, N)
+        raise ValueError(
+            f"eval_infix_numeric: free vector {node.tag}_{node.idx} is not a scalar"
+        )
+    if isinstance(node, _DotChain):
+        parts = node.parts
+        is_trace = bool(parts) and parts[-1] is _DotChain._TR
+        vectors = parts[:-1] if is_trace else parts
+        if not vectors or any(not isinstance(vec, _Vec) for vec in vectors):
+            raise ValueError("eval_infix_numeric: malformed vector chain")
+        for vec in vectors:
+            _validate_sqed_vector(vec, N)
+
+        if is_trace:
+            if len(vectors) < 2 or any(vec.tag != "F" for vec in vectors):
+                raise ValueError(
+                    "eval_infix_numeric: Tr requires a chain of at least two F_i vectors"
+                )
+            return
+
+        if any(vec.tag == "F" for vec in vectors):
+            valid_f_chain = (
+                len(vectors) >= 3
+                and vectors[0].tag == "p"
+                and vectors[-1].tag == "p"
+                and all(vec.tag == "F" for vec in vectors[1:-1])
+            )
+            if not valid_f_chain:
+                raise ValueError(
+                    "eval_infix_numeric: F_i is only valid inside "
+                    "p·F...·p or Tr(F...)"
+                )
+            return
+
+        if len(vectors) != 2 or any(
+            vec.tag not in {"p", "e"} for vec in vectors
+        ):
+            raise ValueError(
+                "eval_infix_numeric: a p/e dot product must contain exactly "
+                "two vectors"
+            )
+        return
+
+    raise ValueError(
+        "eval_infix_numeric: unsupported expression node "
+        f"{type(node).__name__}"
+    )
+
+
+def _validate_sqed_expanded_ast(node, N: int) -> None:
+    """Ensure expansion produced only scalar operations and valid p/e dots."""
+    if isinstance(node, _Num):
+        return
+    if isinstance(node, _UnaryOp):
+        _validate_sqed_expanded_ast(node.operand, N)
+        return
+    if isinstance(node, _BinOp):
+        _validate_sqed_expanded_ast(node.left, N)
+        _validate_sqed_expanded_ast(node.right, N)
+        return
+    if isinstance(node, tuple) and len(node) == 3 and node[0] == _DOT_TAG:
+        for raw_vec in node[1:]:
+            if (
+                not isinstance(raw_vec, tuple)
+                or len(raw_vec) != 3
+                or raw_vec[0] != _VEC_TAG
+                or raw_vec[1] not in {"p", "e"}
+                or not isinstance(raw_vec[2], int)
+            ):
+                raise ValueError(
+                    "eval_infix_numeric: malformed expanded dot product"
+                )
+            _validate_sqed_vector(_Vec(raw_vec[1], raw_vec[2]), N)
+        return
+    raise ValueError(
+        "eval_infix_numeric: non-scalar expanded node "
+        f"{type(node).__name__}"
+    )
+
+
 def _mk_dot(lhs, rhs):
     return (_DOT_TAG, lhs, rhs)
 
@@ -897,8 +1080,19 @@ def _expand_ast(node):
     return node
 
 
-def eval_infix_numeric(expr: str, momenta, pols) -> float:
-    """Evaluate an infix expression on explicit kinematics."""
+def eval_infix_numeric(
+    expr: str,
+    momenta,
+    pols,
+    *,
+    strict: bool = False,
+) -> float:
+    """Evaluate an infix expression on explicit scalar-QED kinematics.
+
+    ``strict=True`` rejects malformed syntax, unsupported/free vectors, and
+    vectors inconsistent with the scalar-QED leg assignment.  The default
+    retains the historical permissive behavior for legacy callers.
+    """
     N = len(momenta)
     P = {f"p_{i}": momenta[i - 1] for i in range(1, N + 1)}
     E = {f"e_{i}": pols[i - 2] for i in range(2, N)}
@@ -930,11 +1124,58 @@ def eval_infix_numeric(expr: str, momenta, pols) -> float:
                 vb = P.get(f"p_{rhs[2]}") if rhs[1] == "p" else E.get(f"e_{rhs[2]}")
                 if va is not None and vb is not None:
                     return mdot(va, vb)
+                if strict:
+                    missing = []
+                    if va is None:
+                        missing.append(f"{lhs[1]}_{lhs[2]}")
+                    if vb is None:
+                        missing.append(f"{rhs[1]}_{rhs[2]}")
+                    raise KeyError(
+                        "eval_infix_numeric: unknown vector(s) "
+                        f"{missing} (N={N})"
+                    )
+            if strict:
+                raise ValueError(
+                    "eval_infix_numeric: malformed evaluated dot product"
+                )
             return 0.0
+        if strict:
+            raise ValueError(
+                "eval_infix_numeric: unsupported evaluated node "
+                f"{type(node).__name__}"
+            )
         return 0.0
 
-    tree = _Parser(_tokenize(expr)).parse()
+    tokens = _strict_tokenize(expr) if strict else _tokenize(expr)
+    if strict:
+        _validate_strict_token_sequence(tokens)
+        depth = 0
+        for token in tokens:
+            if token == "(":
+                depth += 1
+            elif token == ")":
+                depth -= 1
+                if depth < 0:
+                    raise ValueError(
+                        "eval_infix_numeric: unmatched closing parenthesis"
+                    )
+        if depth:
+            raise ValueError(
+                "eval_infix_numeric: unmatched opening parenthesis"
+            )
+
+    parser = _Parser(tokens)
+    tree = parser.parse()
+    if strict:
+        if parser.i != len(tokens):
+            raise ValueError(
+                "eval_infix_numeric: expression was not fully consumed "
+                f"({parser.i}/{len(tokens)} tokens)"
+            )
+        _validate_sqed_source_ast(tree, N)
     expanded = _expand_ast(tree)
+    if strict:
+        _validate_sqed_expanded_ast(expanded, N)
     return float(_eval(expanded))
 
 
@@ -1987,14 +2228,19 @@ def _validate_pair(
         for _ in range(n_checks):
             mom, pol = generate_kinematics(N, M=M, pol_mode=pol_mode)
             try:
-                va = eval_infix_numeric(expr_a, mom, pol)
-                vb = eval_infix_numeric(expr_b, mom, pol)
+                va = eval_infix_numeric(expr_a, mom, pol, strict=True)
+                vb = eval_infix_numeric(expr_b, mom, pol, strict=True)
             except Exception as exc:
                 return False, f"{pol_mode}:exception:{exc}"
             if not (math.isfinite(va) and math.isfinite(vb)):
                 return False, f"{pol_mode}:non-finite"
             diff = abs(va - vb)
-            if diff > max(tol_abs, tol_rel * max(1.0, abs(va), abs(vb))):
+            if not numeric_values_close(
+                va,
+                vb,
+                tol_abs=tol_abs,
+                tol_rel=tol_rel,
+            ):
                 return False, f"{pol_mode}:mismatch:{diff:.3e}"
     return True, ""
 

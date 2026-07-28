@@ -176,14 +176,19 @@ def numerically_compare(
             if not (math.isfinite(val_simple) and math.isfinite(val_scrambled)):
                 return False, f"non-finite evaluation at sample {i}: simple={val_simple}, scrambled={val_scrambled}"
             diff = abs(val_simple - val_scrambled)
-            scale = max(abs(val_simple), abs(val_scrambled), 1.0)
-            rel = diff / scale
+            scale = max(abs(val_simple), abs(val_scrambled))
+            rel = diff / scale if scale else 0.0
             if diff > worst_diff:
                 worst_diff = diff
                 worst_rel = rel
                 worst_sample = i
                 worst_pair = (val_simple, val_scrambled)
-            if not (diff <= tol_abs or rel <= tol_rel):
+            if not gd.numeric_values_close(
+                val_simple,
+                val_scrambled,
+                tol_abs=tol_abs,
+                tol_rel=tol_rel,
+            ):
                 return (
                     False,
                     f"mismatch at sample {i}: simple={val_simple:.12g}, scrambled={val_scrambled:.12g}, "

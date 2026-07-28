@@ -30,6 +30,7 @@ from transformer_functions import (
 from Tokenizer import ScatteringAmplitudeTokenizer
 from data_gen_ym.kinematics import generate_kinematics
 from data_gen_ym.numerics import eval_infix_numeric
+from numeric_utils import numeric_values_close
 
 BOS, EOS, PAD = 2, 3, 0
 
@@ -49,7 +50,12 @@ def numerically_equivalent_gluon(expr_a, expr_b, N, seeds=(1, 2, 3, 4, 5),
                 return False
             if not (math.isfinite(va) and math.isfinite(vb)):
                 return False
-            if abs(va - vb) > tol * max(1.0, abs(va), abs(vb)):
+            if not numeric_values_close(
+                va,
+                vb,
+                tol_abs=tol,
+                tol_rel=tol,
+            ):
                 return False
     return True
 

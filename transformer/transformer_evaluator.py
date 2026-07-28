@@ -210,9 +210,12 @@ def main():
         for mom, pol in _precomputed_kinematics:
             val_a = _gd_mod.eval_infix_numeric(expr_a, mom, pol)
             val_b = _gd_mod.eval_infix_numeric(expr_b, mom, pol)
-            diff  = abs(val_a - val_b)
-            scale = max(abs(val_a), abs(val_b), 1.0)
-            if not (diff <= tol_abs or diff / scale <= tol_rel):
+            if not _gd_mod.numeric_values_close(
+                val_a,
+                val_b,
+                tol_abs=tol_abs,
+                tol_rel=tol_rel,
+            ):
                 return False
         return True
 

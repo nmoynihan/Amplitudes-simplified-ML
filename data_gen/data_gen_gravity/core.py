@@ -255,10 +255,18 @@ def numerically_equivalent(
             )
         for kin in gauges:
             a, b = _eval_tree(left_tree, kin), _eval_tree(right_tree, kin)
-            scale = max(1.0, abs(a), abs(b))
-            error = abs(a - b) / scale
+            if not (np.isfinite(abs(a)) and np.isfinite(abs(b))):
+                return False, float("inf")
+            difference = abs(a - b)
+            scale = max(abs(a), abs(b))
+            error = difference / scale if scale else difference
             worst = max(worst, float(error))
-            if not np.isfinite(error) or abs(a - b) > atol + rtol * scale:
+            if not sqed.numeric_values_close(
+                a,
+                b,
+                tol_abs=atol,
+                tol_rel=rtol,
+            ):
                 return False, worst
     return True, worst
 
@@ -497,6 +505,7 @@ def verify_paper_benchmarks(
     seeds: Sequence[int] = (17, 31, 73),
     *,
     rtol: float = 5e-8,
+    atol: float = 1e-10,
 ) -> dict[str, float]:
     """Verify the field-strength fixtures against the paper's spinor forms."""
     errors: dict[str, float] = {}
@@ -510,10 +519,16 @@ def verify_paper_benchmarks(
             )
             field_value = eval_expression(BENCHMARKS[process], kin)
             spinor_value = paper_spinor_value(process, kin)
-            scale = max(1.0, abs(field_value), abs(spinor_value))
-            error = abs(field_value - spinor_value) / scale
+            difference = abs(field_value - spinor_value)
+            scale = max(abs(field_value), abs(spinor_value))
+            error = difference / scale if scale else difference
             worst = max(worst, float(error))
-            if error > rtol:
+            if not sqed.numeric_values_close(
+                field_value,
+                spinor_value,
+                tol_abs=atol,
+                tol_rel=rtol,
+            ):
                 raise AssertionError(
                     f"{process} field-strength fixture disagrees with paper: {error:.3e}"
                 )
