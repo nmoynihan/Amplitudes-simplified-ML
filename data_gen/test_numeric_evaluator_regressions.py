@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import cmath
+import csv
 import math
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -435,6 +437,192 @@ class EvaluatorIntegrationTests(unittest.TestCase):
                 self.kinematics,
             )
         )
+
+
+class GravityEvaluatorIntegrationTests(unittest.TestCase):
+    """Exercise the process-aware complex backend at the scoring boundary."""
+
+    SETTINGS = (
+        "NUMERIC_BACKEND",
+        "N_PARTICLES",
+        "DATA_SOURCE",
+        "NUMERIC_EQUIV_SAMPLES",
+        "NUMERIC_EQUIV_SEED",
+        "NUMERIC_EQUIV_POL_MODES",
+        "NUMERIC_TOL_ABS",
+        "NUMERIC_TOL_REL",
+        "GRAVITY_REFERENCE_MODES",
+        "GRAVITY_GAUGE_SHIFT",
+        "GRAVITY_METADATA_CSV_PATH",
+        "GRAVITY_PROCESS",
+        "EXISTING_RAW_CSV_PATH",
+        "EXISTING_CSV_DEDUPE",
+        "EXISTING_CSV_MAX_ROWS",
+        "RAW_CSV_PATH",
+    )
+
+    def setUp(self) -> None:
+        self.original_settings = {
+            name: getattr(evaluator, name) for name in self.SETTINGS
+        }
+        evaluator.NUMERIC_BACKEND = "gravity"
+        evaluator.N_PARTICLES = 5
+        evaluator.DATA_SOURCE = "csv"
+        evaluator.NUMERIC_EQUIV_SAMPLES = 1
+        evaluator.NUMERIC_EQUIV_SEED = 17
+        evaluator.NUMERIC_EQUIV_POL_MODES = None
+        evaluator.NUMERIC_TOL_ABS = None
+        evaluator.NUMERIC_TOL_REL = None
+        evaluator.GRAVITY_REFERENCE_MODES = ("first",)
+        evaluator.GRAVITY_GAUGE_SHIFT = False
+        evaluator.GRAVITY_METADATA_CSV_PATH = None
+        evaluator.GRAVITY_PROCESS = "3s2h"
+        evaluator.RAW_CSV_PATH = Path("<in-memory-gravity-test>")
+        evaluator.validate_runtime_config()
+        self.kinematics = evaluator.precompute_kinematics()
+
+    def tearDown(self) -> None:
+        for name, value in self.original_settings.items():
+            setattr(evaluator, name, value)
+
+    def test_compact_and_expanded_benchmarks_match_for_both_processes(
+        self,
+    ) -> None:
+        for process, compact in gravity_core.BENCHMARKS.items():
+            with self.subTest(process=process):
+                expanded = gravity_core.expand_expression(compact)
+                self.assertTrue(
+                    evaluator.numerically_equivalent_exprs(
+                        compact,
+                        expanded,
+                        self.kinematics,
+                        gravity_process=process,
+                    )
+                )
+                self.assertFalse(
+                    evaluator.numerically_equivalent_exprs(
+                        compact,
+                        "0",
+                        self.kinematics,
+                        gravity_process=process,
+                    )
+                )
+
+    def test_strict_gravity_boundary_rejects_malformed_and_free_vectors(
+        self,
+    ) -> None:
+        invalid = (
+            "unknown_symbol",
+            "M_1",
+            "p_1",
+            "e_4",
+            "F_4",
+            "p_6 · p_1",
+            "p_1 · p_2 @",
+            "(p_1 · p_2",
+            "p_1 · p_2 +",
+        )
+        for expression in invalid:
+            with self.subTest(expression=expression):
+                self.assertFalse(
+                    evaluator.numerically_equivalent_exprs(
+                        "0",
+                        expression,
+                        self.kinematics,
+                        gravity_process="3s2h",
+                    )
+                )
+
+    def test_process_assignment_controls_allowed_graviton_legs(self) -> None:
+        expression = "p_1 · F_4 · p_2"
+        evaluator.validate_gravity_expression(expression, "3s2h")
+        with self.assertRaises(KeyError):
+            evaluator.validate_gravity_expression(expression, "4s1h")
+        self.assertFalse(
+            evaluator.numerically_equivalent_exprs(
+                "0",
+                expression,
+                self.kinematics,
+                gravity_process="4s1h",
+            )
+        )
+
+    def test_reference_validation_uses_the_row_process(self) -> None:
+        process = "4s1h"
+        compact = gravity_core.BENCHMARKS[process]
+        expanded = gravity_core.expand_expression(compact)
+        evaluator.validate_numeric_reference_rows(
+            [{"simple": compact, "scrambled": expanded}],
+            self.kinematics,
+            [process],
+        )
+        with self.assertRaises(ValueError):
+            evaluator.validate_numeric_reference_rows(
+                [{"simple": compact, "scrambled": "p_1 · F_4 · p_2"}],
+                self.kinematics,
+                [process],
+            )
+
+    def test_metadata_discovery_preserves_dedupe_and_row_cap_alignment(
+        self,
+    ) -> None:
+        pairs = [
+            ("p_1 · p_2", "p_1 · p_2"),
+            ("p_1 · p_2", "p_1 · p_2"),
+            ("p_3 · p_4", "p_3 · p_4"),
+        ]
+        processes = ["3s2h", "3s2h", "4s1h"]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            raw_path = directory / "sample_raw.csv"
+            metadata_path = directory / "sample_metadata.csv"
+            with raw_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["simple", "scrambled"])
+                writer.writerows(pairs)
+            with metadata_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["simple", "scrambled", "process"],
+                )
+                writer.writeheader()
+                for pair, process in zip(pairs, processes, strict=True):
+                    writer.writerow(
+                        {
+                            "simple": pair[0],
+                            "scrambled": pair[1],
+                            "process": process,
+                        }
+                    )
+
+            evaluator.GRAVITY_PROCESS = None
+            evaluator.GRAVITY_METADATA_CSV_PATH = None
+            evaluator.EXISTING_RAW_CSV_PATH = raw_path
+            evaluator.EXISTING_CSV_DEDUPE = True
+            evaluator.EXISTING_CSV_MAX_ROWS = 2
+            prepared = [
+                {"simple": pairs[0][0], "scrambled": pairs[0][1]},
+                {"simple": pairs[2][0], "scrambled": pairs[2][1]},
+            ]
+
+            self.assertEqual(
+                evaluator.infer_gravity_metadata_path(raw_path),
+                metadata_path,
+            )
+            self.assertEqual(
+                evaluator.resolve_gravity_processes(prepared),
+                ["3s2h", "4s1h"],
+            )
+
+            with metadata_path.open(encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            rows[-1]["simple"] = "misaligned"
+            with metadata_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+                writer.writeheader()
+                writer.writerows(rows)
+            with self.assertRaises(ValueError):
+                evaluator.resolve_gravity_processes(prepared)
 
 
 if __name__ == "__main__":

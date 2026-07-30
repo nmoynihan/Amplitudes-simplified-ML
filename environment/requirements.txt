@@ -6,3 +6,4 @@ matplotlib
 sympy
 h5py
 numpy
+reportlab

@@ -11,22 +11,29 @@ All configuration lives in this file. The script:
 4. Runs one or more decoding modes (greedy by default, optional beam/nucleus).
 5. Reports exact-match and numerical-equivalence metrics against both the
    target simple expressions and the input scrambled expressions.
+6. Mirrors terminal output to a timestamped, text-based PDF.
 
 Outputs are written under DATA_TESTING_DIR / OUTPUT_SUBDIR.
 """
 from __future__ import annotations
 
-import csv
 import argparse
+import csv
 import gzip
+import io
 import json
 import math
 import re
 import sys
+import tempfile
+import threading
 import time
+import traceback
+from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import torch
 from torch.utils.data import DataLoader
@@ -72,6 +79,14 @@ DATA_SOURCE = "csv"  # "generate", "csv", "single-amplitude"
 # EXISTING_RAW_CSV_PATH = DATA_STORAGE_DIR / "messified.csv" # Paolo's 20k dataset
 # EXISTING_RAW_CSV_PATH = DATA_STORAGE_DIR / "sqed_oneshot_150.csv" # Paolo's 20k dataset
 EXISTING_RAW_CSV_PATH = DATA_STORAGE_DIR / "sqed_4ptseed_oneshot.csv" # 100 scrambled amplitudes
+
+# Gravity numerical checks need the process assignment for every row because
+# 3s2h and 4s1h carry different graviton legs. When this is None, the evaluator
+# looks for a process column in EXISTING_RAW_CSV_PATH and then for a sibling
+# file whose name replaces "_raw.csv[.gz]" with "_metadata.csv[.gz]".
+GRAVITY_METADATA_CSV_PATH: Path | None = None
+# Use this for a homogeneous gravity CSV that has no metadata file.
+GRAVITY_PROCESS: str | None = None  # "3s2h", "4s1h", or None
 
 # Used only when DATA_SOURCE="single-amplitude". The input may be .csv or
 # .csv.gz. "tokens" expects a header and a JSON list of integer token IDs in
@@ -126,17 +141,24 @@ HUMAN_CSV = True
 PLOTS = True
 
 # Numeric equivalence check for model predictions. "sqed" uses two massive
-# scalar endpoint legs; "ym" uses all-massless gluon kinematics and e_1...e_N.
-NUMERIC_BACKEND = "sqed"  # "sqed", "ym"
+# scalar endpoint legs; "ym" uses all-massless gluon kinematics and e_1...e_N;
+# "gravity" uses complex five-point spinor-helicity kinematics and the process
+# assignment loaded from the gravity metadata CSV.
+NUMERIC_BACKEND = "sqed"  # "sqed", "ym", "gravity"
 NUMERIC_EQUIV_SAMPLES = 3
 NUMERIC_EQUIV_SEED = 151
 NUMERIC_EQUIV_MASS = 2.0
 NUMERIC_EQUIV_ENERGY_SCALE = 2.0
 # None chooses ("coulomb",) for sqed and ("coulomb", "covariant") for ym.
 NUMERIC_EQUIV_POL_MODES: tuple[str, ...] | None = None
+# Gravity checks rebuild polarisations at fixed momenta with these reference
+# choices and, by default, also test an explicit gauge-shifted point.
+GRAVITY_REFERENCE_MODES: tuple[str, ...] = ("first", "last", "random")
+GRAVITY_GAUGE_SHIFT = True
 # Equivalence passes if either absolute or relative tolerance is met on every
 # numeric sample. None selects backend defaults: sqed=(1e-12, 1e-10) and
-# ym=(1e-10, 1e-8), matching data_gen_ym.numerics._validate_pair.
+# ym=(1e-10, 1e-8), matching data_gen_ym.numerics._validate_pair, while
+# gravity=(2e-9, 2e-8), matching data_gen_gravity.core.numerically_equivalent.
 NUMERIC_TOL_ABS: float | None = None
 NUMERIC_TOL_REL: float | None = None
 BEAM_SIZE = 50
@@ -204,7 +226,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-particles", type=int, default=None)
     parser.add_argument(
         "--numeric-backend",
-        choices=["sqed", "ym", "yang-mills"],
+        choices=["sqed", "ym", "yang-mills", "gravity"],
         default=None,
         help="Kinematics and expression evaluator used for numerical equivalence.",
     )
@@ -229,6 +251,22 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help="Overall energy scale for all-massless Yang-Mills numerical checks.",
+    )
+    parser.add_argument(
+        "--gravity-reference-modes",
+        nargs="+",
+        choices=["first", "last", "random", "cyclic"],
+        default=None,
+        help=(
+            "Spinor-reference choices used at each complex gravity phase-space "
+            "point (default: first last random)."
+        ),
+    )
+    parser.add_argument(
+        "--gravity-gauge-shift",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Also test an explicit graviton gauge shift (default: enabled).",
     )
     parser.add_argument(
         "--numeric-tol-abs",
@@ -330,6 +368,23 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--existing-raw-csv", type=str, default=None)
+    gravity_process_source = parser.add_mutually_exclusive_group()
+    gravity_process_source.add_argument(
+        "--gravity-metadata-csv",
+        type=str,
+        default=None,
+        help=(
+            "CSV or CSV.GZ aligned with the raw gravity data and containing a "
+            "process column (3s2h or 4s1h). If omitted, a sibling *_metadata "
+            "file is discovered automatically."
+        ),
+    )
+    gravity_process_source.add_argument(
+        "--gravity-process",
+        choices=["3s2h", "4s1h"],
+        default=None,
+        help="Process to use for every row in a homogeneous gravity CSV.",
+    )
     parser.add_argument(
         "--single-amplitude-input-csv",
         "--single-amplitude-csv",
@@ -372,7 +427,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Zero-based expression column for a Feynman-format single-amplitude CSV.",
     )
-    parser.add_argument("--existing-csv-max-rows", type=int, default=None)
+    parser.add_argument(
+        "--existing-csv-max-rows",
+        type=int,
+        default=None,
+        help="Maximum imported raw rows; use 0 or a negative value for all rows.",
+    )
     parser.add_argument("--no-dedupe", action="store_true")
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument(
@@ -400,12 +460,14 @@ def apply_cli_config(args: argparse.Namespace) -> None:
     global MODEL_PATH, DEVICE, N_PARTICLES, NUM_SAMPLES, GENERATION_SEED
     global TOKENIZER_MAX_PARTICLES, DATA_FILENAME_STEM, RAW_CSV_PATH, TOK_CSV_PATH
     global GEN_LOG_PATH, SUMMARY_CSV_PATH, DATA_SOURCE, EXISTING_RAW_CSV_PATH
+    global GRAVITY_METADATA_CSV_PATH, GRAVITY_PROCESS
     global SINGLE_AMPLITUDE_INPUT_CSV_PATH, SINGLE_AMPLITUDE_INPUT_FORMAT
     global SINGLE_AMPLITUDE_TOKENS_COLUMN, SINGLE_AMPLITUDE_EXPRESSION_COLUMN
     global EXISTING_CSV_MAX_ROWS, EXISTING_CSV_DEDUPE, GEN_MIN_TERMS, GEN_MAX_TERMS
     global GEN_MIN_SCRAMBLES, GEN_MAX_SCRAMBLES, BATCH_SIZE, INPUT_TOKEN_LIMIT
     global MAX_SEQ_LENGTH_OVERRIDE, NUMERIC_BACKEND, NUMERIC_EQUIV_POL_MODES
     global NUMERIC_EQUIV_MASS, NUMERIC_EQUIV_ENERGY_SCALE
+    global GRAVITY_REFERENCE_MODES, GRAVITY_GAUGE_SHIFT
     global NUMERIC_TOL_ABS, NUMERIC_TOL_REL
     global DECODE_RUNS, CLI_SCRAMBLES, SIMPLE_SUMMARY, HUMAN_CSV, PLOTS
 
@@ -439,12 +501,20 @@ def apply_cli_config(args: argparse.Namespace) -> None:
         NUMERIC_BACKEND = (
             "ym" if args.numeric_backend == "yang-mills" else args.numeric_backend
         )
+        if NUMERIC_BACKEND == "gravity" and args.n_particles is None:
+            N_PARTICLES = 5
     if args.numeric_pol_modes is not None:
         NUMERIC_EQUIV_POL_MODES = tuple(dict.fromkeys(args.numeric_pol_modes))
     if args.numeric_mass is not None:
         NUMERIC_EQUIV_MASS = args.numeric_mass
     if args.numeric_energy_scale is not None:
         NUMERIC_EQUIV_ENERGY_SCALE = args.numeric_energy_scale
+    if args.gravity_reference_modes is not None:
+        GRAVITY_REFERENCE_MODES = tuple(
+            dict.fromkeys(args.gravity_reference_modes)
+        )
+    if args.gravity_gauge_shift is not None:
+        GRAVITY_GAUGE_SHIFT = args.gravity_gauge_shift
     if args.numeric_tol_abs is not None:
         NUMERIC_TOL_ABS = args.numeric_tol_abs
     if args.numeric_tol_rel is not None:
@@ -482,6 +552,12 @@ def apply_cli_config(args: argparse.Namespace) -> None:
         BATCH_SIZE = args.batch_size
     if args.existing_raw_csv is not None:
         EXISTING_RAW_CSV_PATH = resolve_input_path(args.existing_raw_csv)
+    if args.gravity_metadata_csv is not None:
+        GRAVITY_METADATA_CSV_PATH = resolve_input_path(args.gravity_metadata_csv)
+        GRAVITY_PROCESS = None
+    if args.gravity_process is not None:
+        GRAVITY_PROCESS = args.gravity_process
+        GRAVITY_METADATA_CSV_PATH = None
     if args.single_amplitude_input_csv is not None:
         SINGLE_AMPLITUDE_INPUT_CSV_PATH = resolve_input_path(args.single_amplitude_input_csv)
     if args.single_amplitude_input_format is not None:
@@ -493,7 +569,11 @@ def apply_cli_config(args: argparse.Namespace) -> None:
     if args.single_amplitude_expression_column is not None:
         SINGLE_AMPLITUDE_EXPRESSION_COLUMN = args.single_amplitude_expression_column
     if args.existing_csv_max_rows is not None:
-        EXISTING_CSV_MAX_ROWS = args.existing_csv_max_rows
+        EXISTING_CSV_MAX_ROWS = (
+            None
+            if args.existing_csv_max_rows <= 0
+            else args.existing_csv_max_rows
+        )
     if args.no_dedupe:
         EXISTING_CSV_DEDUPE = False
 
@@ -598,10 +678,19 @@ def apply_cli_config(args: argparse.Namespace) -> None:
 
 sys.path.insert(0, str(ROOT / "data_gen"))
 sys.path.insert(0, str(ROOT / "transformer"))
+sys.path.insert(0, str(ROOT))
 
 import gen_data as gd
 from numeric_utils import numeric_values_close
 from Tokenizer import ScatteringAmplitudeTokenizer
+from data_gen.data_gen_gravity.core import (
+    PROCESS_SPECS as GRAVITY_PROCESS_SPECS,
+    eval_expression as eval_gravity_expression,
+)
+from data_gen.data_gen_gravity.kinematics import (
+    generate_kinematics as generate_gravity_kinematics,
+    with_references as gravity_with_references,
+)
 from data_import import TransformerDataset, dynamic_pad_collate
 from data_gen_ym.kinematics import generate_kinematics as generate_ym_kinematics
 from data_gen_ym.numerics import eval_infix_numeric as eval_ym_infix_numeric
@@ -622,6 +711,262 @@ from transformer_functions import (
 # ============================================================================
 
 SPECIAL_TOKENS = {"pad": 0, "bos": 2, "eos": 3}
+
+_ANSI_ESCAPE_RE = re.compile(
+    r"(?:\x1B\][^\x07]*(?:\x07|\x1B\\)|"
+    r"\x1B(?:\[[0-?]*[ -/]*[@-~]|[@-_]))"
+)
+
+
+class TeeTextIO:
+    """Mirror one text stream to the terminal and a shared transcript."""
+
+    def __init__(
+        self,
+        terminal_stream: Any,
+        transcript: io.StringIO,
+        lock: threading.RLock,
+    ) -> None:
+        self._terminal_stream = terminal_stream
+        self._transcript = transcript
+        self._lock = lock
+
+    def write(self, text: str) -> int:
+        with self._lock:
+            self._terminal_stream.write(text)
+            self._transcript.write(text)
+        return len(text)
+
+    def flush(self) -> None:
+        with self._lock:
+            self._terminal_stream.flush()
+            self._transcript.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        # Preserve compatibility with code that inspects encoding, isatty(),
+        # fileno(), and other properties of sys.stdout/sys.stderr.
+        return getattr(self._terminal_stream, name)
+
+
+@contextmanager
+def capture_terminal_output() -> Iterator[io.StringIO]:
+    """Yield a transcript while keeping stdout and stderr visible."""
+
+    transcript = io.StringIO()
+    lock = threading.RLock()
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    tee_stdout = TeeTextIO(original_stdout, transcript, lock)
+    tee_stderr = TeeTextIO(original_stderr, transcript, lock)
+    sys.stdout = tee_stdout
+    sys.stderr = tee_stderr
+    try:
+        yield transcript
+    finally:
+        try:
+            tee_stdout.flush()
+            tee_stderr.flush()
+        finally:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+
+
+def evaluation_data_type_label() -> str:
+    """Return the human-readable physics data type used in PDF filenames."""
+
+    normalized = NUMERIC_BACKEND.strip().lower()
+    if normalized in {"ym", "yang-mills"}:
+        return "Yang-mills"
+    if normalized == "sqed":
+        return "SQED"
+    if normalized == "gravity":
+        return "Gravity"
+    # validate_runtime_config normally makes this unreachable, but retaining a
+    # safe label lets configuration errors still produce a transcript PDF.
+    return re.sub(r"[^A-Za-z0-9-]+", "-", NUMERIC_BACKEND).strip("-") or "Unknown"
+
+
+def evaluation_pdf_path(started_at: datetime) -> Path:
+    """Build the requested timestamped evaluation-information PDF path."""
+
+    timestamp = started_at.strftime("%Y-%m-%d_%H-%M-%S-%f")
+    filename = (
+        f"{evaluation_data_type_label()}_{N_PARTICLES}_"
+        f"Evaluation_Information_{timestamp}.pdf"
+    )
+    return DATA_TESTING_DIR / OUTPUT_SUBDIR / filename
+
+
+def require_reportlab() -> None:
+    """Fail before model evaluation if the configured PDF dependency is absent."""
+
+    try:
+        __import__("reportlab.pdfgen.canvas")
+    except ImportError as exc:
+        raise RuntimeError(
+            "Saving evaluation output as PDF requires ReportLab. "
+            "Install environment/requirements.txt before running this script."
+        ) from exc
+
+
+def _pdf_monospace_font() -> tuple[str, bool]:
+    """Register a Unicode text font, preferring an installed monospace face."""
+
+    import reportlab
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    font_name = "EvaluationTerminalMono"
+    if font_name in pdfmetrics.getRegisteredFontNames():
+        return font_name, True
+
+    candidates = (
+        Path("/System/Library/Fonts/SFNSMono.ttf"),
+        Path("/System/Library/Fonts/Supplemental/Courier New.ttf"),
+        Path("/System/Library/Fonts/Supplemental/Andale Mono.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"),
+        Path("/usr/share/fonts/truetype/liberation2/LiberationMono-Regular.ttf"),
+        Path("C:/Windows/Fonts/consola.ttf"),
+        Path("C:/Windows/Fonts/cour.ttf"),
+        Path(reportlab.__file__).resolve().parent / "fonts" / "Vera.ttf",
+    )
+    for font_path in candidates:
+        if not font_path.is_file():
+            continue
+        try:
+            pdfmetrics.registerFont(TTFont(font_name, str(font_path)))
+            return font_name, True
+        except Exception:
+            continue
+    return "Courier", False
+
+
+def _wrapped_terminal_lines(
+    terminal_text: str,
+    max_characters: int,
+) -> Iterator[str]:
+    """Strip terminal controls and wrap text without losing long expressions."""
+
+    normalized = _ANSI_ESCAPE_RE.sub("", terminal_text)
+    normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = normalized.replace("\f", "\n")
+    for raw_line in normalized.split("\n"):
+        expanded = raw_line.expandtabs(4)
+        printable = "".join(
+            character if character >= " " else " "
+            for character in expanded
+        )
+        if not printable:
+            yield ""
+            continue
+        for start in range(0, len(printable), max_characters):
+            yield printable[start : start + max_characters]
+
+
+def write_terminal_output_pdf(
+    path: Path,
+    terminal_text: str,
+    started_at: datetime,
+) -> None:
+    """Render terminal output as selectable, wrapped text over as many pages as needed."""
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfgen import canvas
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    page_width, page_height = A4
+    left_margin = 42.0
+    right_margin = 42.0
+    bottom_margin = 34.0
+    text_top = page_height - 55.0
+    font_size = 8.25
+    line_leading = 10.25
+    font_name, unicode_font = _pdf_monospace_font()
+    character_width = pdfmetrics.stringWidth("M", font_name, font_size)
+    max_characters = max(
+        20,
+        int((page_width - left_margin - right_margin) / character_width),
+    )
+
+    pdf_buffer = io.BytesIO()
+    report = canvas.Canvas(pdf_buffer, pagesize=A4, pageCompression=1)
+    report.setAuthor("evaluate_model.py")
+    report.setCreator("evaluate_model.py")
+    report.setSubject("Evaluation terminal output")
+    report.setTitle(path.stem)
+
+    header = (
+        f"{evaluation_data_type_label()} | {N_PARTICLES} particles | "
+        "Evaluation Information"
+    )
+    timestamp = started_at.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+    def start_page() -> Any:
+        report.setFillColor(colors.HexColor("#1F2937"))
+        report.setFont("Helvetica-Bold", 10)
+        report.drawString(left_margin, page_height - 29.0, header)
+        report.setFont("Helvetica", 7.5)
+        report.drawRightString(page_width - right_margin, page_height - 29.0, timestamp)
+        report.setStrokeColor(colors.HexColor("#D1D5DB"))
+        report.line(
+            left_margin,
+            page_height - 37.0,
+            page_width - right_margin,
+            page_height - 37.0,
+        )
+        text_object = report.beginText(left_margin, text_top)
+        text_object.setFont(font_name, font_size)
+        text_object.setFillColor(colors.black)
+        text_object.setLeading(line_leading)
+        return text_object
+
+    def finish_page(text_object: Any, page_number: int, *, last: bool) -> None:
+        report.drawText(text_object)
+        report.setFillColor(colors.HexColor("#6B7280"))
+        report.setFont("Helvetica", 7)
+        report.drawRightString(
+            page_width - right_margin,
+            20.0,
+            f"Page {page_number}",
+        )
+        if not last:
+            report.showPage()
+
+    page_number = 1
+    text_object = start_page()
+    lines = list(_wrapped_terminal_lines(terminal_text, max_characters))
+    if not lines:
+        lines = ["(No terminal output was produced.)"]
+
+    for line in lines:
+        if text_object.getY() < bottom_margin + line_leading:
+            finish_page(text_object, page_number, last=False)
+            page_number += 1
+            text_object = start_page()
+        if not unicode_font:
+            line = line.encode("cp1252", errors="replace").decode("cp1252")
+        text_object.textLine(line)
+
+    finish_page(text_object, page_number, last=True)
+    report.save()
+
+    with tempfile.NamedTemporaryFile(
+        mode="wb",
+        dir=path.parent,
+        prefix=f".{path.stem}-",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        temporary_path = Path(handle.name)
+        handle.write(pdf_buffer.getvalue())
+    try:
+        temporary_path.replace(path)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
 
 
 def resolve_device() -> str:
@@ -672,6 +1017,73 @@ def safe_decode_infix(tokenizer: ScatteringAmplitudeTokenizer, seq: list[int]) -
         return False, "", f"{type(exc).__name__}: {exc}"
 
 
+def select_candidate_for_reporting(
+    candidate_records: list[dict[str, Any]],
+    *,
+    rerank_numerical_equiv: bool,
+) -> tuple[dict[str, Any], str]:
+    """Choose a generated candidate that can always be reported to the user.
+
+    Numerical equivalence remains the strongest reranking signal. If no
+    equivalent candidate exists and the model's original top-1 output is
+    malformed, fall back to the first generated candidate that decodes into a
+    valid expression. When every candidate is malformed, retain the original
+    top-1 so its raw prefix tokens can still be displayed.
+    """
+
+    if not candidate_records:
+        raise ValueError("Cannot select a prediction from an empty candidate list")
+
+    selected = candidate_records[0]
+    selection_reason = "model_top1"
+
+    if rerank_numerical_equiv:
+        equivalent_candidates = [
+            record
+            for record in candidate_records
+            if record["decode_ok"] and record["num_eq_scrambled"]
+        ]
+        if equivalent_candidates:
+            selected = min(
+                equivalent_candidates,
+                key=lambda record: (len(record["tokens"]), record["index"]),
+            )
+            selection_reason = "numerically_equivalent_rerank"
+
+    if not selected["decode_ok"]:
+        valid_fallback = next(
+            (record for record in candidate_records if record["decode_ok"]),
+            None,
+        )
+        if valid_fallback is not None:
+            selected = valid_fallback
+            selection_reason = "valid_decode_fallback"
+
+    return selected, selection_reason
+
+
+def prediction_text_for_display(
+    tokenizer: ScatteringAmplitudeTokenizer,
+    candidate: dict[str, Any],
+) -> str:
+    """Return a non-empty, human-readable representation of model output."""
+
+    expression = str(candidate.get("expr") or "").strip()
+    if candidate.get("decode_ok") and expression:
+        return expression
+
+    tokens = list(candidate.get("tokens") or [])
+    if tokens:
+        try:
+            raw_prefix = tokenizer.decode_prefix(tokens)
+        except Exception:
+            raw_prefix = json.dumps(tokens)
+        if raw_prefix:
+            return f"[malformed prefix tokens] {raw_prefix}"
+
+    return "[empty token prediction]"
+
+
 def open_csv_text(path: Path, mode: str):
     """Open a plain or gzip-compressed CSV as UTF-8 text."""
     text_mode = mode if "t" in mode else f"{mode}t"
@@ -715,6 +1127,134 @@ def read_raw_pairs(path: Path) -> list[tuple[str, str]]:
     return pairs
 
 
+def csv_fieldnames(path: Path) -> list[str]:
+    with open_csv_text(path, "r") as handle:
+        reader = csv.DictReader(handle)
+        return list(reader.fieldnames or [])
+
+
+def infer_gravity_metadata_path(raw_path: Path) -> Path | None:
+    """Find the metadata file emitted beside a standard gravity raw CSV."""
+
+    if "process" in csv_fieldnames(raw_path):
+        return raw_path
+
+    replacements = (
+        ("_raw.csv.gz", "_metadata.csv.gz"),
+        ("_raw.csv", "_metadata.csv"),
+    )
+    for raw_suffix, metadata_suffix in replacements:
+        if raw_path.name.endswith(raw_suffix):
+            candidate = raw_path.with_name(
+                raw_path.name[: -len(raw_suffix)] + metadata_suffix
+            )
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def resolve_gravity_processes(
+    raw_rows: list[dict[str, str]],
+) -> list[str | None]:
+    """Return one process label per prepared row.
+
+    Gravity metadata is aligned to the source raw CSV before applying the same
+    first-occurrence deduplication and row cap as import_existing_test_data.
+    This keeps process labels correct even when the source contains duplicates.
+    """
+
+    if NUMERIC_BACKEND != "gravity":
+        return [None] * len(raw_rows)
+
+    if GRAVITY_PROCESS is not None:
+        return [GRAVITY_PROCESS] * len(raw_rows)
+    if DATA_SOURCE != "csv":
+        raise ValueError(
+            "Gravity evaluation outside DATA_SOURCE='csv' requires "
+            "--gravity-process 3s2h or --gravity-process 4s1h"
+        )
+
+    source_path = resolve_input_path(EXISTING_RAW_CSV_PATH)
+    metadata_path = (
+        resolve_input_path(GRAVITY_METADATA_CSV_PATH)
+        if GRAVITY_METADATA_CSV_PATH is not None
+        else infer_gravity_metadata_path(source_path)
+    )
+    if metadata_path is None:
+        raise ValueError(
+            f"Could not infer gravity metadata for {source_path}. Pass "
+            "--gravity-metadata-csv or --gravity-process."
+        )
+    if not metadata_path.is_file():
+        raise FileNotFoundError(f"Gravity metadata CSV does not exist: {metadata_path}")
+
+    source_pairs = read_raw_pairs(source_path)
+    metadata_rows = load_raw_rows(metadata_path)
+    if len(metadata_rows) != len(source_pairs):
+        raise ValueError(
+            f"Gravity metadata row count ({len(metadata_rows)}) does not match "
+            f"the raw CSV row count ({len(source_pairs)})"
+        )
+
+    annotated: list[tuple[tuple[str, str], str]] = []
+    process_by_pair: dict[tuple[str, str], str] = {}
+    for row_index, (pair, metadata) in enumerate(
+        zip(source_pairs, metadata_rows, strict=True),
+        start=2,
+    ):
+        process = (metadata.get("process") or "").strip()
+        if process not in GRAVITY_PROCESS_SPECS:
+            raise ValueError(
+                f"{metadata_path}:{row_index} has unsupported gravity process "
+                f"{process!r}; expected one of {sorted(GRAVITY_PROCESS_SPECS)}"
+            )
+
+        metadata_simple = (metadata.get("simple") or "").strip()
+        metadata_scrambled = (metadata.get("scrambled") or "").strip()
+        if metadata_simple or metadata_scrambled:
+            if (metadata_simple, metadata_scrambled) != pair:
+                raise ValueError(
+                    f"{metadata_path}:{row_index} is not aligned with "
+                    f"{source_path}:{row_index}"
+                )
+        previous_process = process_by_pair.get(pair)
+        if previous_process is not None and previous_process != process:
+            raise ValueError(
+                f"Gravity pair at {source_path}:{row_index} is assigned to both "
+                f"{previous_process!r} and {process!r}"
+            )
+        process_by_pair[pair] = process
+        annotated.append((pair, process))
+
+    if EXISTING_CSV_DEDUPE:
+        seen: set[tuple[str, str]] = set()
+        deduped: list[tuple[tuple[str, str], str]] = []
+        for pair, process in annotated:
+            if pair not in seen:
+                seen.add(pair)
+                deduped.append((pair, process))
+        annotated = deduped
+    if EXISTING_CSV_MAX_ROWS is not None:
+        annotated = annotated[: int(EXISTING_CSV_MAX_ROWS)]
+
+    prepared_pairs = [
+        (
+            (row.get("simple") or "").strip(),
+            (row.get("scrambled") or "").strip(),
+        )
+        for row in raw_rows
+    ]
+    annotated_pairs = [pair for pair, _ in annotated]
+    if annotated_pairs != prepared_pairs:
+        raise ValueError(
+            "Prepared gravity rows no longer align with the source metadata. "
+            "Check the raw/metadata paths and deduplication settings."
+        )
+
+    print(f"Gravity metadata: {metadata_path}")
+    return [process for _, process in annotated]
+
+
 def load_token_rows(path: Path) -> list[dict[str, list[int]]]:
     rows: list[dict[str, list[int]]] = []
     with open_csv_text(path, "r") as handle:
@@ -752,6 +1292,14 @@ def validate_input_token_rows(rows: list[dict[str, list[int]]]) -> int:
 
 
 def resolve_numeric_pol_modes() -> tuple[str, ...]:
+    if NUMERIC_BACKEND == "gravity":
+        if NUMERIC_EQUIV_POL_MODES is not None:
+            raise ValueError(
+                "NUMERIC_EQUIV_POL_MODES applies only to SQED/Yang-Mills; "
+                "use GRAVITY_REFERENCE_MODES for gravity"
+            )
+        return ()
+
     modes = NUMERIC_EQUIV_POL_MODES
     if modes is None:
         modes = ("coulomb", "covariant") if NUMERIC_BACKEND == "ym" else ("coulomb",)
@@ -763,10 +1311,26 @@ def resolve_numeric_pol_modes() -> tuple[str, ...]:
     return tuple(dict.fromkeys(modes))
 
 
+def resolve_gravity_reference_modes() -> tuple[str, ...]:
+    modes = tuple(dict.fromkeys(GRAVITY_REFERENCE_MODES))
+    invalid = sorted(set(modes) - {"first", "last", "random", "cyclic"})
+    if invalid:
+        raise ValueError(f"Unsupported gravity reference modes: {invalid}")
+    if not modes and not GRAVITY_GAUGE_SHIFT:
+        raise ValueError(
+            "Gravity numerical checks need at least one reference mode or an "
+            "enabled gauge-shift check"
+        )
+    return modes
+
+
 def resolve_numeric_tolerances() -> tuple[float, float]:
-    default_abs, default_rel = (
-        (1e-10, 1e-8) if NUMERIC_BACKEND == "ym" else (1e-12, 1e-10)
-    )
+    if NUMERIC_BACKEND == "gravity":
+        default_abs, default_rel = 2e-9, 2e-8
+    elif NUMERIC_BACKEND == "ym":
+        default_abs, default_rel = 1e-10, 1e-8
+    else:
+        default_abs, default_rel = 1e-12, 1e-10
     tol_abs = default_abs if NUMERIC_TOL_ABS is None else NUMERIC_TOL_ABS
     tol_rel = default_rel if NUMERIC_TOL_REL is None else NUMERIC_TOL_REL
     if not math.isfinite(tol_abs) or tol_abs < 0:
@@ -783,9 +1347,10 @@ def validate_runtime_config() -> None:
 
     if NUMERIC_BACKEND == "yang-mills":
         NUMERIC_BACKEND = "ym"
-    if NUMERIC_BACKEND not in {"sqed", "ym"}:
+    if NUMERIC_BACKEND not in {"sqed", "ym", "gravity"}:
         raise ValueError(
-            f"NUMERIC_BACKEND must be 'sqed' or 'ym', got {NUMERIC_BACKEND!r}"
+            "NUMERIC_BACKEND must be 'sqed', 'ym', or 'gravity', "
+            f"got {NUMERIC_BACKEND!r}"
         )
     if N_PARTICLES < 4:
         raise ValueError("N_PARTICLES must be at least 4 for the configured kinematics generators")
@@ -794,7 +1359,7 @@ def validate_runtime_config() -> None:
     if NUMERIC_BACKEND == "sqed":
         if not math.isfinite(NUMERIC_EQUIV_MASS) or NUMERIC_EQUIV_MASS <= 0:
             raise ValueError("NUMERIC_EQUIV_MASS must be finite and positive")
-    else:
+    elif NUMERIC_BACKEND == "ym":
         if (
             not math.isfinite(NUMERIC_EQUIV_ENERGY_SCALE)
             or NUMERIC_EQUIV_ENERGY_SCALE <= 0
@@ -805,6 +1370,33 @@ def validate_runtime_config() -> None:
                 "DATA_SOURCE='generate' currently creates scalar-QED data; "
                 "use a CSV source when NUMERIC_BACKEND='ym'"
             )
+    else:
+        if N_PARTICLES != 5:
+            raise ValueError(
+                "The gravity backend supports the repository's five-point "
+                f"3s2h/4s1h amplitudes only; got N_PARTICLES={N_PARTICLES}"
+            )
+        if DATA_SOURCE == "generate":
+            raise ValueError(
+                "DATA_SOURCE='generate' currently creates scalar-QED data; "
+                "use a gravity CSV source"
+            )
+        if (
+            GRAVITY_METADATA_CSV_PATH is not None
+            and GRAVITY_PROCESS is not None
+        ):
+            raise ValueError(
+                "Set only one of GRAVITY_METADATA_CSV_PATH and GRAVITY_PROCESS"
+            )
+        if (
+            GRAVITY_PROCESS is not None
+            and GRAVITY_PROCESS not in GRAVITY_PROCESS_SPECS
+        ):
+            raise ValueError(
+                f"Unsupported GRAVITY_PROCESS={GRAVITY_PROCESS!r}; expected "
+                f"one of {sorted(GRAVITY_PROCESS_SPECS)}"
+            )
+        resolve_gravity_reference_modes()
     resolve_numeric_pol_modes()
     resolve_numeric_tolerances()
 
@@ -827,7 +1419,52 @@ def validate_runtime_config() -> None:
             MAX_SEQ_LENGTH_OVERRIDE = None
 
 
-def precompute_kinematics() -> list[tuple[Any, Any]]:
+def precompute_gravity_kinematics() -> dict[str, list[Any]]:
+    """Build reusable complex points matching the dedicated gravity oracle."""
+
+    reference_modes = resolve_gravity_reference_modes()
+    cached: dict[str, list[Any]] = {}
+    for process, spec in GRAVITY_PROCESS_SPECS.items():
+        points: list[Any] = []
+        for sample_idx in range(NUMERIC_EQUIV_SAMPLES):
+            seed = NUMERIC_EQUIV_SEED + sample_idx
+            base = generate_gravity_kinematics(
+                seed=seed,
+                graviton_legs=spec.graviton_legs,
+                reference_mode="cyclic",
+            )
+            points.extend(
+                gravity_with_references(
+                    base,
+                    spec.graviton_legs,
+                    reference_mode=reference_mode,
+                    seed=seed + 11,
+                )
+                for reference_mode in reference_modes
+            )
+            if GRAVITY_GAUGE_SHIFT:
+                shifts = {
+                    leg: complex(0.19 * (leg + 1), -0.07 * leg)
+                    for leg in spec.graviton_legs
+                }
+                points.append(
+                    gravity_with_references(
+                        base,
+                        spec.graviton_legs,
+                        reference_mode="cyclic",
+                        gauge_shifts=shifts,
+                    )
+                )
+        cached[process] = points
+    return cached
+
+
+def precompute_kinematics() -> (
+    list[tuple[Any, Any]] | dict[str, list[Any]]
+):
+    if NUMERIC_BACKEND == "gravity":
+        return precompute_gravity_kinematics()
+
     modes = resolve_numeric_pol_modes()
     cached: list[tuple[Any, Any]] = []
     for pol_mode in modes:
@@ -855,7 +1492,138 @@ def precompute_kinematics() -> list[tuple[Any, Any]]:
     return cached
 
 
-def eval_numeric_expr(expr: str, momenta: Any, pols: Any) -> float:
+def validate_gravity_expression(expr: str, process: str) -> None:
+    """Strictly validate a scalar expression for one gravity process.
+
+    The shared gravity evaluator intentionally retains a permissive historical
+    parser. Model predictions need a stricter boundary so unsupported symbols
+    and free vectors cannot silently evaluate to numeric zero.
+    """
+
+    if process not in GRAVITY_PROCESS_SPECS:
+        raise ValueError(f"Unknown gravity process: {process!r}")
+    spec = GRAVITY_PROCESS_SPECS[process]
+    graviton_legs = set(spec.graviton_legs)
+    tokens = gd._strict_tokenize(expr)
+    gd._validate_strict_token_sequence(tokens)
+
+    depth = 0
+    for token in tokens:
+        if token == "(":
+            depth += 1
+        elif token == ")":
+            depth -= 1
+            if depth < 0:
+                raise ValueError("gravity evaluator: unmatched closing parenthesis")
+    if depth:
+        raise ValueError("gravity evaluator: unmatched opening parenthesis")
+
+    parser = gd._Parser(tokens)
+    tree = parser.parse()
+    if parser.i != len(tokens):
+        raise ValueError(
+            "gravity evaluator: expression was not fully consumed "
+            f"({parser.i}/{len(tokens)} tokens)"
+        )
+
+    def validate_vector(vector: Any) -> None:
+        if vector.tag == "p":
+            if 1 <= vector.idx <= 5:
+                return
+            raise KeyError(f"gravity evaluator: unknown momentum p_{vector.idx}")
+        if vector.tag in {"e", "F"}:
+            if vector.idx in graviton_legs:
+                return
+            raise KeyError(
+                f"gravity evaluator: {vector.tag}_{vector.idx} is not a "
+                f"graviton leg for process {process}"
+            )
+        raise ValueError(
+            f"gravity evaluator: unsupported vector tag {vector.tag!r}"
+        )
+
+    def visit(node: Any) -> None:
+        if isinstance(node, gd._Num):
+            return
+        if isinstance(node, gd._UnaryOp):
+            if node.op != "-":
+                raise ValueError(
+                    f"gravity evaluator: unsupported unary operator {node.op!r}"
+                )
+            visit(node.operand)
+            return
+        if isinstance(node, gd._BinOp):
+            if node.op not in {"+", "-", "*", "/", "**"}:
+                raise ValueError(
+                    f"gravity evaluator: unsupported operator {node.op!r}"
+                )
+            visit(node.left)
+            visit(node.right)
+            return
+        if isinstance(node, gd._Vec):
+            validate_vector(node)
+            raise ValueError(
+                f"gravity evaluator: free vector {node.tag}_{node.idx} is not a scalar"
+            )
+        if isinstance(node, gd._DotChain):
+            parts = node.parts
+            is_trace = bool(parts) and parts[-1] is gd._DotChain._TR
+            vectors = parts[:-1] if is_trace else parts
+            if not vectors or any(
+                not isinstance(vector, gd._Vec) for vector in vectors
+            ):
+                raise ValueError("gravity evaluator: malformed vector chain")
+            for vector in vectors:
+                validate_vector(vector)
+            if is_trace:
+                if len(vectors) < 2 or any(
+                    vector.tag != "F" for vector in vectors
+                ):
+                    raise ValueError(
+                        "gravity evaluator: Tr requires at least two F_i factors"
+                    )
+                return
+            if any(vector.tag == "F" for vector in vectors):
+                valid_f_chain = (
+                    len(vectors) >= 3
+                    and vectors[0].tag == "p"
+                    and vectors[-1].tag == "p"
+                    and all(vector.tag == "F" for vector in vectors[1:-1])
+                )
+                if not valid_f_chain:
+                    raise ValueError(
+                        "gravity evaluator: F_i is only valid inside "
+                        "p·F...·p or Tr(F...)"
+                    )
+                return
+            if len(vectors) != 2 or any(
+                vector.tag not in {"p", "e"} for vector in vectors
+            ):
+                raise ValueError(
+                    "gravity evaluator: a p/e dot product must contain "
+                    "exactly two vectors"
+                )
+            return
+        raise ValueError(
+            "gravity evaluator: unsupported expression node "
+            f"{type(node).__name__}"
+        )
+
+    visit(tree)
+
+
+def eval_numeric_expr(
+    expr: str,
+    momenta: Any,
+    pols: Any,
+    *,
+    gravity_process: str | None = None,
+) -> float | complex:
+    if NUMERIC_BACKEND == "gravity":
+        if gravity_process is None:
+            raise ValueError("Gravity numerical evaluation requires a process")
+        validate_gravity_expression(expr, gravity_process)
+        return eval_gravity_expression(expr, momenta)
     if NUMERIC_BACKEND == "ym":
         # Strict mode prevents unknown/free model symbols from silently becoming
         # numeric zero and producing false-positive equivalence or reranking.
@@ -868,14 +1636,58 @@ def eval_numeric_expr(expr: str, momenta: Any, pols: Any) -> float:
 def numerically_equivalent_exprs(
     expr_a: str,
     expr_b: str,
-    cached_kinematics: list[tuple[Any, Any]],
+    cached_kinematics: list[tuple[Any, Any]] | dict[str, list[Any]],
+    *,
+    gravity_process: str | None = None,
 ) -> bool:
     tol_abs, tol_rel = resolve_numeric_tolerances()
     try:
+        if NUMERIC_BACKEND == "gravity":
+            if gravity_process is None:
+                return False
+            if not isinstance(cached_kinematics, dict):
+                raise TypeError("Gravity kinematics cache must be process-keyed")
+            points = cached_kinematics.get(gravity_process)
+            if not points:
+                raise ValueError(
+                    f"No cached gravity kinematics for {gravity_process!r}"
+                )
+            for kinematics in points:
+                val_a = eval_numeric_expr(
+                    expr_a,
+                    kinematics,
+                    None,
+                    gravity_process=gravity_process,
+                )
+                val_b = eval_numeric_expr(
+                    expr_b,
+                    kinematics,
+                    None,
+                    gravity_process=gravity_process,
+                )
+                if not (
+                    math.isfinite(abs(val_a))
+                    and math.isfinite(abs(val_b))
+                ):
+                    return False
+                if not numeric_values_close(
+                    val_a,
+                    val_b,
+                    tol_abs=tol_abs,
+                    tol_rel=tol_rel,
+                ):
+                    return False
+            return True
+
+        if not isinstance(cached_kinematics, list):
+            raise TypeError("SQED/Yang-Mills kinematics cache must be a list")
         for momenta, pols in cached_kinematics:
             val_a = eval_numeric_expr(expr_a, momenta, pols)
             val_b = eval_numeric_expr(expr_b, momenta, pols)
-            if not (math.isfinite(val_a) and math.isfinite(val_b)):
+            if not (
+                math.isfinite(abs(val_a))
+                and math.isfinite(abs(val_b))
+            ):
                 return False
             if not numeric_values_close(
                 val_a,
@@ -1260,19 +2072,51 @@ def validate_model_sequence_capacity(
 
 def validate_numeric_reference_rows(
     raw_rows: list[dict[str, str]],
-    cached_kinematics: list[tuple[Any, Any]],
+    cached_kinematics: list[tuple[Any, Any]] | dict[str, list[Any]],
+    gravity_processes: list[str | None] | None = None,
 ) -> None:
     """Fail fast when the chosen backend/N cannot evaluate the reference data."""
     if not cached_kinematics:
         raise ValueError("No numerical kinematics were prepared")
-    momenta, pols = cached_kinematics[0]
+    if gravity_processes is None:
+        gravity_processes = [None] * len(raw_rows)
+    if len(gravity_processes) != len(raw_rows):
+        raise ValueError(
+            "Gravity process labels and reference rows have different lengths"
+        )
+
+    if NUMERIC_BACKEND != "gravity":
+        if not isinstance(cached_kinematics, list):
+            raise TypeError("SQED/Yang-Mills kinematics cache must be a list")
+        momenta, pols = cached_kinematics[0]
+
     seen: set[str] = set()
     for row_number, row in enumerate(raw_rows, start=2):
+        gravity_process = gravity_processes[row_number - 2]
+        if NUMERIC_BACKEND == "gravity":
+            if gravity_process is None:
+                raise ValueError(
+                    f"Missing gravity process for reference row {row_number}"
+                )
+            if not isinstance(cached_kinematics, dict):
+                raise TypeError("Gravity kinematics cache must be process-keyed")
+            process_points = cached_kinematics.get(gravity_process)
+            if not process_points:
+                raise ValueError(
+                    f"No cached gravity kinematics for {gravity_process!r}"
+                )
+            momenta, pols = process_points[0], None
+
         for column in ("simple", "scrambled"):
             expr = (row.get(column) or "").strip()
-            if expr in seen:
+            seen_key = (
+                f"{gravity_process}:{expr}"
+                if NUMERIC_BACKEND == "gravity"
+                else expr
+            )
+            if seen_key in seen:
                 continue
-            seen.add(expr)
+            seen.add(seen_key)
             if NUMERIC_BACKEND == "sqed":
                 endpoint_gluon = re.search(
                     rf"\b(?:e|F)_(?:1|{N_PARTICLES})\b",
@@ -1287,7 +2131,12 @@ def validate_numeric_reference_rows(
                         "all-gluon data; use --numeric-backend ym."
                     )
             try:
-                value = eval_numeric_expr(expr, momenta, pols)
+                value = eval_numeric_expr(
+                    expr,
+                    momenta,
+                    pols,
+                    gravity_process=gravity_process,
+                )
             except Exception as exc:
                 raise ValueError(
                     f"Reference {column} expression at {RAW_CSV_PATH}:{row_number} "
@@ -1295,7 +2144,7 @@ def validate_numeric_reference_rows(
                     f"N_PARTICLES={N_PARTICLES}: {type(exc).__name__}: {exc}. "
                     "Check --numeric-backend and --n-particles."
                 ) from exc
-            if not math.isfinite(value):
+            if not math.isfinite(abs(value)):
                 raise ValueError(
                     f"Reference {column} expression at {RAW_CSV_PATH}:{row_number} "
                     "evaluated to a non-finite value on the validation kinematics"
@@ -1309,6 +2158,31 @@ def summarize_mode(rows: list[dict[str, Any]], mode_name: str) -> dict[str, Any]
         "mode": mode_name,
         "numeric_backend": NUMERIC_BACKEND,
         "numeric_pol_modes": ",".join(resolve_numeric_pol_modes()),
+        "gravity_reference_modes": (
+            ",".join(resolve_gravity_reference_modes())
+            if NUMERIC_BACKEND == "gravity"
+            else ""
+        ),
+        "gravity_gauge_shift": (
+            int(GRAVITY_GAUGE_SHIFT)
+            if NUMERIC_BACKEND == "gravity"
+            else ""
+        ),
+        "process_counts": json.dumps(
+            {
+                process: sum(
+                    int(row.get("process") == process) for row in rows
+                )
+                for process in sorted(
+                    {
+                        str(row.get("process"))
+                        for row in rows
+                        if row.get("process")
+                    }
+                )
+            },
+            sort_keys=True,
+        ),
         "numeric_tol_abs": tol_abs,
         "numeric_tol_rel": tol_rel,
         "input_token_limit": (
@@ -1330,6 +2204,9 @@ def summarize_mode(rows: list[dict[str, Any]], mode_name: str) -> dict[str, Any]
             sum(float(r["candidate_valid_decode_count"]) for r in rows) / total if total else 0.0
         ),
         "reranked_top1_replacements": sum(int(r.get("rerank_replaced_top1", 0)) for r in rows),
+        "valid_fallback_replacements": sum(
+            int(r.get("valid_fallback_replaced_top1", 0)) for r in rows
+        ),
         "original_top1_num_eq_simple": sum(
             int(r.get("original_top1_num_eq_simple", r["top1_num_eq_simple"])) for r in rows
         ),
@@ -1390,6 +2267,10 @@ def print_summary(summary: dict[str, Any]) -> None:
         print(
             f"  original top-1 num-eq simple: {summary['original_top1_num_eq_simple']} / {total}"
         )
+    if summary["valid_fallback_replacements"]:
+        print(
+            f"  valid-expression fallbacks  : {summary['valid_fallback_replacements']} / {total}"
+        )
 
 
 def print_simple_summary(summary: dict[str, Any]) -> None:
@@ -1401,6 +2282,7 @@ def print_simple_summary(summary: dict[str, Any]) -> None:
     top1 = summary["top1_num_eq_scrambled"]
     any_beam = summary["any_beam_num_eq_scrambled"]
     rerank = summary["reranked_top1_replacements"]
+    valid_fallbacks = summary["valid_fallback_replacements"]
     orig_top1 = summary["original_top1_num_eq_scrambled"]
     avg_valid = summary["avg_valid_decoded_candidates"]
     avg_pred_tok = summary["avg_pred_token_count_when_correct"]
@@ -1412,6 +2294,8 @@ def print_simple_summary(summary: dict[str, Any]) -> None:
     if rerank:
         gain = top1 - orig_top1
         print(f"  rerank gain     : {gain:+d}  ({pct(gain)})")
+    if valid_fallbacks:
+        print(f"  valid fallbacks : {valid_fallbacks:4d} / {total}  ({pct(valid_fallbacks)})")
     print(f"  avg valid beams : {avg_valid:.1f}")
     if avg_pred_tok > 0:
         print(f"  avg tokens (correct):  pred {avg_pred_tok:.1f}  vs  scrambled {avg_scr_tok:.1f}")
@@ -1423,9 +2307,14 @@ def evaluate_mode(
     dataset: TransformerDataset,
     raw_rows: list[dict[str, str]],
     token_rows: list[dict[str, list[int]]],
-    cached_kinematics: list[tuple[Any, Any]],
+    cached_kinematics: list[tuple[Any, Any]] | dict[str, list[Any]],
+    gravity_processes: list[str | None],
     decode_cfg: DecodeConfig,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if len(gravity_processes) != len(raw_rows):
+        raise ValueError(
+            "Gravity process labels and evaluation rows have different lengths"
+        )
     loader = DataLoader(
         dataset,
         batch_size=BATCH_SIZE,
@@ -1468,6 +2357,7 @@ def evaluate_mode(
             target_scrambled_tokens = tok_row["scrambled"]
             target_simple_expr = raw_row["simple"]
             target_scrambled_expr = raw_row["scrambled"]
+            gravity_process = gravity_processes[row_idx]
 
             top1_full = clean_seq(decoded[i].tolist(), pad_token=SPECIAL_TOKENS["pad"], eos_token=SPECIAL_TOKENS["eos"])
             top1_tokens = strip_special_tokens(top1_full)
@@ -1478,12 +2368,22 @@ def evaluate_mode(
             )
             target_decode_ok, target_simple_decoded, _ = safe_decode_infix(tokenizer, target_simple_tokens)
             original_top1_num_eq_simple = (
-                numerically_equivalent_exprs(original_pred_expr, target_simple_expr, cached_kinematics)
+                numerically_equivalent_exprs(
+                    original_pred_expr,
+                    target_simple_expr,
+                    cached_kinematics,
+                    gravity_process=gravity_process,
+                )
                 if original_top1_decode_ok
                 else False
             )
             original_top1_num_eq_scrambled = (
-                numerically_equivalent_exprs(original_pred_expr, target_scrambled_expr, cached_kinematics)
+                numerically_equivalent_exprs(
+                    original_pred_expr,
+                    target_scrambled_expr,
+                    cached_kinematics,
+                    gravity_process=gravity_process,
+                )
                 if original_top1_decode_ok
                 else False
             )
@@ -1523,10 +2423,20 @@ def evaluate_mode(
                     if target_decode_ok and cand_expr == target_simple_decoded:
                         cand_exact_string = True
                         exact_string_count += 1
-                    if numerically_equivalent_exprs(cand_expr, target_simple_expr, cached_kinematics):
+                    if numerically_equivalent_exprs(
+                        cand_expr,
+                        target_simple_expr,
+                        cached_kinematics,
+                        gravity_process=gravity_process,
+                    ):
                         cand_num_eq_simple = True
                         num_eq_simple_count += 1
-                    if numerically_equivalent_exprs(cand_expr, target_scrambled_expr, cached_kinematics):
+                    if numerically_equivalent_exprs(
+                        cand_expr,
+                        target_scrambled_expr,
+                        cached_kinematics,
+                        gravity_process=gravity_process,
+                    ):
                         cand_num_eq_scrambled = True
                         num_eq_scrambled_count += 1
                 candidate_records.append(
@@ -1543,39 +2453,46 @@ def evaluate_mode(
                     }
                 )
 
-            selected = candidate_records[0]
-            if decode_cfg.rerank_numerical_equiv:
-                equivalent_candidates = [
-                    record
-                    for record in candidate_records
-                    if record["decode_ok"] and record["num_eq_scrambled"]
-                ]
-                if equivalent_candidates:
-                    selected = min(
-                        equivalent_candidates,
-                        key=lambda record: (len(record["tokens"]), record["index"]),
-                    )
+            selected, selection_reason = select_candidate_for_reporting(
+                candidate_records,
+                rerank_numerical_equiv=decode_cfg.rerank_numerical_equiv,
+            )
 
             top1_tokens = selected["tokens"]
             top1_decode_ok = selected["decode_ok"]
             pred_expr = selected["expr"]
             pred_decode_error = selected["decode_error"]
+            pred_display = prediction_text_for_display(tokenizer, selected)
             top1_exact_token_match = selected["exact_token"]
             top1_exact_string_match = selected["exact_string"]
             top1_num_eq_simple = selected["num_eq_simple"]
             top1_num_eq_scrambled = selected["num_eq_scrambled"]
-            rerank_replaced_top1 = int(selected["index"] != 0)
+            selection_replaced_top1 = int(selected["index"] != 0)
+            rerank_replaced_top1 = int(
+                selection_replaced_top1
+                and selection_reason == "numerically_equivalent_rerank"
+            )
+            valid_fallback_replaced_top1 = int(
+                selection_replaced_top1
+                and selection_reason == "valid_decode_fallback"
+            )
+            original_top1_display = prediction_text_for_display(
+                tokenizer,
+                candidate_records[0],
+            )
 
             detail_rows.append(
                 {
                     "row_id": row_idx,
                     "mode": decode_cfg.name,
                     "numeric_backend": NUMERIC_BACKEND,
+                    "process": gravity_process or "",
                     "input_scrambled": target_scrambled_expr,
                     "target_simple": target_simple_expr,
                     "target_simple_token_count": len(target_simple_tokens),
                     "target_scrambled_token_count": len(target_scrambled_tokens),
                     "top1_prediction_expr": pred_expr,
+                    "top1_prediction_display": pred_display,
                     "top1_prediction_tokens": json.dumps(top1_tokens),
                     "top1_prediction_token_count": len(top1_tokens),
                     "top1_decode_ok": int(top1_decode_ok),
@@ -1584,10 +2501,14 @@ def evaluate_mode(
                     "top1_exact_string_match": int(top1_exact_string_match),
                     "top1_num_eq_simple": int(top1_num_eq_simple),
                     "top1_num_eq_scrambled": int(top1_num_eq_scrambled),
+                    "selection_reason": selection_reason,
+                    "selection_replaced_top1": selection_replaced_top1,
                     "rerank_numerical_equiv": int(decode_cfg.rerank_numerical_equiv),
                     "rerank_replaced_top1": rerank_replaced_top1,
+                    "valid_fallback_replaced_top1": valid_fallback_replaced_top1,
                     "rerank_selected_candidate_index": selected["index"],
                     "original_top1_prediction_expr": original_pred_expr,
+                    "original_top1_prediction_display": original_top1_display,
                     "original_top1_decode_ok": int(original_top1_decode_ok),
                     "original_top1_decode_error": original_pred_decode_error or "",
                     "original_top1_num_eq_simple": int(original_top1_num_eq_simple),
@@ -1644,6 +2565,7 @@ def write_human_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         pred_tokens            - token count of top_pred
         scrambled_tokens       - token count of scrambled input
         decode_ok              - yes/no: top_pred decoded without error
+        prediction_source      - model top-1, numerical rerank, or valid fallback
     """
     if not rows:
         return
@@ -1658,6 +2580,7 @@ def write_human_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "pred_tokens",
         "scrambled_tokens",
         "decode_ok",
+        "prediction_source",
     ]
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -1666,7 +2589,10 @@ def write_human_csv(path: Path, rows: list[dict[str, Any]]) -> None:
             writer.writerow({
                 "simple": row["target_simple"],
                 "scrambled": row["input_scrambled"],
-                "top_pred": row["top1_prediction_expr"],
+                "top_pred": row.get(
+                    "top1_prediction_display",
+                    row["top1_prediction_expr"],
+                ),
                 "correct": "yes" if int(row["top1_num_eq_scrambled"]) else "no",
                 "any_correct": "yes" if int(row["any_beam_num_eq_scrambled"]) else "no",
                 "candidates_checked": row["candidate_sequences_checked"],
@@ -1674,6 +2600,7 @@ def write_human_csv(path: Path, rows: list[dict[str, Any]]) -> None:
                 "pred_tokens": row["top1_prediction_token_count"],
                 "scrambled_tokens": row["target_scrambled_token_count"],
                 "decode_ok": "yes" if int(row["top1_decode_ok"]) else "no",
+                "prediction_source": row.get("selection_reason", "model_top1"),
             })
 
 
@@ -1796,9 +2723,22 @@ def print_examples(detail_rows: list[dict[str, Any]], count: int) -> None:
         print(f"  row {row['row_id']} [{row['mode']}]")
         print(f"    target simple : {row['target_simple'][:180]}")
         print(f"    input scram   : {row['input_scrambled'][:180]}")
-        print(f"    top1 pred     : {row['top1_prediction_expr'][:180]}")
-        if int(row.get("rerank_replaced_top1", 0)):
-            print(f"    original top1 : {row['original_top1_prediction_expr'][:180]}")
+        top1_display = row.get(
+            "top1_prediction_display",
+            row["top1_prediction_expr"],
+        )
+        print(f"    top1 pred     : {top1_display[:180]}")
+        selection_reason = row.get("selection_reason", "model_top1")
+        if selection_reason != "model_top1":
+            print(f"    selection     : {selection_reason}")
+        if int(row.get("selection_replaced_top1", row.get("rerank_replaced_top1", 0))):
+            original_display = row.get(
+                "original_top1_prediction_display",
+                row["original_top1_prediction_expr"],
+            )
+            print(f"    original top1 : {original_display[:180]}")
+        if not int(row["top1_decode_ok"]):
+            print(f"    decode error  : {row['top1_decode_error'][:180]}")
         print(
             f"    top1 metrics  : token={row['top1_exact_token_match']} "
             f"string={row['top1_exact_string_match']} "
@@ -1813,7 +2753,7 @@ def print_examples(detail_rows: list[dict[str, Any]], count: int) -> None:
         )
 
 
-def main() -> None:
+def _run_evaluation() -> None:
     args = parse_args()
     apply_cli_config(args)
     validate_runtime_config()
@@ -1829,6 +2769,7 @@ def main() -> None:
     token_rows = load_token_rows(TOK_CSV_PATH)
     if len(raw_rows) != len(token_rows):
         raise ValueError("Raw and tokenised row counts do not match")
+    gravity_processes = resolve_gravity_processes(raw_rows)
     max_input_tokens = validate_input_token_rows(token_rows)
 
     tokenizer = ScatteringAmplitudeTokenizer(
@@ -1845,24 +2786,42 @@ def main() -> None:
 
     pol_modes = resolve_numeric_pol_modes()
     tol_abs, tol_rel = resolve_numeric_tolerances()
-    scale_name = "mass" if NUMERIC_BACKEND == "sqed" else "energy_scale"
-    scale_value = (
-        NUMERIC_EQUIV_MASS
-        if NUMERIC_BACKEND == "sqed"
-        else NUMERIC_EQUIV_ENERGY_SCALE
-    )
     input_limit_text = "unlimited" if INPUT_TOKEN_LIMIT is None else str(INPUT_TOKEN_LIMIT)
     print(
         f"Input token limit: {input_limit_text}; longest input: "
         f"{max_input_tokens} content / {max_input_tokens + 2} with BOS/EOS"
     )
-    print(
-        f"Numerical evaluator: {NUMERIC_BACKEND} "
-        f"({scale_name}={scale_value}; pol_modes={','.join(pol_modes)}; "
-        f"tol_abs={tol_abs:g}; tol_rel={tol_rel:g})"
-    )
+    if NUMERIC_BACKEND == "gravity":
+        process_counts = {
+            process: gravity_processes.count(process)
+            for process in sorted(GRAVITY_PROCESS_SPECS)
+            if process in gravity_processes
+        }
+        print(
+            "Numerical evaluator: gravity "
+            f"(processes={process_counts}; "
+            f"reference_modes={','.join(resolve_gravity_reference_modes())}; "
+            f"gauge_shift={GRAVITY_GAUGE_SHIFT}; "
+            f"tol_abs={tol_abs:g}; tol_rel={tol_rel:g})"
+        )
+    else:
+        scale_name = "mass" if NUMERIC_BACKEND == "sqed" else "energy_scale"
+        scale_value = (
+            NUMERIC_EQUIV_MASS
+            if NUMERIC_BACKEND == "sqed"
+            else NUMERIC_EQUIV_ENERGY_SCALE
+        )
+        print(
+            f"Numerical evaluator: {NUMERIC_BACKEND} "
+            f"({scale_name}={scale_value}; pol_modes={','.join(pol_modes)}; "
+            f"tol_abs={tol_abs:g}; tol_rel={tol_rel:g})"
+        )
     cached_kinematics = precompute_kinematics()
-    validate_numeric_reference_rows(raw_rows, cached_kinematics)
+    validate_numeric_reference_rows(
+        raw_rows,
+        cached_kinematics,
+        gravity_processes,
+    )
     model = load_model(device)
     validate_model_sequence_capacity(model, dataset)
 
@@ -1877,6 +2836,7 @@ def main() -> None:
             raw_rows,
             token_rows,
             cached_kinematics,
+            gravity_processes,
             decode_cfg,
         )
         detail_path = DATA_TESTING_DIR / OUTPUT_SUBDIR / f"{DATA_FILENAME_STEM}_{decode_cfg.name}_results.csv"
@@ -1900,5 +2860,58 @@ def main() -> None:
     print(f"Total wall time: {time.perf_counter() - t0:.2f}s")
 
 
+def main() -> int:
+    """Run the evaluator while mirroring all Python terminal output to a PDF."""
+
+    started_at = datetime.now().astimezone()
+    exit_code = 0
+    pdf_available = False
+
+    with capture_terminal_output() as transcript:
+        try:
+            require_reportlab()
+            pdf_available = True
+            _run_evaluation()
+        except SystemExit as exc:
+            if exc.code is None:
+                exit_code = 0
+            elif isinstance(exc.code, int):
+                exit_code = exc.code
+            else:
+                print(str(exc.code), file=sys.stderr)
+                exit_code = 1
+        except KeyboardInterrupt:
+            traceback.print_exc()
+            exit_code = 130
+        except BaseException:
+            traceback.print_exc()
+            exit_code = 1
+
+        if pdf_available:
+            pdf_path = evaluation_pdf_path(started_at)
+            print(f"\nTerminal output PDF: {pdf_path}")
+            try:
+                write_terminal_output_pdf(
+                    pdf_path,
+                    transcript.getvalue(),
+                    started_at,
+                )
+            except BaseException:
+                print(
+                    f"Failed to write terminal output PDF to {pdf_path}:",
+                    file=sys.stderr,
+                )
+                traceback.print_exc()
+                if exit_code == 0:
+                    exit_code = 1
+        else:
+            print(
+                "Terminal output PDF was not created because ReportLab is unavailable.",
+                file=sys.stderr,
+            )
+
+    return exit_code
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
