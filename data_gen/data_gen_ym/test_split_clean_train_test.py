@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import gzip
 import json
+import os
 import random
 import tempfile
 import unittest
@@ -285,6 +286,89 @@ class SplitCleanTrainTestTests(unittest.TestCase):
                 self.assertEqual(path.read_text(encoding="utf-8"), content)
             self.assertEqual(list(path.parent.glob(".*.tmp")), [])
 
+    def test_publish_failure_restores_symlink_destinations(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            args = self._args(directory, rows=6, test_size=2)
+            args.overwrite = True
+            destinations = [
+                path
+                for n_particles in (4, 5)
+                for path in splitter.output_paths(
+                    args.output_dir,
+                    n_particles=n_particles,
+                    source_rows=6,
+                    test_size=2,
+                ).all()
+            ]
+            for index, path in enumerate(destinations):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(f"old output {index}\n", encoding="utf-8")
+
+            symlink_path = destinations[0]
+            symlink_path.unlink()
+            symlink_target = args.output_dir / "original-output.csv"
+            symlink_target.write_text("original target\n", encoding="utf-8")
+            symlink_path.symlink_to(symlink_target.name)
+
+            real_publish = splitter._publish
+            calls = 0
+
+            def fail_during_publish(temp_path, destination, *, overwrite):
+                nonlocal calls
+                calls += 1
+                if calls == 3:
+                    raise OSError("injected publication failure")
+                return real_publish(
+                    temp_path,
+                    destination,
+                    overwrite=overwrite,
+                )
+
+            with mock.patch.object(
+                splitter,
+                "_publish",
+                side_effect=fail_during_publish,
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "injected publication failure"
+                ):
+                    splitter.split_datasets(args)
+
+            self.assertTrue(symlink_path.is_symlink())
+            self.assertEqual(os.readlink(symlink_path), symlink_target.name)
+            self.assertEqual(
+                symlink_path.read_text(encoding="utf-8"),
+                "original target\n",
+            )
+            self.assertEqual(list(args.output_dir.glob(".*.tmp")), [])
+
+    def test_mid_group_temporary_failure_leaks_no_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            args = self._args(directory, rows=6, test_size=2)
+            real_temporary_sibling = splitter._temporary_sibling
+            calls = 0
+
+            def fail_during_allocation(destination):
+                nonlocal calls
+                calls += 1
+                if calls == 3:
+                    raise OSError("injected temporary allocation failure")
+                return real_temporary_sibling(destination)
+
+            with mock.patch.object(
+                splitter,
+                "_temporary_sibling",
+                side_effect=fail_during_allocation,
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "injected temporary allocation failure"
+                ):
+                    splitter.split_datasets(args)
+
+            self.assertEqual(list(args.output_dir.glob(".*.tmp")), [])
+
     def test_no_report_falls_back_to_counting(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir)
@@ -295,6 +379,61 @@ class SplitCleanTrainTestTests(unittest.TestCase):
             summaries = splitter.split_datasets(args)
             self.assertEqual([summary.source_rows for summary in summaries], [7, 7])
             self.assertEqual([summary.train_rows for summary in summaries], [5, 5])
+
+    def test_matching_report_without_row_counts_falls_back_to_counting(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            args = self._args(directory, rows=7, test_size=2)
+            args.expected_rows_4pt = None
+            report_path = splitter._report_path_for(args.raw_4pt)
+            assert report_path is not None
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "outputs": {
+                            "raw": {"path": str(args.raw_4pt.resolve())},
+                            "tokenized": {
+                                "path": str(args.tokenised_4pt.resolve())
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            summaries = splitter.split_datasets(args)
+
+            self.assertEqual(summaries[0].source_rows, 7)
+            self.assertEqual(summaries[0].train_rows, 5)
+
+    def test_matching_legacy_report_without_tokenizer_size_uses_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            raw_path = directory / "legacy.csv"
+            token_path = directory / "legacy_tok.csv"
+            raw_path.touch()
+            token_path.touch()
+            report_path = splitter._report_path_for(raw_path)
+            assert report_path is not None
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "outputs": {
+                            "raw": {"path": str(raw_path.resolve())},
+                            "tokenized": {"path": str(token_path.resolve())},
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            pair = splitter.InputPair(
+                n_particles=4,
+                raw=raw_path,
+                tokenised=token_path,
+                seed=401,
+            )
+
+            self.assertEqual(splitter._tokenizer_size(pair), 8)
 
     def test_reports_infer_independent_tokenizer_sizes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

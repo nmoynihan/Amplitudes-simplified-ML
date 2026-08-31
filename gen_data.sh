@@ -2,6 +2,7 @@
 set -euo pipefail
 
 MODE="${1:-${MODE:-train_eval}}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 N_PARTICLES="${N_PARTICLES:-4}"
 SAMPLES="${SAMPLES:-5000}"
@@ -32,6 +33,12 @@ SQED_COVER_OLD_STYLE_PROBABILITY="${SQED_COVER_OLD_STYLE_PROBABILITY:-0.45}"
 SQED_COVER_UNIT_PROBABILITY="${SQED_COVER_UNIT_PROBABILITY:-0.6}"
 SQED_COVER_SPURIOUS_REPEAT_PROBABILITY="${SQED_COVER_SPURIOUS_REPEAT_PROBABILITY:-0.15}"
 SQED_COVER_SCALAR_POWER_PROBABILITY="${SQED_COVER_SCALAR_POWER_PROBABILITY:-0.1}"
+SQED_COVER_MIN_TERMS="${SQED_COVER_MIN_TERMS:-1}"
+SQED_COVER_MAX_TERMS="${SQED_COVER_MAX_TERMS:-2}"
+SQED_COVER_MIN_SCR="${SQED_COVER_MIN_SCR:-$MIN_SCR}"
+SQED_COVER_MAX_SCR="${SQED_COVER_MAX_SCR:-$MAX_SCR}"
+SQED_COVER_SEED_OFFSET="${SQED_COVER_SEED_OFFSET:-1000003}"
+HARD_SEED_OFFSET="${HARD_SEED_OFFSET:-2000006}"
 SQED_COVER_SCRAMBLES="${SQED_COVER_SCRAMBLES:-multiply_one ward momentum commute_dot ratio}"
 BROAD_SCRAMBLES="${BROAD_SCRAMBLES:-all}"
 HARD_SCRAMBLES="${HARD_SCRAMBLES:-all}"
@@ -39,6 +46,7 @@ HARD_MIN_TERMS="${HARD_MIN_TERMS:-3}"
 HARD_MAX_TERMS="${HARD_MAX_TERMS:-$MAX_TERMS}"
 HARD_MIN_SCR="${HARD_MIN_SCR:-3}"
 HARD_MAX_SCR="${HARD_MAX_SCR:-$MAX_SCR}"
+HARD_OLD_STYLE_PROBABILITY="${HARD_OLD_STYLE_PROBABILITY:-$OLD_STYLE_PROBABILITY}"
 
 # Optional boolean switches. Accept 1/true/yes/on.
 NO_PROGRESS="${NO_PROGRESS:-0}"
@@ -56,10 +64,11 @@ LOG_OUT="${LOG_OUT:-gen_data_${N_PARTICLES}pt_os.log}"
 
 mkdir -p "$(dirname "$RAW_OUT")"
 mkdir -p "$(dirname "$TOK_OUT")"
+mkdir -p "$(dirname "$LOG_OUT")"
 
 truthy() {
-  case "${1,,}" in
-    1|true|yes|y|on) return 0 ;;
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|y|Y|on|ON) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -95,7 +104,7 @@ run_generator() {
   local log_out="$5"
   shift 5
 
-  python3 data_gen/gen_data.py "$N_PARTICLES" \
+  "$PYTHON_BIN" data_gen/gen_data.py "$N_PARTICLES" \
     --dataset-kind "$DATASET_KIND" \
     --samples "$samples" \
     --min-scr "$MIN_SCR" \
@@ -115,11 +124,11 @@ run_generator() {
     --tok-out "$tok_out" \
     --log-out "$log_out" \
     "$@" \
-    "${EXTRA_ARGS[@]}"
+    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 }
 
 tokenise_final_csv() {
-  python3 - "$RAW_OUT" "$TOK_OUT" "$TOKENIZER_MAX_PARTICLES" "$MAX_TOKENS" <<'PY'
+  "$PYTHON_BIN" - "$RAW_OUT" "$TOK_OUT" "$TOKENIZER_MAX_PARTICLES" "$MAX_TOKENS" <<'PY'
 import sys
 from pathlib import Path
 
@@ -168,11 +177,13 @@ if truthy "$MIXED_PROFILE"; then
   if [[ "$SQED_COVER_SAMPLES" -gt 0 ]]; then
     read -r -a SQED_COVER_SCRAMBLE_NAMES <<< "$SQED_COVER_SCRAMBLES"
     run_generator \
-      "$SQED_COVER_SAMPLES" "$((SEED + 1000003))" \
+      "$SQED_COVER_SAMPLES" "$((SEED + SQED_COVER_SEED_OFFSET))" \
       "$TMP_DIR/sqed_cover.csv" "$TMP_DIR/sqed_cover_tok.csv" "$TMP_DIR/sqed_cover.log" \
       --no-tokenise \
-      --min-terms 1 \
-      --max-terms 2 \
+      --min-terms "$SQED_COVER_MIN_TERMS" \
+      --max-terms "$SQED_COVER_MAX_TERMS" \
+      --min-scr "$SQED_COVER_MIN_SCR" \
+      --max-scr "$SQED_COVER_MAX_SCR" \
       --old-style-probability "$SQED_COVER_OLD_STYLE_PROBABILITY" \
       --unit-probability "$SQED_COVER_UNIT_PROBABILITY" \
       --spurious-repeat-probability "$SQED_COVER_SPURIOUS_REPEAT_PROBABILITY" \
@@ -185,13 +196,14 @@ if truthy "$MIXED_PROFILE"; then
   if [[ "$HARD_SAMPLES" -gt 0 ]]; then
     read -r -a HARD_SCRAMBLE_NAMES <<< "$HARD_SCRAMBLES"
     run_generator \
-      "$HARD_SAMPLES" "$((SEED + 2000006))" \
+      "$HARD_SAMPLES" "$((SEED + HARD_SEED_OFFSET))" \
       "$TMP_DIR/hard.csv" "$TMP_DIR/hard_tok.csv" "$TMP_DIR/hard.log" \
       --no-tokenise \
       --min-terms "$HARD_MIN_TERMS" \
       --max-terms "$HARD_MAX_TERMS" \
       --min-scr "$HARD_MIN_SCR" \
       --max-scr "$HARD_MAX_SCR" \
+      --old-style-probability "$HARD_OLD_STYLE_PROBABILITY" \
       --scrambles "${HARD_SCRAMBLE_NAMES[@]}"
     tail -n +2 "$TMP_DIR/hard.csv" >> "$RAW_OUT"
     cat "$TMP_DIR/hard.log" >> "$LOG_OUT"

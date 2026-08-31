@@ -17,7 +17,9 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -185,6 +187,50 @@ def _write_manifest(
             temporary.unlink()
 
 
+def _staging_sibling(destination: Path) -> Path:
+    """Reserve a sibling staging path while preserving the final suffix.
+
+    The clean generator decides whether to gzip an output from its suffix, so
+    the staging raw/tokenized files must still end in ``.gz``.  Reserving the
+    name up front also prevents two concurrent launchers from selecting the
+    same staging path; the per-set generator is explicitly allowed to replace
+    this empty placeholder.
+    """
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(
+        prefix=f".{destination.name}.stage.",
+        suffix=destination.suffix,
+        dir=destination.parent,
+    )
+    os.close(descriptor)
+    return Path(name)
+
+
+def _retarget_report_outputs(
+    report: dict[str, Any],
+    *,
+    raw_path: Path,
+    token_path: Path,
+) -> None:
+    """Replace staging paths in a generator report with public destinations."""
+
+    try:
+        raw_output = report["outputs"]["raw"]
+        token_output = report["outputs"]["tokenized"]
+    except (KeyError, TypeError) as exc:
+        raise RuntimeError("clean generator returned a malformed output report") from exc
+    if not isinstance(raw_output, dict) or not isinstance(token_output, dict):
+        raise RuntimeError("clean generator returned a malformed output report")
+
+    resolved_raw = str(_core._absolute_output_path(raw_path))
+    resolved_token = str(_core._absolute_output_path(token_path))
+    raw_output["path"] = resolved_raw
+    token_output["path"] = resolved_token
+    report["raw_output"] = resolved_raw
+    report["token_output"] = resolved_token
+
+
 def generate_test_sets(
     args: argparse.Namespace,
 ) -> tuple[dict[str, Any], Path]:
@@ -219,56 +265,93 @@ def generate_test_sets(
     if len(resolved) != len(set(resolved)):
         raise ValueError("test CSV, report, and manifest paths must be distinct")
     if not args.overwrite:
-        existing = [path for path in all_destinations if path.exists()]
+        existing = [
+            path for path in all_destinations if os.path.lexists(path)
+        ]
         if existing:
             raise FileExistsError(
                 "test output already exists (use --overwrite to replace): "
                 + ", ".join(str(path) for path in existing)
             )
 
-    set_reports: dict[str, Any] = {}
-    for n_particles in selected:
-        raw_path, token_path, report_path = paths_by_point[n_particles]
-        generation_args = _generation_args(
-            args,
-            n_particles=n_particles,
-            raw_path=raw_path,
-            token_path=token_path,
-            report_path=report_path,
-        )
-        stats, report = _core.generate_to_files(
-            generation_args,
-            n_particles=n_particles,
-            generator_name=f"clean_{n_particles}pt_yang_mills_test",
-        )
-        if stats.accepted != args.samples:
-            raise RuntimeError(
-                f"{n_particles}PT generator returned {stats.accepted}/"
-                f"{args.samples} requested test rows"
-            )
-        set_reports[f"{n_particles}pt"] = {
-            "seed": generation_args.seed,
-            "raw_output": report["outputs"]["raw"],
-            "tokenized_output": report["outputs"]["tokenized"],
-            "report_path": str(report_path.resolve()),
-            "stats": report["stats"],
-        }
+    # Generate every artifact under a reserved sibling name first.  Only once
+    # both particle counts and the combined manifest are complete do we publish
+    # the whole set.  This prevents a failed 5PT run from leaving a new 4PT set
+    # behind and lets overwrite failures restore the previous held-out release.
+    staging_by_destination: dict[Path, Path] = {}
+    try:
+        for destination in all_destinations:
+            staging_by_destination[destination] = _staging_sibling(destination)
 
-    manifest = {
-        "manifest_schema_version": 1,
-        "dataset_role": "held_out_test",
-        "evaluate_model_input": "raw_output",
-        "evaluate_model_existing_csv_max_rows": args.samples,
-        "samples_per_point": args.samples,
-        "selected_points": list(selected),
-        "sets": set_reports,
-    }
-    _write_manifest(
-        manifest_path,
-        manifest,
-        overwrite=args.overwrite,
-    )
-    return manifest, manifest_path
+        set_reports: dict[str, Any] = {}
+        for n_particles in selected:
+            raw_path, token_path, report_path = paths_by_point[n_particles]
+            generation_args = _generation_args(
+                args,
+                n_particles=n_particles,
+                raw_path=staging_by_destination[raw_path],
+                token_path=staging_by_destination[token_path],
+                report_path=staging_by_destination[report_path],
+            )
+            # Staging names are reserved as empty files.  Replacing those
+            # placeholders is independent of the user's final overwrite choice.
+            generation_args.overwrite = True
+            stats, report = _core.generate_to_files(
+                generation_args,
+                n_particles=n_particles,
+                generator_name=f"clean_{n_particles}pt_yang_mills_test",
+            )
+            if stats.accepted != args.samples:
+                raise RuntimeError(
+                    f"{n_particles}PT generator returned {stats.accepted}/"
+                    f"{args.samples} requested test rows"
+                )
+
+            _retarget_report_outputs(
+                report,
+                raw_path=raw_path,
+                token_path=token_path,
+            )
+            _write_manifest(
+                staging_by_destination[report_path],
+                report,
+                overwrite=True,
+            )
+            set_reports[f"{n_particles}pt"] = {
+                "seed": generation_args.seed,
+                "raw_output": report["outputs"]["raw"],
+                "tokenized_output": report["outputs"]["tokenized"],
+                "report_path": str(_core._absolute_output_path(report_path)),
+                "stats": report["stats"],
+            }
+
+        manifest = {
+            "manifest_schema_version": 1,
+            "dataset_role": "held_out_test",
+            "evaluate_model_input": "raw_output",
+            "evaluate_model_existing_csv_max_rows": args.samples,
+            "samples_per_point": args.samples,
+            "selected_points": list(selected),
+            "sets": set_reports,
+        }
+        _write_manifest(
+            staging_by_destination[manifest_path],
+            manifest,
+            overwrite=True,
+        )
+        _core._publish_all(
+            [staging_by_destination[path] for path in all_destinations],
+            all_destinations,
+            overwrite=args.overwrite,
+        )
+        staging_by_destination.clear()
+        return manifest, manifest_path
+    finally:
+        for staging_path in staging_by_destination.values():
+            try:
+                staging_path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def main(argv: Sequence[str] | None = None) -> int:

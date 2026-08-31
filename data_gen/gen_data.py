@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import ast as _ast
 import csv
+import hashlib
 import json
 import math
 import multiprocessing as mp
@@ -29,14 +30,23 @@ import random
 import re
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Iterable, Sequence
 
 import sympy as sp
 
 try:
+    from .filter_antisymmetry_zeros import (
+        OnShellAssumptions,
+        analyze_simple_expression,
+    )
     from .kinematics import generate_kinematics, mdot
     from .numeric_utils import numeric_values_close
 except ImportError:  # Preserve direct ``python data_gen/gen_data.py`` use.
+    from filter_antisymmetry_zeros import (
+        OnShellAssumptions,
+        analyze_simple_expression,
+    )
     from kinematics import generate_kinematics, mdot
     from numeric_utils import numeric_values_close
 
@@ -1229,21 +1239,42 @@ def _ast_to_infix(node, parent_prec: int = 0, is_right: bool = False) -> str:
 
 
 def _chain_endpoints(Fs: Sequence[int], N: int) -> tuple[int, int]:
-    """Choose endpoints for p·F...F·p chains without over-restricting them.
+    """Choose endpoints for a nonzero p·F...F·p chain.
 
     Gauge invariance only forces the immediately adjacent contractions
     p_j·F_j and F_j·p_j to vanish for a massless transverse photon j.  Older
     data sources also allow endpoints to be photons appearing elsewhere inside
-    the chain, and allow the two endpoints to be the same momentum.  Therefore
-    we exclude only the first photon from the left endpoint and only the last
-    photon from the right endpoint.
+    the chain.  Equal endpoints remain valid except when an odd F word is a
+    palindrome, or for a three-F word whose middle field label equals both
+    endpoints.  In the latter case, expanding that middle field leaves an odd
+    antisymmetric chain contracted with the same momentum on either side.
     """
     if not Fs:
         raise ValueError("F-chain must contain at least one photon")
     first, last = Fs[0], Fs[-1]
     left_pool = [x for x in range(1, N + 1) if x != first]
     right_pool = [x for x in range(1, N + 1) if x != last]
-    return random.choice(left_pool), random.choice(right_pool)
+    word = tuple(Fs)
+    candidates = [
+        (left, right)
+        for left in left_pool
+        for right in right_pool
+        if not (
+            (
+                left == right
+                and len(word) % 2 == 1
+                and word == tuple(reversed(word))
+            )
+            or (
+                left == right
+                and len(word) == 3
+                and word[1] == left
+            )
+        )
+    ]
+    if not candidates:
+        raise ValueError("no nonzero endpoints are available for the F-chain")
+    return random.choice(candidates)
 
 
 def _singleF_block(j: int, N: int) -> tuple[str, BlockSpec]:
@@ -1669,7 +1700,7 @@ def _physical_denominator_factors(
         # expansion-spurious copy.
         repeat_candidates = [
             term
-            for term in set(factors)
+            for term in sorted(set(factors))
             if spurious_budget(term) > 0 and can_add(term)
         ]
         if repeat_candidates and random.random() < repeat_probability:
@@ -2223,10 +2254,36 @@ def _validate_pair(
     tol_rel: float = 1e-8,
     tol_abs: float = 1e-10,
     pol_modes: Sequence[str] = DEFAULT_VALIDATION_POL_MODES,
+    require_nonzero: bool = False,
+    nonzero_tol: float = 1e-12,
 ) -> tuple[bool, str]:
+    saw_nonzero_value = False
     for pol_mode in pol_modes:
-        for _ in range(n_checks):
-            mom, pol = generate_kinematics(N, M=M, pol_mode=pol_mode)
+        for check_index in range(n_checks):
+            # Validation points are derived from the expressions themselves so
+            # generation is reproducible across worker counts and process
+            # scheduling.  Python's built-in hash is intentionally avoided
+            # because it is salted independently in each interpreter.
+            seed_material = "\0".join(
+                (
+                    str(N),
+                    format(M, ".17g"),
+                    pol_mode,
+                    str(check_index),
+                    expr_a,
+                    expr_b,
+                )
+            ).encode("utf-8")
+            validation_seed = int.from_bytes(
+                hashlib.blake2b(seed_material, digest_size=8).digest(),
+                "big",
+            )
+            mom, pol = generate_kinematics(
+                N,
+                M=M,
+                pol_mode=pol_mode,
+                seed=validation_seed,
+            )
             try:
                 va = eval_infix_numeric(expr_a, mom, pol, strict=True)
                 vb = eval_infix_numeric(expr_b, mom, pol, strict=True)
@@ -2234,6 +2291,8 @@ def _validate_pair(
                 return False, f"{pol_mode}:exception:{exc}"
             if not (math.isfinite(va) and math.isfinite(vb)):
                 return False, f"{pol_mode}:non-finite"
+            if abs(va) > nonzero_tol or abs(vb) > nonzero_tol:
+                saw_nonzero_value = True
             diff = abs(va - vb)
             if not numeric_values_close(
                 va,
@@ -2242,6 +2301,8 @@ def _validate_pair(
                 tol_rel=tol_rel,
             ):
                 return False, f"{pol_mode}:mismatch:{diff:.3e}"
+    if require_nonzero and not saw_nonzero_value:
+        return False, "all-checks:numerically-zero"
     return True, ""
 
 
@@ -2283,6 +2344,24 @@ def _format_poly(terms: Sequence[str], coeffs: Sequence[int]) -> str:
     return "".join(pieces)
 
 
+@lru_cache(maxsize=None)
+def _sqed_onshell_assumptions(N: int) -> OnShellAssumptions:
+    """Return label-scoped SQED assumptions without massless scalar endpoints."""
+
+    photon_labels = frozenset(photon_legs(N))
+    return OnShellAssumptions(photon_labels, photon_labels)
+
+
+def _is_manifestly_clean_sqed_target(expression: str, N: int) -> bool:
+    """Reject targets containing any summand proven to vanish exactly."""
+
+    analysis = analyze_simple_expression(
+        expression,
+        assumptions=_sqed_onshell_assumptions(N),
+    )
+    return analysis.classification == "clean"
+
+
 def _build_base_expression(
     N: int,
     *,
@@ -2309,6 +2388,8 @@ def _build_base_expression(
         denom_repeat_probability=denom_repeat_probability,
         scalar_power_probability=scalar_power_probability,
     )
+    if not _is_manifestly_clean_sqed_target(first_simple, N):
+        return None
     if not _has_supported_physical_poles(first_simple):
         return None
     if manifest_mass_dimension(first_simple) != 4 - N:
@@ -2327,6 +2408,8 @@ def _build_base_expression(
                 denom_repeat_probability=denom_repeat_probability,
                 scalar_power_probability=scalar_power_probability,
             )
+            if not _is_manifestly_clean_sqed_target(cand_simple, N):
+                continue
             if not _has_supported_physical_poles(cand_simple):
                 continue
             if manifest_mass_dimension(cand_simple) != 4 - N:
@@ -2338,7 +2421,10 @@ def _build_base_expression(
         else:
             return None
 
-    return _format_poly(simple_terms, coeffs), _format_poly(expanded_terms, coeffs)
+    simple_expression = _format_poly(simple_terms, coeffs)
+    if not _is_manifestly_clean_sqed_target(simple_expression, N):
+        return None
+    return simple_expression, _format_poly(expanded_terms, coeffs)
 
 
 def build_dataset(
@@ -2418,7 +2504,14 @@ def build_dataset(
         simple_expr, expanded_expr = built
 
         if validate:
-            ok, _ = _validate_pair(simple_expr, expanded_expr, N, M, pol_modes=validation_pol_modes)
+            ok, _ = _validate_pair(
+                simple_expr,
+                expanded_expr,
+                N,
+                M,
+                pol_modes=validation_pol_modes,
+                require_nonzero=True,
+            )
             if not ok:
                 stats["parity_fail"] += 1
                 continue
@@ -2559,7 +2652,14 @@ def build_step_dataset(
         expanded_start = full_expand_expression(expanded_expr) if full_expand_scrambled else expanded_expr
 
         if validate:
-            ok, _ = _validate_pair(simple_expr, expanded_start, N, M, pol_modes=validation_pol_modes)
+            ok, _ = _validate_pair(
+                simple_expr,
+                expanded_start,
+                N,
+                M,
+                pol_modes=validation_pol_modes,
+                require_nonzero=True,
+            )
             if not ok:
                 stats["parity_fail"] += 1
                 continue
@@ -2757,7 +2857,9 @@ def build_dataset_batched(
             pairs.extend(batch_pairs)
     else:
         with mp.Pool(processes=jobs) as pool:
-            iterator = pool.imap_unordered(_worker_build_dataset, job_specs)
+            # Preserve batch order so a seeded run selects the same rows before
+            # the final dedupe/truncation regardless of worker completion order.
+            iterator = pool.imap(_worker_build_dataset, job_specs)
             for batch_pairs in _progress(iterator, total=len(job_specs), enabled=progress, desc="generating"):
                 pairs.extend(batch_pairs)
 

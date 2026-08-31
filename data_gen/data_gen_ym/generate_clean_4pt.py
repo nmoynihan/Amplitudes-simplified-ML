@@ -127,6 +127,7 @@ DEFAULT_ZERO_REL_TOL = 1e-10
 DEFAULT_TOL_ABS = 1e-10
 DEFAULT_TOL_REL = 1e-8
 DEFAULT_POL_MODES = ("coulomb", "covariant")
+KINEMATIC_MODE_SEED_STRIDE = 100_003
 
 
 @lru_cache(maxsize=None)
@@ -174,6 +175,10 @@ class PreparedPair:
     exact_zero_terms_removed: int
     numerical_zero_terms_removed: int
     combined_terms_removed: int
+
+
+class TokenizationError(ValueError):
+    """Raised when an otherwise valid pair cannot be tokenized faithfully."""
 
 
 @dataclass
@@ -378,10 +383,14 @@ def _add_product_factors(
         return coefficient, False
     for base, power in product_factors(product):
         if re.fullmatch(r"\d+", base):
+            if power == 0:
+                continue
             numeric = Fraction(int(base)) ** power
             coefficient = coefficient / numeric if inverted else coefficient * numeric
             continue
         canonical = canonicalize_factor(base, n_particles=n_particles)
+        if power == 0:
+            continue
         if canonical is None:
             if inverted:
                 raise ExpressionSyntaxError("zero factor appears in a denominator")
@@ -612,7 +621,7 @@ def build_kinematic_points(
     points: list[KinematicPoint] = []
     for mode_index, pol_mode in enumerate(pol_modes):
         for check_index in range(checks_per_mode):
-            seed = base_seed + 100_003 * mode_index + check_index
+            seed = base_seed + KINEMATIC_MODE_SEED_STRIDE * mode_index + check_index
             momenta, polarisations = generate_kinematics(
                 n_particles,
                 E_scale=energy_scale,
@@ -627,6 +636,52 @@ def build_kinematic_points(
                 )
             )
     return tuple(points)
+
+
+def _kinematic_seed_ranges(
+    base_seed: int,
+    checks_per_mode: int,
+    pol_modes: Sequence[str],
+) -> tuple[tuple[int, int], ...]:
+    """Return the inclusive RNG-seed ranges used by one kinematic grid."""
+
+    return tuple(
+        (
+            base_seed + KINEMATIC_MODE_SEED_STRIDE * mode_index,
+            base_seed
+            + KINEMATIC_MODE_SEED_STRIDE * mode_index
+            + checks_per_mode
+            - 1,
+        )
+        for mode_index, _pol_mode in enumerate(pol_modes)
+    )
+
+
+def _shared_kinematic_seed(
+    zero_seed: int,
+    zero_checks: int,
+    validation_seed: int,
+    validation_checks: int,
+    pol_modes: Sequence[str],
+) -> int | None:
+    """Return one shared RNG seed, or ``None`` when both grids are disjoint."""
+
+    zero_seed_ranges = _kinematic_seed_ranges(zero_seed, zero_checks, pol_modes)
+    validation_seed_ranges = _kinematic_seed_ranges(
+        validation_seed,
+        validation_checks,
+        pol_modes,
+    )
+    return next(
+        (
+            max(zero_start, validation_start)
+            for zero_start, zero_end in zero_seed_ranges
+            for validation_start, validation_end in validation_seed_ranges
+            if max(zero_start, validation_start)
+            <= min(zero_end, validation_end)
+        ),
+        None,
+    )
 
 
 def evaluate_expression(
@@ -790,12 +845,15 @@ def prepare_pair(
 
     token_safe_simple = parenthesize_for_semantic_tokenization(cleaned_simple)
     token_safe_scrambled = parenthesize_for_semantic_tokenization(scrambled)
-    simple_tokens = tokenizer.encode_infix(token_safe_simple)
-    scrambled_tokens = tokenizer.encode_infix(token_safe_scrambled)
+    try:
+        simple_tokens = tokenizer.encode_infix(token_safe_simple)
+        scrambled_tokens = tokenizer.encode_infix(token_safe_scrambled)
+    except ValueError as exc:
+        raise TokenizationError(str(exc)) from exc
     if not simple_tokens or not scrambled_tokens:
-        raise ValueError("tokenizer produced an empty sequence")
+        raise TokenizationError("tokenizer produced an empty sequence")
     if 1 in simple_tokens or 1 in scrambled_tokens:
-        raise ValueError("tokenizer produced UNK token id 1")
+        raise TokenizationError("tokenizer produced UNK token id 1")
     if max_tokens is not None and (
         len(simple_tokens) > max_tokens or len(scrambled_tokens) > max_tokens
     ):
@@ -835,6 +893,18 @@ def _temporary_sibling(destination: Path) -> Path:
     return Path(name)
 
 
+def _lexists(path: Path) -> bool:
+    """Return whether a directory entry exists, including dangling symlinks."""
+
+    return os.path.lexists(path)
+
+
+def _absolute_output_path(path: Path) -> Path:
+    """Return a normalized absolute path without following an output symlink."""
+
+    return Path(os.path.abspath(path))
+
+
 def _publish(temp_path: Path, destination: Path, *, overwrite: bool) -> None:
     if overwrite:
         os.replace(temp_path, destination)
@@ -847,6 +917,108 @@ def _publish(temp_path: Path, destination: Path, *, overwrite: bool) -> None:
             ) from exc
         temp_path.unlink()
     os.chmod(destination, 0o644)
+
+
+def _publish_all(
+    temporary_paths: Sequence[Path],
+    destinations: Sequence[Path],
+    *,
+    overwrite: bool,
+) -> None:
+    """Publish a related set of files, restoring prior outputs on failure."""
+
+    temps = tuple(Path(path) for path in temporary_paths)
+    targets = tuple(Path(path) for path in destinations)
+    if not temps or len(temps) != len(targets):
+        raise ValueError("temporary paths and destinations must have equal nonzero length")
+
+    resolved_temps = tuple(path.resolve(strict=False) for path in temps)
+    resolved_targets = tuple(path.resolve(strict=False) for path in targets)
+    if len(set(resolved_temps)) != len(resolved_temps):
+        raise ValueError("temporary paths must be distinct")
+    if len(set(resolved_targets)) != len(resolved_targets):
+        raise ValueError("destinations must be distinct")
+    if set(resolved_temps) & set(resolved_targets):
+        raise ValueError("temporary paths and destinations must not overlap")
+
+    missing = [path for path in temps if not _lexists(path)]
+    if missing:
+        raise FileNotFoundError(
+            "temporary output does not exist: " + ", ".join(str(path) for path in missing)
+        )
+    if not overwrite:
+        existing = [path for path in targets if _lexists(path)]
+        if existing:
+            raise FileExistsError(
+                "output already exists (use --overwrite to replace): "
+                + ", ".join(str(path) for path in existing)
+            )
+
+    backups: dict[int, Path] = {}
+    attempted: list[int] = []
+    try:
+        if overwrite:
+            for index, target in enumerate(targets):
+                if not _lexists(target):
+                    continue
+                backup = _temporary_sibling(target)
+                try:
+                    os.replace(target, backup)
+                except BaseException:
+                    try:
+                        backup.unlink()
+                    except FileNotFoundError:
+                        pass
+                    raise
+                backups[index] = backup
+
+        for index, (temp_path, target) in enumerate(zip(temps, targets)):
+            attempted.append(index)
+            _publish(temp_path, target, overwrite=overwrite)
+    except BaseException as publish_error:
+        recovery_errors: list[str] = []
+
+        # A backup can replace a partially published destination directly.  For
+        # destinations that were new, remove only files demonstrably published
+        # by this transaction (or whose source temp has already been consumed).
+        for index in attempted:
+            if index in backups:
+                continue
+            target = targets[index]
+            should_remove = not _lexists(temps[index])
+            if not should_remove and _lexists(target):
+                try:
+                    should_remove = os.path.samefile(temps[index], target)
+                except OSError:
+                    should_remove = False
+            if should_remove:
+                try:
+                    target.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    recovery_errors.append(f"remove {target}: {exc}")
+
+        for index, backup in backups.items():
+            try:
+                os.replace(backup, targets[index])
+            except OSError as exc:
+                recovery_errors.append(
+                    f"restore {targets[index]} from {backup}: {exc}"
+                )
+
+        if recovery_errors:
+            raise RuntimeError(
+                "publication failed and rollback was incomplete: "
+                + "; ".join(recovery_errors)
+            ) from publish_error
+        raise
+
+    for backup in backups.values():
+        try:
+            backup.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _pair_digest(simple: str, scrambled: str) -> bytes:
@@ -881,7 +1053,7 @@ def _validate_output_paths(
     if len(resolved) != len(set(resolved)):
         raise ValueError("raw, token, and report output paths must be distinct")
     if not overwrite:
-        existing = [path for path in paths if path.exists()]
+        existing = [path for path in paths if _lexists(path)]
         if existing:
             raise FileExistsError(
                 "output already exists (use --overwrite to replace): "
@@ -904,6 +1076,18 @@ def generate_to_files(
         report_path,
         overwrite=args.overwrite,
     )
+    shared_seed = _shared_kinematic_seed(
+        args.zero_seed,
+        args.zero_checks,
+        args.validation_seed,
+        args.validation_checks,
+        args.validation_pol_modes,
+    )
+    if shared_seed is not None:
+        raise ValueError(
+            "zero-check and validation kinematic seed grids must not overlap; "
+            f"shared seed {shared_seed}"
+        )
 
     tokenizer = ScatteringAmplitudeTokenizer(
         max_particles=args.tokenizer_max_particles,
@@ -1024,7 +1208,7 @@ def generate_to_files(
                             zero_relative_tolerance=args.zero_rel_tol,
                             n_particles=n_particles,
                         )
-                    except OverflowError:
+                    except (OverflowError, TokenizationError):
                         stats.token_rejections += 1
                         continue
                     except (ExpressionSyntaxError, SyntaxError):
@@ -1093,17 +1277,19 @@ def generate_to_files(
         report: dict[str, Any] = {
             "report_schema_version": 2,
             "generator": generator_name or f"clean_{n_particles}pt_yang_mills",
-            "raw_output": str(raw_path.resolve()),
-            "token_output": str(token_path.resolve()) if token_path else None,
+            "raw_output": str(_absolute_output_path(raw_path)),
+            "token_output": (
+                str(_absolute_output_path(token_path)) if token_path else None
+            ),
             "outputs": {
                 "raw": {
-                    "path": str(raw_path.resolve()),
+                    "path": str(_absolute_output_path(raw_path)),
                     "rows": stats.accepted,
                     "sha256_uncompressed": raw_content_sha256,
                 },
                 "tokenized": (
                     {
-                        "path": str(token_path.resolve()),
+                        "path": str(_absolute_output_path(token_path)),
                         "rows": stats.accepted,
                         "sha256_uncompressed": token_content_sha256,
                     }
@@ -1157,12 +1343,21 @@ def generate_to_files(
                 json.dump(report, handle, indent=2, sort_keys=True)
                 handle.write("\n")
 
-            _publish(raw_temp, raw_path, overwrite=args.overwrite)
-            raw_temp = None
+            temporary_paths = [raw_temp]
+            destinations = [raw_path]
             if token_temp is not None and token_path is not None:
-                _publish(token_temp, token_path, overwrite=args.overwrite)
+                temporary_paths.append(token_temp)
+                destinations.append(token_path)
+            temporary_paths.append(report_temp)
+            destinations.append(report_path)
+            _publish_all(
+                temporary_paths,
+                destinations,
+                overwrite=args.overwrite,
+            )
+            raw_temp = None
+            if token_temp is not None:
                 token_temp = None
-            _publish(report_temp, report_path, overwrite=args.overwrite)
         finally:
             if report_temp.exists():
                 report_temp.unlink()
@@ -1354,8 +1549,18 @@ def _validate_args(
         parser.error("at least one equivalence tolerance must be positive")
     if args.progress_every < 0:
         parser.error("--progress-every must be non-negative")
-    if args.zero_seed == args.validation_seed:
-        parser.error("--zero-seed and --validation-seed must differ")
+    shared_seed = _shared_kinematic_seed(
+        args.zero_seed,
+        args.zero_checks,
+        args.validation_seed,
+        args.validation_checks,
+        args.validation_pol_modes,
+    )
+    if shared_seed is not None:
+        parser.error(
+            "zero-check and validation kinematic seed grids must not overlap; "
+            f"shared seed {shared_seed}"
+        )
 
 
 def main_for_particles(

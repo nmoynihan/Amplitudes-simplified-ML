@@ -32,6 +32,7 @@ GenerationStats = _core.GenerationStats
 KinematicPoint = _core.KinematicPoint
 PreparedPair = _core.PreparedPair
 ExpressionSyntaxError = _core.ExpressionSyntaxError
+TokenizationError = _core.TokenizationError
 parenthesize_for_semantic_tokenization = (
     _core.parenthesize_for_semantic_tokenization
 )

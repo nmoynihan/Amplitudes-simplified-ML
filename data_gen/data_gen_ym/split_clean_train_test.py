@@ -145,17 +145,29 @@ def _identity(path: Path) -> tuple[int, int]:
     return stat.st_dev, stat.st_ino
 
 
+def _lexists(path: Path) -> bool:
+    """Return whether a directory entry exists, including a dangling symlink."""
+
+    return os.path.lexists(path)
+
+
 def _backup_destinations(destinations: Sequence[Path]) -> dict[Path, Path]:
-    """Hard-link existing outputs so an overwrite commit can be rolled back."""
+    """Back up existing outputs so an overwrite commit can be rolled back."""
 
     backups: dict[Path, Path] = {}
     try:
         for destination in destinations:
-            if not destination.exists():
+            if not _lexists(destination):
                 continue
             backup = _temporary_sibling(destination)
             backup.unlink()
-            os.link(destination, backup)
+            if destination.is_symlink():
+                # ``os.link`` follows symlinks on some supported platforms.
+                # Recreate the link itself so rollback preserves its exact target,
+                # including when that target does not currently exist.
+                os.symlink(os.readlink(destination), backup)
+            else:
+                os.link(destination, backup)
             backups[destination] = backup
     except BaseException:
         for backup in backups.values():
@@ -343,8 +355,13 @@ def _reported_row_count(pair: InputPair) -> int | None:
     if match is None:
         return None
     report, report_path = match
-    raw_rows = report["outputs"]["raw"]["rows"]
-    token_rows = report["outputs"]["tokenized"]["rows"]
+    try:
+        raw_rows = report["outputs"]["raw"]["rows"]
+        token_rows = report["outputs"]["tokenized"]["rows"]
+    except KeyError:
+        # The report identifies these inputs but does not provide a complete
+        # count.  Treat it like an older report and verify by reading both CSVs.
+        return None
     if (
         isinstance(raw_rows, bool)
         or not isinstance(raw_rows, int)
@@ -364,10 +381,30 @@ def _tokenizer_size(pair: InputPair) -> int:
 
     if pair.tokenizer_max_particles is not None:
         return pair.tokenizer_max_particles
+    fallback = 8
     match = _matching_generator_report(pair)
     if match is not None:
         report, report_path = match
-        value = report.get("settings", {}).get("tokenizer_max_particles")
+        settings = report.get("settings")
+        if settings is None:
+            print(
+                f"{pair.n_particles}PT: matching generator report does not "
+                "declare tokenizer_max_particles; assuming "
+                f"max_particles={fallback}",
+                file=sys.stderr,
+            )
+            return fallback
+        if not isinstance(settings, dict):
+            raise ValueError(f"invalid settings in generator report {report_path}")
+        if "tokenizer_max_particles" not in settings:
+            print(
+                f"{pair.n_particles}PT: matching generator report does not "
+                "declare tokenizer_max_particles; assuming "
+                f"max_particles={fallback}",
+                file=sys.stderr,
+            )
+            return fallback
+        value = settings["tokenizer_max_particles"]
         if (
             isinstance(value, bool)
             or not isinstance(value, int)
@@ -383,7 +420,6 @@ def _tokenizer_size(pair: InputPair) -> int:
             file=sys.stderr,
         )
         return value
-    fallback = 8
     print(
         f"{pair.n_particles}PT: no matching generator report; assuming "
         f"tokenizer max_particles={fallback}",
@@ -395,7 +431,7 @@ def _tokenizer_size(pair: InputPair) -> int:
 def _count_aligned_rows(pair: InputPair, *, progress_every: int) -> int:
     print(
         f"{pair.n_particles}PT: counting aligned source rows "
-        "(no matching generator report found)",
+        "(no usable matching generator row count found)",
         file=sys.stderr,
     )
     count = 0
@@ -627,7 +663,7 @@ def _validate_destinations(
             + ", ".join(str(path) for path in collisions)
         )
     if not overwrite:
-        existing = [path for path in output_paths_flat if path.exists()]
+        existing = [path for path in output_paths_flat if _lexists(path)]
         if existing:
             raise FileExistsError(
                 "split output already exists (use --overwrite to replace): "
@@ -685,10 +721,14 @@ def split_datasets(args: argparse.Namespace) -> tuple[SplitSummary, ...]:
     summaries: list[SplitSummary] = []
     try:
         for pair, count, paths in zip(pairs, source_rows, destinations):
-            temp_group = SplitPaths(
-                *(_temporary_sibling(path) for path in paths.all())
-            )
-            temporary_paths.extend(temp_group.all())
+            group_temporaries: list[Path] = []
+            for path in paths.all():
+                temporary = _temporary_sibling(path)
+                # Record each allocation immediately so the outer ``finally``
+                # cleans earlier siblings if a later allocation fails.
+                temporary_paths.append(temporary)
+                group_temporaries.append(temporary)
+            temp_group = SplitPaths(*group_temporaries)
             summaries.append(
                 _write_split_to_temporaries(
                     pair,

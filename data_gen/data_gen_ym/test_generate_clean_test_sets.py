@@ -75,6 +75,14 @@ class CleanTestSetLauncherTests(unittest.TestCase):
                 n_particles: int,
                 generator_name: str,
             ):
+                Path(generation_args.raw_out).write_text(
+                    f"raw-{n_particles}\n",
+                    encoding="utf-8",
+                )
+                Path(generation_args.tok_out).write_text(
+                    f"tok-{n_particles}\n",
+                    encoding="utf-8",
+                )
                 calls.append(
                     (
                         n_particles,
@@ -131,9 +139,260 @@ class CleanTestSetLauncherTests(unittest.TestCase):
             self.assertEqual(manifest["selected_points"], [4, 5])
             self.assertEqual(set(manifest["sets"]), {"4pt", "5pt"})
             self.assertTrue(manifest_path.exists())
+            raw4, _token4, _report4 = launcher.output_paths(
+                directory,
+                n_particles=4,
+                samples=7,
+                seed=4007,
+            )
+            self.assertEqual(
+                manifest["sets"]["4pt"]["raw_output"]["path"],
+                str(raw4.absolute()),
+            )
             self.assertEqual(
                 json.loads(manifest_path.read_text(encoding="utf-8")),
                 manifest,
+            )
+
+    def test_later_generation_failure_leaves_no_partial_release(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            args = launcher.build_parser().parse_args(
+                [
+                    "--samples",
+                    "2",
+                    "--output-dir",
+                    str(directory),
+                    "--jobs",
+                    "1",
+                    "--progress-every",
+                    "0",
+                ]
+            )
+
+            def fail_after_four_point(
+                generation_args,
+                *,
+                n_particles: int,
+                generator_name: str,
+            ):
+                if n_particles == 5:
+                    raise RuntimeError("injected 5PT failure")
+                Path(generation_args.raw_out).write_text("new raw\n", encoding="utf-8")
+                Path(generation_args.tok_out).write_text("new tok\n", encoding="utf-8")
+                stats = core.GenerationStats(requested=2, accepted=2)
+                return stats, {
+                    "outputs": {
+                        "raw": {
+                            "path": generation_args.raw_out,
+                            "rows": 2,
+                            "sha256_uncompressed": "raw-4",
+                        },
+                        "tokenized": {
+                            "path": generation_args.tok_out,
+                            "rows": 2,
+                            "sha256_uncompressed": "tok-4",
+                        },
+                    },
+                    "stats": {"requested": 2, "accepted": 2},
+                }
+
+            with mock.patch.object(
+                core,
+                "generate_to_files",
+                side_effect=fail_after_four_point,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "injected 5PT failure"):
+                    launcher.generate_test_sets(args)
+
+            self.assertEqual(list(directory.iterdir()), [])
+
+    def test_symlink_overwrite_manifest_names_published_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            args = launcher.build_parser().parse_args(
+                [
+                    "--samples",
+                    "1",
+                    "--only",
+                    "4pt",
+                    "--output-dir",
+                    str(directory),
+                    "--jobs",
+                    "1",
+                    "--progress-every",
+                    "0",
+                    "--overwrite",
+                ]
+            )
+            raw_path, _token_path, report_path = launcher.output_paths(
+                directory,
+                n_particles=4,
+                samples=1,
+                seed=args.seed_4pt,
+            )
+            old_raw_target = directory / "old-heldout-raw"
+            old_report_target = directory / "old-heldout-report"
+            old_raw_target.write_text("old raw\n", encoding="utf-8")
+            old_report_target.write_text("old report\n", encoding="utf-8")
+            raw_path.symlink_to(old_raw_target.name)
+            report_path.symlink_to(old_report_target.name)
+
+            def fake_generate(
+                generation_args,
+                *,
+                n_particles: int,
+                generator_name: str,
+            ):
+                Path(generation_args.raw_out).write_text("new raw\n", encoding="utf-8")
+                Path(generation_args.tok_out).write_text("new tok\n", encoding="utf-8")
+                stats = core.GenerationStats(requested=1, accepted=1)
+                return stats, {
+                    "outputs": {
+                        "raw": {
+                            "path": generation_args.raw_out,
+                            "rows": 1,
+                            "sha256_uncompressed": "raw-4",
+                        },
+                        "tokenized": {
+                            "path": generation_args.tok_out,
+                            "rows": 1,
+                            "sha256_uncompressed": "tok-4",
+                        },
+                    },
+                    "stats": {"requested": 1, "accepted": 1},
+                }
+
+            with mock.patch.object(
+                core,
+                "generate_to_files",
+                side_effect=fake_generate,
+            ):
+                manifest, _manifest_path = launcher.generate_test_sets(args)
+
+            entry = manifest["sets"]["4pt"]
+            self.assertFalse(raw_path.is_symlink())
+            self.assertFalse(report_path.is_symlink())
+            self.assertEqual(entry["raw_output"]["path"], str(raw_path.absolute()))
+            self.assertEqual(entry["report_path"], str(report_path.absolute()))
+            persisted_report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                persisted_report["outputs"]["raw"]["path"],
+                str(raw_path.absolute()),
+            )
+            self.assertEqual(old_raw_target.read_text(encoding="utf-8"), "old raw\n")
+            self.assertEqual(
+                old_report_target.read_text(encoding="utf-8"),
+                "old report\n",
+            )
+
+    def test_release_failure_restores_all_existing_heldout_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            args = launcher.build_parser().parse_args(
+                [
+                    "--samples",
+                    "2",
+                    "--output-dir",
+                    str(directory),
+                    "--jobs",
+                    "1",
+                    "--progress-every",
+                    "0",
+                    "--overwrite",
+                ]
+            )
+            paths_by_point = {
+                n_particles: launcher.output_paths(
+                    directory,
+                    n_particles=n_particles,
+                    samples=2,
+                    seed=(args.seed_4pt if n_particles == 4 else args.seed_5pt),
+                )
+                for n_particles in (4, 5)
+            }
+            manifest_path = launcher.default_manifest_path(
+                directory,
+                samples=2,
+                seed_4pt=args.seed_4pt,
+                seed_5pt=args.seed_5pt,
+            )
+            destinations = [
+                path
+                for point_paths in paths_by_point.values()
+                for path in point_paths
+            ] + [manifest_path]
+            expected: dict[Path, str] = {}
+            for index, path in enumerate(destinations):
+                content = f"old heldout output {index}\n"
+                path.write_text(content, encoding="utf-8")
+                expected[path] = content
+
+            def fake_generate(
+                generation_args,
+                *,
+                n_particles: int,
+                generator_name: str,
+            ):
+                Path(generation_args.raw_out).write_text("new raw\n", encoding="utf-8")
+                Path(generation_args.tok_out).write_text("new tok\n", encoding="utf-8")
+                stats = core.GenerationStats(requested=2, accepted=2)
+                return stats, {
+                    "outputs": {
+                        "raw": {
+                            "path": generation_args.raw_out,
+                            "rows": 2,
+                            "sha256_uncompressed": f"raw-{n_particles}",
+                        },
+                        "tokenized": {
+                            "path": generation_args.tok_out,
+                            "rows": 2,
+                            "sha256_uncompressed": f"tok-{n_particles}",
+                        },
+                    },
+                    "stats": {"requested": 2, "accepted": 2},
+                }
+
+            real_publish_all = core._publish_all
+
+            def fail_during_release(temporary_paths, final_paths, *, overwrite):
+                calls = 0
+                real_publish = core._publish
+
+                def fail_third(temp_path, destination, *, overwrite):
+                    nonlocal calls
+                    calls += 1
+                    if calls == 3:
+                        raise OSError("injected heldout release failure")
+                    return real_publish(temp_path, destination, overwrite=overwrite)
+
+                with mock.patch.object(core, "_publish", side_effect=fail_third):
+                    return real_publish_all(
+                        temporary_paths,
+                        final_paths,
+                        overwrite=overwrite,
+                    )
+
+            with mock.patch.object(
+                core,
+                "generate_to_files",
+                side_effect=fake_generate,
+            ), mock.patch.object(
+                core,
+                "_publish_all",
+                side_effect=fail_during_release,
+            ):
+                with self.assertRaisesRegex(
+                    OSError,
+                    "injected heldout release failure",
+                ):
+                    launcher.generate_test_sets(args)
+
+            for path, content in expected.items():
+                self.assertEqual(path.read_text(encoding="utf-8"), content)
+            self.assertEqual(
+                sorted(path.name for path in directory.iterdir()),
+                sorted(path.name for path in destinations),
             )
 
     def test_preflight_refuses_partial_overwrite_before_generation(self) -> None:

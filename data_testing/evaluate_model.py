@@ -90,11 +90,13 @@ GRAVITY_PROCESS: str | None = None  # "3s2h", "4s1h", or None
 
 # Used only when DATA_SOURCE="single-amplitude". The input may be .csv or
 # .csv.gz. "tokens" expects a header and a JSON list of integer token IDs in
-# SINGLE_AMPLITUDE_TOKENS_COLUMN. "feyn" expects headerless id,expression rows
-# such as gluon5feyn12345.csv.gz. "auto" distinguishes those two layouts.
-# In both cases the same amplitude is used as target and scrambled input.
+# SINGLE_AMPLITUDE_TOKENS_COLUMN. "token-pair" expects JSON token lists in
+# simple,scrambled columns. "feyn" expects headerless id,expression rows such
+# as gluon5feyn12345.csv.gz. "auto" distinguishes these three layouts.
+# The tokens/feyn layouts use the same amplitude as target and input;
+# token-pair preserves its distinct simple target and scrambled input.
 SINGLE_AMPLITUDE_INPUT_CSV_PATH: Path | None = None
-SINGLE_AMPLITUDE_INPUT_FORMAT = "auto"  # "auto", "tokens", "feyn"
+SINGLE_AMPLITUDE_INPUT_FORMAT = "auto"  # "auto", "tokens", "token-pair", "feyn"
 SINGLE_AMPLITUDE_TOKENS_COLUMN = "tokens"
 SINGLE_AMPLITUDE_EXPRESSION_COLUMN = 1
 
@@ -219,7 +221,7 @@ DECODE_RUNS: list[DecodeConfig] = [
 CLI_SCRAMBLES: list[str] | None = None
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate a trained transformer on generated amplitude data.")
     parser.add_argument("--model-path", type=str, default=None)
     parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default=None)
@@ -392,8 +394,9 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help=(
-            "Input .csv or .csv.gz containing either JSON token lists or "
-            "headerless id,expression Feynman rows."
+            "Input .csv or .csv.gz containing a JSON tokens column, "
+            "simple,scrambled JSON token lists, or headerless "
+            "id,expression Feynman rows."
         ),
     )
     parser.add_argument(
@@ -408,11 +411,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--single-amplitude-input-format",
         "--single-amplitude-format",
-        choices=["auto", "tokens", "feyn"],
+        choices=["auto", "tokens", "token-pair", "feyn"],
         default=None,
         help=(
             "Single-amplitude CSV layout. 'tokens' expects a named JSON-token "
-            "column; 'feyn' expects headerless id,expression rows; 'auto' detects it."
+            "column; 'token-pair' expects simple,scrambled JSON lists; "
+            "'feyn' expects headerless id,expression rows; 'auto' detects it."
         ),
     )
     parser.add_argument(
@@ -453,7 +457,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Generate diagnostic plots alongside the evaluation outputs.",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def apply_cli_config(args: argparse.Namespace) -> None:
@@ -1400,9 +1404,15 @@ def validate_runtime_config() -> None:
     resolve_numeric_pol_modes()
     resolve_numeric_tolerances()
 
-    if SINGLE_AMPLITUDE_INPUT_FORMAT not in {"auto", "tokens", "feyn"}:
+    if SINGLE_AMPLITUDE_INPUT_FORMAT not in {
+        "auto",
+        "tokens",
+        "token-pair",
+        "feyn",
+    }:
         raise ValueError(
-            "SINGLE_AMPLITUDE_INPUT_FORMAT must be 'auto', 'tokens', or 'feyn'"
+            "SINGLE_AMPLITUDE_INPUT_FORMAT must be 'auto', 'tokens', "
+            "'token-pair', or 'feyn'"
         )
     if SINGLE_AMPLITUDE_EXPRESSION_COLUMN < 0:
         raise ValueError("SINGLE_AMPLITUDE_EXPRESSION_COLUMN must be non-negative")
@@ -1812,7 +1822,11 @@ def detect_single_amplitude_input_format(source_path: Path) -> str:
         first_row = next(csv.reader(handle), None)
     if first_row is None:
         raise ValueError(f"{source_path} is empty")
-    return "tokens" if SINGLE_AMPLITUDE_TOKENS_COLUMN in first_row else "feyn"
+    if {"simple", "scrambled"}.issubset(first_row):
+        return "token-pair"
+    if SINGLE_AMPLITUDE_TOKENS_COLUMN in first_row:
+        return "tokens"
+    return "feyn"
 
 
 def write_token_rows(path: Path, rows: list[dict[str, list[int]]]) -> None:
@@ -1909,6 +1923,10 @@ def import_single_amplitude_test_data() -> None:
             tokens_column=SINGLE_AMPLITUDE_TOKENS_COLUMN,
         )
         token_rows = load_token_rows(TOK_CSV_PATH)
+    elif input_format == "token-pair":
+        token_rows = load_token_rows(source_path)
+        converted_count = len(token_rows)
+        write_token_rows(TOK_CSV_PATH, token_rows)
     else:
         token_rows, source_exprs = tokenise_feyn_single_amplitudes(source_path)
         converted_count = len(token_rows)
@@ -1930,45 +1948,64 @@ def import_single_amplitude_test_data() -> None:
 
     for row_index, row in enumerate(token_rows):
         row_number = row_index + (1 if input_format == "feyn" else 2)
-        tokens = row["simple"]
-        if not tokens:
-            raise ValueError(f"{source_path}:{row_number} has an empty token list")
-        if any(type(token) is not int for token in tokens):
-            raise ValueError(
-                f"{source_path}:{row_number} token list must contain integers, not booleans"
+        decoded_exprs: dict[str, str] = {}
+
+        for column in ("simple", "scrambled"):
+            tokens = row[column]
+            if not tokens:
+                raise ValueError(
+                    f"{source_path}:{row_number} has an empty {column} token list"
+                )
+            if any(type(token) is not int for token in tokens):
+                raise ValueError(
+                    f"{source_path}:{row_number} {column} token list must contain "
+                    "integers, not booleans"
+                )
+
+            invalid_ids = sorted(set(tokens) - valid_ids)
+            if invalid_ids:
+                raise ValueError(
+                    f"{source_path}:{row_number} {column} contains token IDs outside "
+                    f"the configured vocabulary: {invalid_ids}. Check "
+                    "--tokenizer-max-particles."
+                )
+
+            embedded_special_ids = sorted(set(tokens) & special_ids)
+            if embedded_special_ids:
+                raise ValueError(
+                    f"{source_path}:{row_number} {column} contains special token IDs "
+                    f"{embedded_special_ids}; source rows must exclude PAD/UNK/BOS/EOS"
+                )
+
+            if (
+                column == "scrambled"
+                and INPUT_TOKEN_LIMIT is not None
+                and len(tokens) > INPUT_TOKEN_LIMIT
+            ):
+                raise ValueError(
+                    f"{source_path}:{row_number} has {len(tokens)} input content tokens, "
+                    f"exceeding --input-token-limit={INPUT_TOKEN_LIMIT}"
+                )
+
+            decode_ok, expr, decode_error = safe_decode_infix(tokenizer, tokens)
+            if not decode_ok:
+                raise ValueError(
+                    f"{source_path}:{row_number} {column} is not a valid prefix "
+                    f"expression: {decode_error}"
+                )
+            decoded_exprs[column] = expr
+
+        if source_exprs is not None:
+            source_expr = source_exprs[row_index]
+            raw_pairs.append((source_expr, source_expr))
+        else:
+            raw_pairs.append(
+                (decoded_exprs["simple"], decoded_exprs["scrambled"])
             )
 
-        invalid_ids = sorted(set(tokens) - valid_ids)
-        if invalid_ids:
-            raise ValueError(
-                f"{source_path}:{row_number} contains token IDs outside the configured "
-                f"vocabulary: {invalid_ids}. Check --tokenizer-max-particles."
-            )
-
-        embedded_special_ids = sorted(set(tokens) & special_ids)
-        if embedded_special_ids:
-            raise ValueError(
-                f"{source_path}:{row_number} contains special token IDs "
-                f"{embedded_special_ids}; source rows must exclude PAD/UNK/BOS/EOS"
-            )
-
-        if INPUT_TOKEN_LIMIT is not None and len(tokens) > INPUT_TOKEN_LIMIT:
-            raise ValueError(
-                f"{source_path}:{row_number} has {len(tokens)} input content tokens, "
-                f"exceeding --input-token-limit={INPUT_TOKEN_LIMIT}"
-            )
-
-        decode_ok, expr, decode_error = safe_decode_infix(tokenizer, tokens)
-        if not decode_ok:
-            raise ValueError(
-                f"{source_path}:{row_number} is not a valid prefix expression: {decode_error}"
-            )
-        source_expr = source_exprs[row_index] if source_exprs is not None else expr
-        raw_pairs.append((source_expr, source_expr))
-
-    # Both input layouts are now normalized to the exact simple=scrambled token
-    # structure expected by TransformerDataset. The raw copy supplies infix
-    # expressions for numerical metrics and readable output.
+    # All input layouts are normalized to the simple,scrambled token structure
+    # expected by TransformerDataset. The raw copy supplies infix expressions
+    # for numerical metrics and readable output.
     gd.write_csv(raw_pairs, str(RAW_CSV_PATH))
     with GEN_LOG_PATH.open("w", encoding="utf-8") as handle:
         handle.write(f"# imported single-amplitude CSV: {source_path}\n")
@@ -2753,8 +2790,8 @@ def print_examples(detail_rows: list[dict[str, Any]], count: int) -> None:
         )
 
 
-def _run_evaluation() -> None:
-    args = parse_args()
+def _run_evaluation(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     apply_cli_config(args)
     validate_runtime_config()
 
@@ -2860,7 +2897,7 @@ def _run_evaluation() -> None:
     print(f"Total wall time: {time.perf_counter() - t0:.2f}s")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     """Run the evaluator while mirroring all Python terminal output to a PDF."""
 
     started_at = datetime.now().astimezone()
@@ -2871,7 +2908,7 @@ def main() -> int:
         try:
             require_reportlab()
             pdf_available = True
-            _run_evaluation()
+            _run_evaluation(argv)
         except SystemExit as exc:
             if exc.code is None:
                 exit_code = 0

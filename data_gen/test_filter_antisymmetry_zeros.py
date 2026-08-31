@@ -94,6 +94,31 @@ class AntisymmetryRuleTests(unittest.TestCase):
                     reason_codes(factor),
                 )
 
+    def test_three_field_endpoint_sandwich_is_zero(self) -> None:
+        zero_factors = [
+            "p_4 · F_3 · F_4 · F_2 · p_4",
+            "p_2 · F_4 · F_2 · F_3 · p_2",
+            "p_4 · F_2 · F_4 · F_3 · F_5 · F_3 · p_4",
+        ]
+        for factor in zero_factors:
+            with self.subTest(factor=factor):
+                self.assertIn(
+                    "field_strength_split_chain",
+                    reason_codes(factor),
+                )
+
+        nonzero_controls = [
+            "p_4 · F_3 · F_2 · F_4 · p_4",
+            "p_4 · F_3 · F_4 · F_2 · p_5",
+            "p_4 · F_3 · F_4 · p_4",
+        ]
+        for factor in nonzero_controls:
+            with self.subTest(factor=factor):
+                self.assertNotIn(
+                    "field_strength_split_chain",
+                    reason_codes(factor),
+                )
+
     def test_ym_onshell_rules_are_opt_in_and_boundary_local(self) -> None:
         left_boundary = "p_3 · F_3 · F_2 · p_4"
         right_boundary = "p_5 · F_1 · F_3 · p_3"

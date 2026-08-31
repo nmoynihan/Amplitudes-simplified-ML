@@ -85,9 +85,17 @@ python3 transformer/transformer_trainer.py --data-files "data_ym/ym_4pt_50k_tok.
 
 # Evaluate (configured in-file) / infer + numerically check a specific amplitude
 python3 transformer/transformer_evaluator.py
-python3 data_gen/data_gen_ym/infer_amplitude.py \
-    --model models/ym_4pt_50k_mps/best_model.pt --csv data/data_ym/gluon4feyn.csv --N 4
+python3 data_testing/evaluate_single_amplitude.py \
+    models/ym_4pt_50k_mps/best_model.pt data/data_ym/gluon4feyn.csv.gz \
+    --numeric-backend ym --n-particles 4 --decoding-method beam --beam-size 5
 ```
+
+`evaluate_single_amplitude.py` accepts raw or tokenised `simple,scrambled` data, JSON token-list
+CSVs, headered expression CSVs, and headerless `id,expression` Feynman CSVs (plain or
+gzip-compressed).
+It counts the amplitude rows and evaluates only the first one using the selected strict numerical
+backend (`sqed`, `ym`, or `gravity`). Gravity inputs also need `--gravity-process 3s2h/4s1h`
+unless that process is present in the selected row or its standard sibling metadata CSV.
 
 Datasets are named `<theory>_<N>pt_<size>[_tok].csv[.gz]` (`ym_`/`sqed_`/`gi_`; `_tok` = tokenised).
 `transformer_evaluator.py` and the Optuna hyperparameter-search scripts (`optuna_*.py`) are configured

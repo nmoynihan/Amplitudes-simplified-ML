@@ -40,6 +40,7 @@ import tempfile
 from collections import Counter
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterator, Sequence, TextIO
 
@@ -404,6 +405,83 @@ def _cyclically_equal(left: Sequence[int], right: Sequence[int]) -> bool:
     return any(doubled[start : start + width] == target for start in range(width))
 
 
+@lru_cache(maxsize=None)
+def _chain_is_proven_zero(
+    left: int,
+    word: tuple[int, ...],
+    right: int,
+    assumptions: OnShellAssumptions | None,
+) -> bool:
+    """Prove a momentum/F-chain zero using exact recursive F splitting."""
+
+    if not word:
+        return bool(
+            assumptions is not None
+            and left == right
+            and left in assumptions.massless_momenta
+        )
+    if left == right and len(word) % 2 == 1 and word == word[::-1]:
+        return True
+    if assumptions is not None:
+        if (
+            left == word[0]
+            and assumptions.supports_transverse_field_strength(left)
+        ):
+            return True
+        if (
+            right == word[-1]
+            and assumptions.supports_transverse_field_strength(right)
+        ):
+            return True
+        if any(
+            word[position] == word[position + 1] == word[position + 2]
+            and assumptions.supports_transverse_field_strength(word[position])
+            for position in range(max(0, len(word) - 2))
+        ):
+            return True
+
+    return any(
+        _chain_is_proven_zero(
+            left,
+            word[:position],
+            field_label,
+            assumptions,
+        )
+        and _chain_is_proven_zero(
+            field_label,
+            word[position + 1 :],
+            right,
+            assumptions,
+        )
+        for position, field_label in enumerate(word)
+    )
+
+
+def _chain_has_proven_zero_split(
+    left: int,
+    word: tuple[int, ...],
+    right: int,
+    assumptions: OnShellAssumptions | None,
+) -> bool:
+    """Return whether expanding one F leaves two proven-zero subchains."""
+
+    return any(
+        _chain_is_proven_zero(
+            left,
+            word[:position],
+            field_label,
+            assumptions,
+        )
+        and _chain_is_proven_zero(
+            field_label,
+            word[position + 1 :],
+            right,
+            assumptions,
+        )
+        for position, field_label in enumerate(word)
+    )
+
+
 def zero_factor_reasons(
     factor: str,
     *,
@@ -431,6 +509,20 @@ def zero_factor_reasons(
                     "antisymmetric_palindrome_chain",
                     base,
                     f"same endpoint p_{left}; odd palindromic F word {word}",
+                )
+            )
+        if _chain_has_proven_zero_split(
+            left,
+            word,
+            right,
+            assumptions,
+        ):
+            reasons.append(
+                ZeroReason(
+                    "field_strength_split_chain",
+                    base,
+                    "expanding an interior field strength leaves a "
+                    "proven-zero momentum/F-chain in both terms",
                 )
             )
         if assumptions is not None:
