@@ -4,6 +4,10 @@ Produces (simple, scrambled) training pairs for colour-ordered n-gluon amplitude
 (fixed ordering 1…n, no colour factors). All N external legs are massless gluons,
 each carrying a polarisation e_i and field strength F_i.
 
+The fixed ordering above restricts physical denominator channels. Numerator
+F-blocks remain randomly ordered by default; yang_mills_cyclic_generation opts
+into fixed cyclic ordering within each block. See CYCLIC_GENERATION.md.
+
 Pipeline (per sample, in generate.build_dataset):
     expr_model._build_base_expression   build a gauge-invariant numerator (F-blocks)
                                          over physical (adjacent p_i·p_{i+1}) + F-cancellable
@@ -24,6 +28,8 @@ Modules (leaf → root):
     scramble     scramble, scr_*, _SCRAMBLER_BY_NAME
     expr_model   blocks, pole pool, rewrite_gi, _generate_term, _build_base_expression
     generate     build_dataset loop, batching, CSV, tokenise, CLI
+    yang_mills_cyclic_generation  shared pipeline with cyclic numerator blocks
+    split_cyclic_train_test  verified target- and input-disjoint held-out split
 
 Run:
     ./run_ym.sh 5 --samples 1000          # convenience wrapper (sets cwd + venv)

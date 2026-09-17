@@ -7,6 +7,28 @@ from typing import Sequence
 DOT = "·"
 
 
+# External-order conventions named by the reference Feynman-expression files.
+# Their expanded scalar products do not specify a separate compact F-block word.
+DEFAULT_CYCLIC_ORDERS = {
+    4: (1, 2, 3, 4),
+    5: (1, 2, 3, 4, 5),
+}
+CYCLIC_ORDER_REFERENCE_FILES = {
+    4: "data/data_ym/gluon4feyn1234.csv.gz",
+    5: "data/data_ym/gluon5feyn12345.csv.gz",
+}
+
+
+def default_cyclic_order(N: int) -> tuple[int, ...]:
+    """Reference external cycle at 4/5 points; natural 1..N order otherwise.
+
+    These are explicit defaults, not inferred from commuting dot-product text
+    or from the subset of poles appearing in one reference expression. The
+    reference CSVs are provenance, not required runtime inputs to generation.
+    """
+    return DEFAULT_CYCLIC_ORDERS.get(N, tuple(range(1, N + 1)))
+
+
 DEFAULT_MIN_TERMS = 1
 
 
@@ -157,6 +179,9 @@ def _strip_matched_outer_parens(s: str) -> str:
 
 __all__ = [
     'DOT',
+    'DEFAULT_CYCLIC_ORDERS',
+    'CYCLIC_ORDER_REFERENCE_FILES',
+    'default_cyclic_order',
     'dot',
     'p',
     'e',

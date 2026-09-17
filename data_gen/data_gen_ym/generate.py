@@ -10,6 +10,7 @@ import os
 import random
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, Sequence
 
 from .notation import *
@@ -73,6 +74,12 @@ DEFAULT_PROGRESS = True
 DEFAULT_TOKENIZER_MAX_PARTICLES = 8
 
 
+def _cyclic_order_log_fields(N: int) -> str:
+    order = ",".join(map(str, default_cyclic_order(N)))
+    reference = CYCLIC_ORDER_REFERENCE_FILES.get(N, "none")
+    return f" cyclic_order=True particle_order={order} ordering_reference={reference}"
+
+
 @dataclass(frozen=True)
 class BatchJob:
     dataset_kind: str
@@ -96,6 +103,7 @@ class BatchJob:
     tokenizer_max_particles: int
     validation_pol_modes: tuple[str, ...]
     scramble_names: tuple[str, ...] | None
+    cyclic_order: bool = False
 
 
 def _make_tokenizer(tokenizer_max_particles: int, max_tokens: int | None):
@@ -146,8 +154,13 @@ def build_dataset(
     tokenizer_max_particles: int = DEFAULT_TOKENIZER_MAX_PARTICLES,
     validation_pol_modes: Sequence[str] = DEFAULT_VALIDATION_POL_MODES,
     scramble_names: Sequence[str] | None = None,
+    cyclic_order: bool = False,
 ) -> list[tuple[str, str]]:
-    """Build a dataset of (simple, scrambled) pairs."""
+    """Build (simple, scrambled) pairs, optionally with cyclic F-block order.
+
+    ``cyclic_order`` changes numerator field-strength sequences only; physical
+    denominator poles already follow the adjacent channels of ordering 1,...,N.
+    """
     min_terms = max(1, int(min_terms))
     max_terms = max(min_terms, int(max_terms))
     if seed is not None:
@@ -178,7 +191,9 @@ def build_dataset(
                 f"scalar_power_probability={scalar_power_probability} "
                 f"full_expand_scrambled={full_expand_scrambled} seed={seed} "
                 f"max_tokens={max_tokens} pol_modes={','.join(validation_pol_modes)} "
-                f"scrambles={','.join(scramble_names) if scramble_names else 'none'}\n"
+                f"scrambles={','.join(scramble_names) if scramble_names else 'none'}"
+                + (_cyclic_order_log_fields(N) if cyclic_order else "")
+                + "\n"
             )
 
     while len(data) < num_samples and stats["attempts"] < max_attempts:
@@ -192,6 +207,7 @@ def build_dataset(
             use_denominators=use_denominators,
             min_terms=min_terms,
             max_terms=max_terms,
+            cyclic_order=cyclic_order,
         )
         if built is None:
             stats["dimension_fail"] += 1
@@ -303,6 +319,7 @@ def _worker_build_dataset(job: BatchJob) -> list[tuple[str, str]]:
         tokenizer_max_particles=job.tokenizer_max_particles,
         validation_pol_modes=job.validation_pol_modes,
         scramble_names=job.scramble_names,
+        cyclic_order=job.cyclic_order,
     )
 
 
@@ -333,8 +350,13 @@ def build_dataset_batched(
     batch_size: int = DEFAULT_BATCH_SIZE,
     jobs: int | str = DEFAULT_JOBS,
     progress: bool = DEFAULT_PROGRESS,
+    cyclic_order: bool = False,
 ) -> list[tuple[str, str]]:
-    """Build a dataset in independent batches, optionally using multiple CPUs."""
+    """Build independent batches, optionally using multiple CPUs.
+
+    Both legacy dataset-kind choices (``oneshot`` and ``step``) use the same
+    Yang--Mills pair builder. ``cyclic_order`` is forwarded to every worker.
+    """
     if dataset_kind not in {"oneshot", "step"}:
         raise ValueError("dataset_kind must be 'oneshot' or 'step'")
     batch_counts = _batch_sizes(num_samples, batch_size)
@@ -369,6 +391,7 @@ def build_dataset_batched(
             tokenizer_max_particles=tokenizer_max_particles,
             validation_pol_modes=validation_pol_modes,
             scramble_names=normalised_scrambles,
+            cyclic_order=cyclic_order,
         )
         for i, count in enumerate(batch_counts)
     ]
@@ -387,7 +410,9 @@ def build_dataset_batched(
                 f"full_expand_scrambled={full_expand_scrambled} seed={seed} base_seed={base_seed} "
                 f"max_tokens={max_tokens} tokenizer_max_particles={tokenizer_max_particles} "
                 f"pol_modes={','.join(validation_pol_modes)} "
-                f"scrambles={','.join(normalised_scrambles) if normalised_scrambles else 'none'}\n"
+                f"scrambles={','.join(normalised_scrambles) if normalised_scrambles else 'none'}"
+                + (_cyclic_order_log_fields(N) if cyclic_order else "")
+                + "\n"
             )
 
     pairs: list[tuple[str, str]] = []
@@ -507,13 +532,38 @@ __all__ = [
     'dedupe_pairs',
     'write_csv',
     'tokenise_csv',
+    'main',
 ]
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate scalar-QED-like amplitude data.")
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    cyclic_order: bool = False,
+    raw_out_template: str = DEFAULT_RAW_OUT_TEMPLATE,
+    tok_out_template: str = DEFAULT_TOK_OUT_TEMPLATE,
+    log_out_template: str = DEFAULT_LOG_OUT_TEMPLATE,
+) -> None:
+    """Shared CLI, including the original generator's unchanged defaults."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Generate Yang--Mills amplitude pairs"
+            + (" with fixed cyclic numerator ordering (1,...,N)." if cyclic_order else ".")
+        ),
+        epilog=(
+            "For N >= 6, the pole model omits genuine multiparticle channels "
+            "(p_i + ... + p_j)^2, which require sums of scalar products. "
+            "Only adjacent two-particle physical poles and cancellable factors "
+            "are supported."
+        ),
+    )
     parser.add_argument("N", nargs="?", type=int, default=DEFAULT_N_PARTICLES, help="Number of external legs.")
-    parser.add_argument("--samples", type=int, default=DEFAULT_SAMPLES)
+    parser.add_argument(
+        "--samples",
+        type=int,
+        default=DEFAULT_SAMPLES,
+        help="Total generated pool size, including held-out test rows." if cyclic_order else None,
+    )
     parser.add_argument("--max-scr", type=int, default=DEFAULT_MAX_SCR)
     parser.add_argument("--min-scr", type=int, default=DEFAULT_MIN_SCR)
     parser.add_argument("--min-terms", type=int, default=DEFAULT_MIN_TERMS)
@@ -522,7 +572,7 @@ if __name__ == "__main__":
         "--dataset-kind",
         choices=["oneshot", "step"],
         default=DEFAULT_DATASET_KIND,
-        help="Generate direct scrambled->simple pairs or one-step simplification pairs.",
+        help="Legacy mode selector; both modes use the same Yang--Mills pair builder.",
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument(
@@ -619,12 +669,53 @@ if __name__ == "__main__":
         action="store_true",
         help="Keep the old grouped scrambled style instead of fully expanding scrambled expressions.",
     )
-    args = parser.parse_args()
+    if cyclic_order:
+        parser.add_argument(
+            "--test-size",
+            type=int,
+            default=0,
+            help=(
+                "Hold out this many rows whose simple targets and scrambled inputs "
+                "each appear once in the pool. Repeated targets stay together in "
+                "training. Default: 0 (no split)."
+            ),
+        )
+        parser.add_argument(
+            "--split-seed",
+            type=int,
+            default=20260401,
+            help="Independent seed for held-out target selection. Default: %(default)s",
+        )
+        parser.add_argument(
+            "--split-output-dir",
+            type=Path,
+            default=None,
+            help="Directory for train/test files; defaults to cyclic_train_test beside the raw pool.",
+        )
+        parser.add_argument(
+            "--split-overwrite",
+            action="store_true",
+            help="Allow replacing existing train/test split files and manifest.",
+        )
+    args = parser.parse_args(argv)
+
+    if cyclic_order:
+        if args.test_size < 0:
+            parser.error("--test-size must be non-negative")
+        if args.test_size:
+            if args.N < 4:
+                parser.error("--test-size requires N >= 4")
+            if args.test_size >= args.samples:
+                parser.error("--test-size must be smaller than --samples")
+            if args.no_tokenise or not DEFAULT_TOKENISE:
+                parser.error("--test-size requires tokenisation; remove --no-tokenise")
+            if args.tokenizer_max_particles < args.N:
+                parser.error("--tokenizer-max-particles must be at least N when splitting")
 
     nsamps = args.samples // 1000
-    raw_out = args.raw_out or DEFAULT_RAW_OUT_TEMPLATE.format(N=args.N, NSAMPS=nsamps)
-    tok_out = args.tok_out or DEFAULT_TOK_OUT_TEMPLATE.format(N=args.N, NSAMPS=nsamps)
-    log_out = args.log_out or DEFAULT_LOG_OUT_TEMPLATE.format(N=args.N, NSAMPS=nsamps)
+    raw_out = args.raw_out or raw_out_template.format(N=args.N, NSAMPS=nsamps)
+    tok_out = args.tok_out or tok_out_template.format(N=args.N, NSAMPS=nsamps)
+    log_out = args.log_out or log_out_template.format(N=args.N, NSAMPS=nsamps)
 
     t0 = time.perf_counter()
     oversample = int(round(args.samples * DEFAULT_OVERSAMPLE_FACTOR))
@@ -654,6 +745,7 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         jobs=_resolve_jobs(args.jobs),
         progress=DEFAULT_PROGRESS and not args.no_progress,
+        cyclic_order=cyclic_order,
     )
     t1 = time.perf_counter()
 
@@ -675,3 +767,37 @@ if __name__ == "__main__":
     print(f"  dedupe     : removed {removed} ({before} -> {len(pairs)})")
     print(f"  write/tok  : {t2 - t1:.2f}s")
     print(f"  log        : {log_out}")
+    if cyclic_order:
+        print(f"  cyclic order: {','.join(map(str, default_cyclic_order(args.N)))}")
+
+    if cyclic_order and args.test_size:
+        from .split_cyclic_train_test import split_cyclic_dataset
+
+        try:
+            report = split_cyclic_dataset(
+                Path(raw_out),
+                Path(tok_out),
+                n_particles=args.N,
+                test_size=args.test_size,
+                seed=args.split_seed,
+                output_dir=args.split_output_dir or Path(raw_out).parent / "cyclic_train_test",
+                tokenizer_max_particles=args.tokenizer_max_particles,
+                overwrite=args.split_overwrite,
+            )
+        except (ValueError, FileExistsError) as exc:
+            parser.error(str(exc))
+        for label, output in report["outputs"].items():
+            print(f"  {label}: {output['rows']} rows -> {output['path']}")
+        print(
+            "  train/test target overlap: "
+            f"{report['verification']['train_test_target_overlap']}"
+        )
+        print(
+            "  train/test input overlap: "
+            f"{report['verification']['train_test_input_overlap']}"
+        )
+        print(f"  split manifest: {report['manifest_path']}")
+
+
+if __name__ == "__main__":
+    main()

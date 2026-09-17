@@ -168,8 +168,8 @@ def _all_physical_poles(N: int) -> list[str]:
     """
     pool: list[str] = []
     seen: set[str] = set()
-    for i in range(1, N + 1):
-        j = i % N + 1  # next leg cyclically (N -> 1)
+    order = default_cyclic_order(N)
+    for i, j in zip(order, order[1:] + order[:1]):
         term = _canon_pp(dot(p(i), p(j)))
         if term not in seen:
             seen.add(term)
@@ -205,20 +205,46 @@ def _weighted_pick(candidates: list[tuple[str, int, int]]) -> tuple[str, int]:
     return random.choice(pool)
 
 
+def _sample_cyclic_labels(remaining: Sequence[int], arity: int, N: int) -> list[int]:
+    """Sample a subset and start, then follow the reference external cycle.
+
+    ``remaining`` contains distinct external labels in 1..N and ``arity >= 1``.
+    The first sampled label is uniform within the sampled subset. Sorting by
+    forward modular distance from it allows omissions and wraparound, but never
+    a second traversal or a reversal. Subset and block-arity sampling are intact.
+    """
+    chosen = random.sample(remaining, arity)
+    positions = {label: index for index, label in enumerate(default_cyclic_order(N))}
+    start = positions[chosen[0]]
+    return sorted(chosen, key=lambda label: (positions[label] - start) % N)
+
+
 def _generate_gi_monomial_spec(
     N: int,
     *,
     old_style_blocks: bool = False,
     scalar_power_probability: float = SCALAR_POWER_PROBABILITY,
+    cyclic_order: bool = False,
 ) -> MonomialSpec:
+    """Build a partition of all external field strengths into GI blocks.
+
+    With ``cyclic_order=True``, each block independently follows a subsequence
+    of one rotation of (1, ..., N). Blocks may have interleaved label sets;
+    their commuting product has no concatenated particle order. Every F_i
+    still occurs exactly once across all blocks. Momentum endpoints are not
+    part of this invariant and retain the exclusions in ``_chain_endpoints``.
+    The default retains the original randomly ordered field-strength words.
+    """
     remaining = gluon_legs(N)
-    random.shuffle(remaining)
+    if not cyclic_order:
+        random.shuffle(remaining)
     factors: list[str] = []
     blocks: list[BlockSpec] = []
 
     while remaining:
         family, arity = _weighted_pick(_block_candidates(len(remaining)))
-        chosen = random.sample(remaining, arity)
+        chosen = (_sample_cyclic_labels(remaining, arity, N) if cyclic_order
+                  else random.sample(remaining, arity))
         block_str, spec = (_trace_block(chosen) if family == "trace"
                            else _chain_block(chosen, N))
         factors.append(block_str)
@@ -268,6 +294,8 @@ def _generate_gi_monomial_spec(
             scalar_factors.append(_canon_pp(_scalar_pp_factor(N)))
     factors.extend(scalar_factors)
 
+    # These are commuting scalar blocks, not a concatenated field-strength
+    # word. Canonicalisation only rotates traces; it never reverses a block.
     random.shuffle(factors)
     return MonomialSpec(
         numerator=canonicalise_gi_product("*".join(factors)),
@@ -411,11 +439,13 @@ def _generate_term(
     old_style_blocks: bool = False,
     denom_repeat_probability: float = DENOM_REPEAT_PROBABILITY,
     scalar_power_probability: float = SCALAR_POWER_PROBABILITY,
+    cyclic_order: bool = False,
 ) -> tuple[str, str, tuple]:
     spec = _generate_gi_monomial_spec(
         N,
         old_style_blocks=old_style_blocks,
         scalar_power_probability=scalar_power_probability,
+        cyclic_order=cyclic_order,
     )
     den_factors = (
         _physical_denominator_factors(
@@ -554,6 +584,7 @@ def _build_base_expression(
     use_denominators: bool,
     min_terms: int,
     max_terms: int,
+    cyclic_order: bool = False,
 ) -> tuple[str, str] | None:
     use_old_style = random.random() < max(0.0, min(1.0, old_style_probability))
     if use_old_style:
@@ -572,6 +603,7 @@ def _build_base_expression(
                 old_style_blocks=use_old_style,
                 denom_repeat_probability=denom_repeat_probability,
                 scalar_power_probability=scalar_power_probability,
+                cyclic_order=cyclic_order,
             )
         except _AnsatzInfeasible:
             # Infeasible partition (e.g. a chain-heavy block split needs more
@@ -600,6 +632,7 @@ def _build_base_expression(
                     old_style_blocks=use_old_style,
                     denom_repeat_probability=denom_repeat_probability,
                     scalar_power_probability=scalar_power_probability,
+                    cyclic_order=cyclic_order,
                 )
             except _AnsatzInfeasible:
                 continue  # infeasible ansatz; retry (genuine bugs propagate)
@@ -631,6 +664,7 @@ __all__ = [
     '_all_physical_poles',
     '_required_denominator_count',
     '_weighted_pick',
+    '_sample_cyclic_labels',
     '_block_candidates',
     '_generate_gi_monomial_spec',
     '_AnsatzInfeasible',
