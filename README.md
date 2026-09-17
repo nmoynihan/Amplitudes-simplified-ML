@@ -65,6 +65,10 @@ Open: scaling up, 6+ legs (multi-particle poles).
 
 `pip install -r environment/requirements.txt`.
 
+For canonical, numerically nonzero cyclic Yang–Mills datasets with exact row
+counts and disjoint train/test splits, see the
+[cyclic generation instructions](data_gen/data_gen_ym/README.md).
+
 Example runs from the repo root:
 
 ```bash

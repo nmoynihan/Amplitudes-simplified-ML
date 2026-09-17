@@ -93,6 +93,7 @@ from .generate import build_dataset_batched, _resolve_jobs
 from .kinematics import generate_kinematics
 from .algebra import _BinOp, _DotChain, _Num, _Parser, _UnaryOp, _Vec
 from .notation import (
+    CYCLIC_ORDER_REFERENCE_FILES,
     DEFAULT_MAX_ATTEMPTS_FACTOR,
     DEFAULT_MAX_TERMS,
     DEFAULT_MIN_TERMS,
@@ -101,6 +102,7 @@ from .notation import (
     OLD_STYLE_PROBABILITY,
     SCALAR_POWER_PROBABILITY,
     UNIT_PROBABILITY,
+    default_cyclic_order,
     _RE_pFchainp,
     _RE_pp,
     _RE_TrN,
@@ -232,10 +234,47 @@ def _choose_oriented_word(
     return next(iter(signs)), best
 
 
+def _is_forward_cyclic_word(labels: Sequence[int], *, n_particles: int) -> bool:
+    """Whether distinct F labels follow a forward subsequence of the cycle."""
+
+    word = tuple(labels)
+    if not word or len(set(word)) != len(word):
+        return False
+    positions = {label: index for index, label in enumerate(default_cyclic_order(n_particles))}
+    offsets = tuple((positions[label] - positions[word[0]]) % n_particles for label in word)
+    return offsets == tuple(sorted(offsets))
+
+
+def _choose_cyclic_orientation(
+    candidates: Sequence[tuple[tuple[int, ...], int]],
+    *,
+    n_particles: int,
+    open_chain: bool = False,
+) -> tuple[int, tuple[int, ...]] | None:
+    # Detect identities such as an odd word equalling its negative before
+    # restricting orientation.  Restricting first must not hide exact zeros.
+    if _choose_oriented_word(candidates) is None:
+        return None
+    allowed = [
+        (word, sign)
+        for word, sign in candidates
+        if _is_forward_cyclic_word(
+            word[1:-1] if open_chain else word,
+            n_particles=n_particles,
+        )
+    ]
+    if not allowed:
+        raise ExpressionSyntaxError(
+            "F labels cannot be oriented as a forward cyclic subsequence"
+        )
+    return _choose_oriented_word(allowed)
+
+
 def _canonical_trace(
     labels: Sequence[int],
     *,
     n_particles: int,
+    cyclic_order: bool = False,
 ) -> tuple[int, FactorKey] | None:
     word = tuple(labels)
     if len(word) < 2:
@@ -251,7 +290,10 @@ def _canonical_trace(
         (rotation, reverse_sign)
         for rotation in _rotations(tuple(reversed(word)))
     )
-    chosen = _choose_oriented_word(oriented)
+    chosen = (
+        _choose_cyclic_orientation(oriented, n_particles=n_particles)
+        if cyclic_order else _choose_oriented_word(oriented)
+    )
     if chosen is None:
         return None
     sign, canonical_word = chosen
@@ -264,6 +306,7 @@ def _canonical_chain(
     right: int,
     *,
     n_particles: int,
+    cyclic_order: bool = False,
 ) -> tuple[int, FactorKey] | None:
     word = tuple(labels)
     if not word:
@@ -277,7 +320,11 @@ def _canonical_chain(
     forward = (left, *word, right)
     reverse = (right, *reversed(word), left)
     reverse_sign = -1 if len(word) % 2 else 1
-    chosen = _choose_oriented_word(((forward, 1), (reverse, reverse_sign)))
+    oriented = ((forward, 1), (reverse, reverse_sign))
+    chosen = (
+        _choose_cyclic_orientation(oriented, n_particles=n_particles, open_chain=True)
+        if cyclic_order else _choose_oriented_word(oriented)
+    )
     if chosen is None:
         return None
     sign, canonical_word = chosen
@@ -311,8 +358,13 @@ def canonicalize_factor(
     factor: str,
     *,
     n_particles: int = N_PARTICLES,
+    cyclic_order: bool = False,
 ) -> tuple[int, FactorKey] | None:
-    """Return orientation sign/key, or ``None`` for a proven-zero factor."""
+    """Return orientation sign/key, or ``None`` for a proven-zero factor.
+
+    Cyclic mode restricts trace and chain representatives to forward F-label
+    subsequences of the reference particle cycle, retaining reversal signs.
+    """
 
     text = factor.strip()
     match = _RE_pp.fullmatch(text)
@@ -337,7 +389,9 @@ def canonicalize_factor(
             assumptions=_ym_assumptions(n_particles),
         ):
             return None
-        return _canonical_trace(labels, n_particles=n_particles)
+        return _canonical_trace(
+            labels, n_particles=n_particles, cyclic_order=cyclic_order,
+        )
 
     match = _RE_pFchainp.fullmatch(text)
     if match:
@@ -366,6 +420,7 @@ def canonicalize_factor(
             labels,
             right,
             n_particles=n_particles,
+            cyclic_order=cyclic_order,
         )
 
     raise ExpressionSyntaxError(f"unsupported compact Yang--Mills factor: {text!r}")
@@ -378,6 +433,7 @@ def _add_product_factors(
     *,
     inverted: bool,
     n_particles: int,
+    cyclic_order: bool = False,
 ) -> tuple[Fraction, bool]:
     if not product:
         return coefficient, False
@@ -388,7 +444,9 @@ def _add_product_factors(
             numeric = Fraction(int(base)) ** power
             coefficient = coefficient / numeric if inverted else coefficient * numeric
             continue
-        canonical = canonicalize_factor(base, n_particles=n_particles)
+        canonical = canonicalize_factor(
+            base, n_particles=n_particles, cyclic_order=cyclic_order,
+        )
         if power == 0:
             continue
         if canonical is None:
@@ -406,6 +464,7 @@ def _canonicalize_term(
     term: str,
     *,
     n_particles: int,
+    cyclic_order: bool = False,
 ) -> tuple[Fraction, RationalKey] | None:
     integer_coefficient, body = _strip_term_prefix(term)
     coefficient = Fraction(integer_coefficient)
@@ -419,6 +478,7 @@ def _canonicalize_term(
         coefficient,
         inverted=False,
         n_particles=n_particles,
+        cyclic_order=cyclic_order,
     )
     if is_zero or coefficient == 0:
         return None
@@ -428,6 +488,7 @@ def _canonicalize_term(
         coefficient,
         inverted=True,
         n_particles=n_particles,
+        cyclic_order=cyclic_order,
     )
     if denominator_zero:
         raise ExpressionSyntaxError("zero denominator")
@@ -491,6 +552,7 @@ def canonicalize_simple_expression(
     expression: str,
     *,
     n_particles: int = N_PARTICLES,
+    cyclic_order: bool = False,
 ) -> CanonicalizationResult:
     """Canonicalise and combine a compact Yang--Mills expression exactly."""
 
@@ -499,7 +561,9 @@ def canonicalize_simple_expression(
     zero_terms = 0
     nonzero_terms = 0
     for term in terms:
-        canonical = _canonicalize_term(term, n_particles=n_particles)
+        canonical = _canonicalize_term(
+            term, n_particles=n_particles, cyclic_order=cyclic_order,
+        )
         if canonical is None:
             zero_terms += 1
             continue
@@ -797,12 +861,14 @@ def prepare_pair(
     max_tokens: int | None,
     zero_relative_tolerance: float = DEFAULT_ZERO_REL_TOL,
     n_particles: int = N_PARTICLES,
+    cyclic_order: bool = False,
 ) -> PreparedPair | None:
     """Clean and independently validate one generated candidate pair."""
 
     canonical = canonicalize_simple_expression(
         simple,
         n_particles=n_particles,
+        cyclic_order=cyclic_order,
     )
     if canonical.expression is None:
         return None
@@ -820,6 +886,7 @@ def prepare_pair(
     recanonicalized = canonicalize_simple_expression(
         pruned,
         n_particles=n_particles,
+        cyclic_order=cyclic_order,
     )
     if recanonicalized.expression is None:
         return None
@@ -1066,7 +1133,14 @@ def generate_to_files(
     *,
     n_particles: int = N_PARTICLES,
     generator_name: str | None = None,
+    cyclic_order: bool = False,
 ) -> tuple[GenerationStats, dict[str, Any]]:
+    """Publish exactly ``args.samples`` cleaned pairs, or publish no outputs.
+
+    ``cyclic_order`` enables both cyclic candidate sampling and cyclic-safe
+    canonical representatives while retaining the independent numerical grids.
+    """
+
     raw_path = Path(args.raw_out).expanduser()
     token_path = None if args.no_tokenise else Path(args.tok_out).expanduser()
     report_path = Path(args.report_out).expanduser()
@@ -1182,6 +1256,7 @@ def generate_to_files(
                     batch_size=min(args.generator_batch_size, request_count),
                     jobs=_resolve_jobs(args.jobs),
                     progress=False,
+                    **({"cyclic_order": True} if cyclic_order else {}),
                 )
                 stats.generation_batches += 1
                 stats.candidates_generated += len(candidates)
@@ -1207,6 +1282,7 @@ def generate_to_files(
                             max_tokens=max_tokens,
                             zero_relative_tolerance=args.zero_rel_tol,
                             n_particles=n_particles,
+                            cyclic_order=cyclic_order,
                         )
                     except (OverflowError, TokenizationError):
                         stats.token_rejections += 1
@@ -1225,6 +1301,7 @@ def generate_to_files(
                             exact = canonicalize_simple_expression(
                                 simple,
                                 n_particles=n_particles,
+                                cyclic_order=cyclic_order,
                             )
                         except (ExpressionSyntaxError, ValueError):
                             stats.syntax_rejections += 1
@@ -1299,6 +1376,15 @@ def generate_to_files(
             },
             "settings": {
                 "particles": n_particles,
+                "cyclic_order": cyclic_order,
+                "canonicalization_policy": (
+                    "forward_cyclic_canonical_nonzero_v1"
+                    if cyclic_order else "canonical_nonzero_v1"
+                ),
+                **({
+                    "particle_order": list(default_cyclic_order(n_particles)),
+                    "ordering_reference": CYCLIC_ORDER_REFERENCE_FILES.get(n_particles),
+                } if cyclic_order else {}),
                 "samples": args.samples,
                 "seed": args.seed,
                 "min_terms": args.min_terms,
