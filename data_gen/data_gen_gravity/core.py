@@ -347,7 +347,24 @@ def compact_signature(expr: str) -> tuple:
     This is deliberately structural rather than a string comparison so the
     benchmark blacklist also catches equivalent formatting and factor order.
     """
-    tree = sqed._Parser(sqed._tokenize(expr)).parse()
+    tokens = sqed._strict_tokenize(expr)
+    sqed._validate_strict_token_sequence(tokens)
+    depth = 0
+    for token in tokens:
+        if token == "(":
+            depth += 1
+        elif token == ")":
+            depth -= 1
+            if depth < 0:
+                raise ValueError(
+                    "Compact signature has an unmatched closing parenthesis"
+                )
+    if depth:
+        raise ValueError("Compact signature has an unmatched opening parenthesis")
+    parser = sqed._Parser(tokens)
+    tree = parser.parse()
+    if parser.i != len(tokens):
+        raise ValueError("Compact signature expression was not fully consumed")
 
     def signed_terms(node, sign: int = 1) -> list[tuple[int, object]]:
         if isinstance(node, sqed._UnaryOp):
@@ -439,9 +456,12 @@ _BENCHMARK_BLACKLIST = {
 
 def is_benchmark_leak(expr: str, process: str) -> bool:
     try:
-        return compact_signature(expr) in _BENCHMARK_BLACKLIST[process]
-    except Exception:
-        return _normalise_text(expr) in _BENCHMARK_BLACKLIST[process]
+        signature = compact_signature(expr)
+    except Exception as exc:
+        raise ValueError(
+            f"Cannot check benchmark exclusion for {process}: invalid expression"
+        ) from exc
+    return signature in _BENCHMARK_BLACKLIST[process]
 
 
 def generate_target(

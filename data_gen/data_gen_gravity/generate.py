@@ -42,6 +42,7 @@ class Candidate:
     simple_tokens: int
     scrambled_tokens: int
     relative_error: float
+    compact_origin: str = ""
 
 
 def _tokenizer(max_tokens: int) -> ScatteringAmplitudeTokenizer:
@@ -160,6 +161,7 @@ def _make_candidate(
         simple_tokens=simple_tokens,
         scrambled_tokens=scrambled_tokens,
         relative_error=relative_error,
+        compact_origin=compact,
     )
 
 
@@ -439,6 +441,7 @@ def build_benchmarks(
                         simple_tokens=simple_tokens,
                         scrambled_tokens=scrambled_tokens,
                         relative_error=error,
+                        compact_origin=compact,
                     )
                 )
                 accepted += 1

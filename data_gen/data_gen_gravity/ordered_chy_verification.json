@@ -1,0 +1,137 @@
+{
+  "definition": "five-point double scalar ordering with positive-helicity spectator gravitons",
+  "sources": [
+    "https://arxiv.org/pdf/1808.07451",
+    "https://arxiv.org/html/2408.04720v2"
+  ],
+  "normalization": "minus CHY residue sum with d_ab=p_a.dot(p_b) and sqrt(2) polarizations",
+  "scope": "numerical checks in four dimensions; not a general generator or proof for other sectors",
+  "checks": {
+    "3s2h": {
+      "alpha": [
+        1,
+        2,
+        3
+      ],
+      "beta": [
+        1,
+        2,
+        3
+      ],
+      "spectator_gravitons": [
+        4,
+        5
+      ],
+      "repository_to_paper_factor": 1,
+      "kinematic_seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29
+      ],
+      "configurations": 150,
+      "cyclic_rotation_checks": 1350,
+      "maximum_relative_errors": {
+        "chy_vs_fixture": 1.5324911932412068e-11,
+        "chy_vs_paper": 1.470769065061503e-11,
+        "chy_vs_auxiliary_sum": 1.534057666399643e-11,
+        "gauge_invariance": 1.1367869757442284e-11,
+        "independent_scalar_cyclic_rotations": 8.417883771497139e-16,
+        "graviton_label_swap": 9.090765460893141e-13
+      },
+      "maximum_scattering_equation_residuals": {
+        "absolute": 3.552891310043771e-13,
+        "scaled": 1.3325492288004333e-15
+      }
+    },
+    "4s1h": {
+      "alpha": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "beta": [
+        1,
+        3,
+        2,
+        4
+      ],
+      "spectator_gravitons": [
+        5
+      ],
+      "repository_to_paper_factor": 0.5,
+      "kinematic_seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29
+      ],
+      "configurations": 150,
+      "cyclic_rotation_checks": 2400,
+      "maximum_relative_errors": {
+        "chy_vs_fixture": 1.7285567994921864e-13,
+        "chy_vs_paper": 1.727857223453625e-13,
+        "chy_vs_auxiliary_sum": 1.7274894202128715e-13,
+        "gauge_invariance": 2.0024228910985612e-14,
+        "independent_scalar_cyclic_rotations": 3.1215640431404886e-15
+      },
+      "maximum_scattering_equation_residuals": {
+        "absolute": 3.552891310043771e-13,
+        "scaled": 1.3325492288004333e-15
+      }
+    }
+  }
+}

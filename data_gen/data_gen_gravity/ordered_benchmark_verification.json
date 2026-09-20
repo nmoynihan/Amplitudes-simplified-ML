@@ -1,0 +1,132 @@
+{
+  "definition": "auxiliary ordered benchmark seeds, not color-ordered amplitudes",
+  "checks": {
+    "3s2h": {
+      "ordered_seed": "-((p_1 \u00b7 F_4 \u00b7 p_2)*(p_1 \u00b7 F_4 \u00b7 p_5)*(p_1 \u00b7 F_5 \u00b7 p_3)*(p_2 \u00b7 F_5 \u00b7 p_3))/((p_1 \u00b7 p_4)*(p_1 \u00b7 p_5)*(p_2 \u00b7 p_4)*(p_2 \u00b7 p_5)*(p_3 \u00b7 p_5)*(p_4 \u00b7 p_5))",
+      "reconstruction_orders": [
+        [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        [
+          1,
+          2,
+          3,
+          5,
+          4
+        ]
+      ],
+      "allowed_order_count": 12,
+      "all_order_weight": "1/6",
+      "repository_to_paper_factor": 1,
+      "kinematic_seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29
+      ],
+      "configurations": 150,
+      "maximum_relative_errors": {
+        "two_piece_vs_fixture": 1.9887202487591e-14,
+        "all_orders_vs_fixture": 9.713248120580918e-13,
+        "two_piece_vs_paper": 1.0151248418685405e-12,
+        "seed_gauge_invariance": 9.364026189950901e-15
+      }
+    },
+    "4s1h": {
+      "ordered_seed": "((p_1 \u00b7 F_5 \u00b7 p_4)*(p_2 \u00b7 F_5 \u00b7 p_3))/(2*((p_1 \u00b7 p_4)*(p_2 \u00b7 p_3)*(p_1 \u00b7 p_5)*(p_3 \u00b7 p_5))) + ((p_1 \u00b7 F_5 \u00b7 p_4)*(p_3 \u00b7 F_5 \u00b7 p_4))/((p_2 \u00b7 p_3)*(p_1 \u00b7 p_5)*(p_3 \u00b7 p_5)*(p_4 \u00b7 p_5))",
+      "reconstruction_orders": [
+        [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        [
+          3,
+          4,
+          1,
+          2,
+          5
+        ]
+      ],
+      "allowed_order_count": 8,
+      "all_order_weight": "1/4",
+      "repository_to_paper_factor": 0.5,
+      "kinematic_seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29
+      ],
+      "configurations": 150,
+      "maximum_relative_errors": {
+        "two_piece_vs_fixture": 9.114412104070287e-15,
+        "all_orders_vs_fixture": 1.040595099068355e-14,
+        "two_piece_vs_paper": 1.9970965440038902e-14,
+        "seed_gauge_invariance": 1.3421067483872919e-14
+      }
+    }
+  },
+  "saved_target_counts": {
+    "3s2h": 100,
+    "4s1h": 100
+  },
+  "saved_scrambled_inputs_revalidated": false
+}

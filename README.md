@@ -79,9 +79,12 @@ SAMPLES=50000 SEED=7 ./data_gen/data_gen_ym/run_ym.sh 4 \
     --raw-out data/data_ym/ym_4pt_50k.csv.gz --tok-out data/data_ym/ym_4pt_50k_tok.csv.gz
 
 # Generate/train/evaluate the balanced five-point gravity workflow
-./run_gravity_100k.sh data
-./run_gravity_100k.sh train
-./run_gravity_100k.sh eval
+python3 -m data_gen.gravity_generation data --output-dir data/gravity/audited
+python3 -m data_gen.gravity_generation train --output-dir data/gravity/audited
+python3 -m data_gen.gravity_generation eval --output-dir data/gravity/audited
+
+# Ordered gravity components: 100k synthetic training rows + 200 held-out test rows
+python3 -m data_gen.ordered_gravity_gen --samples 100200 --test-size 200 --jobs 8
 
 # Train (--data-files resolves under ./data; transformer_trainer_paolo.py is the Apple-MPS variant)
 python3 transformer/transformer_trainer.py --data-files "sqed_4pt_10k_tok.csv"        --run-name sqed_4pt_10k

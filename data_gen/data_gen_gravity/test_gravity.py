@@ -12,6 +12,7 @@ from ..Tokenizer import ScatteringAmplitudeTokenizer
 from .core import (
     BENCHMARKS,
     PROCESS_SPECS,
+    _relabel,
     count_expanded_terms,
     eval_expression,
     expand_expression,
@@ -71,6 +72,32 @@ class KinematicsTests(unittest.TestCase):
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_benchmark_exclusion_handles_relabeling_and_factor_order(self) -> None:
+        for process, compact in BENCHMARKS.items():
+            spec = PROCESS_SPECS[process]
+            mapping = {leg: leg for leg in range(1, 6)}
+            mapping.update(zip(spec.scalar_legs, reversed(spec.scalar_legs)))
+            mapping.update(zip(spec.graviton_legs, reversed(spec.graviton_legs)))
+            relabeled = _relabel(compact, mapping)
+            self.assertTrue(is_benchmark_leak(relabeled, process))
+
+        compact = BENCHMARKS["4s1h"]
+        reordered = compact.replace(
+            "(p_1 · F_5 · p_4)*(p_2 · F_5 · p_3)",
+            "(p_2 · F_5 · p_3)*(p_1 · F_5 · p_4)",
+        )
+        self.assertNotEqual(compact, reordered)
+        self.assertTrue(is_benchmark_leak(reordered, "4s1h"))
+
+    def test_malformed_benchmark_checks_fail_closed(self) -> None:
+        malformed = ("", "not_an_expression", "(p_1 · p_2", "p_1 · p_2 +", "1 2")
+        for expression in malformed:
+            with self.subTest(expression=expression):
+                with self.assertRaisesRegex(
+                    ValueError, "Cannot check benchmark exclusion"
+                ):
+                    is_benchmark_leak(expression, "4s1h")
+
     def test_paper_formulas_and_expansion_sizes(self) -> None:
         errors = verify_paper_benchmarks()
         self.assertLess(max(errors.values()), 1e-9)
@@ -99,6 +126,9 @@ class BenchmarkTests(unittest.TestCase):
         )
         self.assertEqual(len(rows), 10)
         self.assertEqual(len({row.scrambled for row in rows}), 10)
+        self.assertTrue(
+            all(row.compact_origin == BENCHMARKS[row.process] for row in rows)
+        )
         self.assertEqual(
             Counter((row.process, row.scramble_depth) for row in rows),
             Counter(
@@ -110,6 +140,32 @@ class BenchmarkTests(unittest.TestCase):
 
 
 class GeneratorTests(unittest.TestCase):
+    def test_staged_rows_preserve_their_original_compact_target(self) -> None:
+        rows = build_dataset(
+            4,
+            kind="staged",
+            seed=991,
+            min_scr=2,
+            max_scr=2,
+            min_terms=1,
+            max_terms=2,
+            validate=True,
+        )
+        self.assertTrue(any(row.simple != row.compact_origin for row in rows))
+        for row in rows:
+            compact = generate_target(
+                row.process,
+                rng=random.Random(row.seed),
+                min_terms=1,
+                max_terms=2,
+            )
+            self.assertEqual(row.compact_origin, compact)
+            self.assertFalse(is_benchmark_leak(row.compact_origin, row.process))
+            equivalent, _ = numerically_equivalent(
+                row.simple, row.compact_origin, row.process, seeds=(201,)
+            )
+            self.assertTrue(equivalent)
+
     def test_compact_targets_obey_manifest(self) -> None:
         for process, spec in PROCESS_SPECS.items():
             rng = random.Random(123)
