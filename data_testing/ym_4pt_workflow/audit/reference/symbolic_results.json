@@ -1,0 +1,51 @@
+{
+  "source": "../../inputs/gluon4feyn1234_model_ready.csv",
+  "sha256": "f73c1e6b8459876394697b26d4f2585b6f51ed0eee52fa8412dd5ba9fbc6ca0c",
+  "bytes": 4473,
+  "records": 1,
+  "row_id": "1",
+  "sympy_version": "1.14.0",
+  "arithmetic": "exact rational symbolic algebra",
+  "assumptions": [
+    "all momenta outgoing",
+    "p_i^2=0",
+    "sum_i p_i=0",
+    "e_i.p_i=0"
+  ],
+  "dimension_specific_Gram_identities_used": false,
+  "raw_additive_terms": 48,
+  "termwise_degrees_momentum_e1_e2_e3_e4": [
+    [
+      0,
+      1,
+      1,
+      1,
+      1
+    ]
+  ],
+  "feynman_reference_difference": "0",
+  "ward_residuals": [
+    "0",
+    "0",
+    "0",
+    "0"
+  ],
+  "cyclic_residuals": [
+    "0",
+    "0",
+    "0"
+  ],
+  "reflection_residual": "0",
+  "photon_decoupling_residual": "0",
+  "BCJ_s12_A1234_minus_s13_A1324": "0",
+  "reduced_denominator": "a*b",
+  "no_nonadjacent_or_double_poles": true,
+  "s_residue_difference": "0",
+  "t_residue_difference": "0",
+  "s_current_conservation": "0",
+  "t_current_conservation": "0",
+  "u_zero_finite_expression": "(a*e1e3*e2e4 + e1e2*e3p1*e4p2 - e1e3*e2p1*e4p1 - e1e3*e2p1*e4p2 - e1e3*e2p3*e4p1 + e1e4*e2p1*e3p1 + e1e4*e2p3*e3p1 - e1p2*e2e4*e3p1 - e1p3*e2e3*e4p2 + e1p3*e2e4*e3p2 - e1p3*e2p1*e3e4 - e1p3*e2p3*e3e4)/a",
+  "s_residue": "-2*(b*e1e2*e3e4 - e1e2*e3p1*e4p2 + e1e2*e3p2*e4p1 + e1e3*e2p1*e4p1 + e1e3*e2p1*e4p2 - e1e4*e2p1*e3p1 - e1e4*e2p1*e3p2 - e1p2*e2e3*e4p1 - e1p2*e2e3*e4p2 + e1p2*e2e4*e3p1 + e1p2*e2e4*e3p2 - e1p2*e2p3*e3e4 + e1p3*e2p1*e3e4)",
+  "t_residue": "-2*(a*e1e4*e2e3 + e1e2*e3p2*e4p1 - e1e3*e2p3*e4p1 - e1e4*e2p1*e3p2 + e1e4*e2p3*e3p1 - e1p2*e2e3*e4p1 - e1p2*e2e3*e4p2 + e1p2*e2e4*e3p2 - e1p2*e2p3*e3e4 - e1p3*e2e3*e4p2 + e1p3*e2e4*e3p2 - e1p3*e2p3*e3e4)",
+  "reduced_expression": "(-a**2*e1e4*e2e3 - a*b*e1e2*e3e4 + a*b*e1e3*e2e4 - a*b*e1e4*e2e3 - a*e1e2*e3p2*e4p1 + a*e1e3*e2p3*e4p1 + a*e1e4*e2p1*e3p2 - a*e1e4*e2p3*e3p1 + a*e1p2*e2e3*e4p1 + a*e1p2*e2e3*e4p2 - a*e1p2*e2e4*e3p2 + a*e1p2*e2p3*e3e4 + a*e1p3*e2e3*e4p2 - a*e1p3*e2e4*e3p2 + a*e1p3*e2p3*e3e4 - b**2*e1e2*e3e4 + b*e1e2*e3p1*e4p2 - b*e1e2*e3p2*e4p1 - b*e1e3*e2p1*e4p1 - b*e1e3*e2p1*e4p2 + b*e1e4*e2p1*e3p1 + b*e1e4*e2p1*e3p2 + b*e1p2*e2e3*e4p1 + b*e1p2*e2e3*e4p2 - b*e1p2*e2e4*e3p1 - b*e1p2*e2e4*e3p2 + b*e1p2*e2p3*e3e4 - b*e1p3*e2p1*e3e4)/(a*b)"
+}

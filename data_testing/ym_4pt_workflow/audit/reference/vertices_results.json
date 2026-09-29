@@ -1,0 +1,771 @@
+{
+  "source": "../../inputs/gluon4feyn1234_model_ready.csv",
+  "sha256": "f73c1e6b8459876394697b26d4f2585b6f51ed0eee52fa8412dd5ba9fbc6ca0c",
+  "row_count": 1,
+  "terms": 48,
+  "conventions": "metric (+---), all outgoing, g and global i omitted; unnormalized ordered vertices",
+  "points": [
+    {
+      "cos_theta": "3/5",
+      "sin_theta": "4/5",
+      "momenta": [
+        [
+          "-1",
+          "0",
+          "0",
+          "-1"
+        ],
+        [
+          "-1",
+          "0",
+          "0",
+          "1"
+        ],
+        [
+          "1",
+          "4/5",
+          "0",
+          "3/5"
+        ],
+        [
+          "1",
+          "-4/5",
+          "0",
+          "-3/5"
+        ]
+      ],
+      "linear": [
+        {
+          "basis": "0000",
+          "csv": "21/20",
+          "ym": "21/10",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "0001",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "0010",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "0011",
+          "csv": "-1/5",
+          "ym": "-2/5",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "0100",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "0101",
+          "csv": "1",
+          "ym": "2",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "0110",
+          "csv": "1/4",
+          "ym": "1/2",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "0111",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "1000",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "1001",
+          "csv": "1/4",
+          "ym": "1/2",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "1010",
+          "csv": "1",
+          "ym": "2",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "1011",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "1100",
+          "csv": "-1/5",
+          "ym": "-2/5",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "1101",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "1110",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "1111",
+          "csv": "21/20",
+          "ym": "21/10",
+          "ratio": "1/2"
+        }
+      ],
+      "helicity": [
+        {
+          "helicities": "++++",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "+++-",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "++-+",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "++--",
+          "csv": "5/4",
+          "ym": "5/2",
+          "ratio": "1/2"
+        },
+        {
+          "helicities": "+-++",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "+-+-",
+          "csv": "1/20",
+          "ym": "1/10",
+          "ratio": "1/2"
+        },
+        {
+          "helicities": "+--+",
+          "csv": "4/5",
+          "ym": "8/5",
+          "ratio": "1/2"
+        },
+        {
+          "helicities": "+---",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "-+++",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "-++-",
+          "csv": "4/5",
+          "ym": "8/5",
+          "ratio": "1/2"
+        },
+        {
+          "helicities": "-+-+",
+          "csv": "1/20",
+          "ym": "1/10",
+          "ratio": "1/2"
+        },
+        {
+          "helicities": "-+--",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "--++",
+          "csv": "5/4",
+          "ym": "5/2",
+          "ratio": "1/2"
+        },
+        {
+          "helicities": "--+-",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "---+",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "----",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        }
+      ],
+      "ward": [
+        {
+          "leg": 1,
+          "csv": "0",
+          "ym": "0"
+        },
+        {
+          "leg": 2,
+          "csv": "0",
+          "ym": "0"
+        },
+        {
+          "leg": 3,
+          "csv": "0",
+          "ym": "0"
+        },
+        {
+          "leg": 4,
+          "csv": "0",
+          "ym": "0"
+        }
+      ],
+      "generic": {
+        "csv": "1324/5",
+        "ym": "2648/5",
+        "ratio": "1/2"
+      }
+    },
+    {
+      "cos_theta": "5/13",
+      "sin_theta": "12/13",
+      "momenta": [
+        [
+          "-1",
+          "0",
+          "0",
+          "-1"
+        ],
+        [
+          "-1",
+          "0",
+          "0",
+          "1"
+        ],
+        [
+          "1",
+          "12/13",
+          "0",
+          "5/13"
+        ],
+        [
+          "1",
+          "-12/13",
+          "0",
+          "-5/13"
+        ]
+      ],
+      "linear": [
+        {
+          "basis": "0000",
+          "csv": "133/117",
+          "ym": "266/117",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "0001",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "0010",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "0011",
+          "csv": "-4/13",
+          "ym": "-8/13",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "0100",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "0101",
+          "csv": "1",
+          "ym": "2",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "0110",
+          "csv": "4/9",
+          "ym": "8/9",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "0111",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "1000",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "1001",
+          "csv": "4/9",
+          "ym": "8/9",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "1010",
+          "csv": "1",
+          "ym": "2",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "1011",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "1100",
+          "csv": "-4/13",
+          "ym": "-8/13",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "1101",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "1110",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "1111",
+          "csv": "133/117",
+          "ym": "266/117",
+          "ratio": "1/2"
+        }
+      ],
+      "helicity": [
+        {
+          "helicities": "++++",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "+++-",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "++-+",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "++--",
+          "csv": "13/9",
+          "ym": "26/9",
+          "ratio": "1/2"
+        },
+        {
+          "helicities": "+-++",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "+-+-",
+          "csv": "16/117",
+          "ym": "32/117",
+          "ratio": "1/2"
+        },
+        {
+          "helicities": "+--+",
+          "csv": "9/13",
+          "ym": "18/13",
+          "ratio": "1/2"
+        },
+        {
+          "helicities": "+---",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "-+++",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "-++-",
+          "csv": "9/13",
+          "ym": "18/13",
+          "ratio": "1/2"
+        },
+        {
+          "helicities": "-+-+",
+          "csv": "16/117",
+          "ym": "32/117",
+          "ratio": "1/2"
+        },
+        {
+          "helicities": "-+--",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "--++",
+          "csv": "13/9",
+          "ym": "26/9",
+          "ratio": "1/2"
+        },
+        {
+          "helicities": "--+-",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "---+",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "----",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        }
+      ],
+      "ward": [
+        {
+          "leg": 1,
+          "csv": "0",
+          "ym": "0"
+        },
+        {
+          "leg": 2,
+          "csv": "0",
+          "ym": "0"
+        },
+        {
+          "leg": 3,
+          "csv": "0",
+          "ym": "0"
+        },
+        {
+          "leg": 4,
+          "csv": "0",
+          "ym": "0"
+        }
+      ],
+      "generic": {
+        "csv": "3721/13",
+        "ym": "7442/13",
+        "ratio": "1/2"
+      }
+    },
+    {
+      "cos_theta": "-7/25",
+      "sin_theta": "24/25",
+      "momenta": [
+        [
+          "-1",
+          "0",
+          "0",
+          "-1"
+        ],
+        [
+          "-1",
+          "0",
+          "0",
+          "1"
+        ],
+        [
+          "1",
+          "24/25",
+          "0",
+          "-7/25"
+        ],
+        [
+          "1",
+          "-24/25",
+          "0",
+          "7/25"
+        ]
+      ],
+      "linear": [
+        {
+          "basis": "0000",
+          "csv": "481/225",
+          "ym": "962/225",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "0001",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "0010",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "0011",
+          "csv": "-16/25",
+          "ym": "-32/25",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "0100",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "0101",
+          "csv": "1",
+          "ym": "2",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "0110",
+          "csv": "16/9",
+          "ym": "32/9",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "0111",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "1000",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "1001",
+          "csv": "16/9",
+          "ym": "32/9",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "1010",
+          "csv": "1",
+          "ym": "2",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "1011",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "1100",
+          "csv": "-16/25",
+          "ym": "-32/25",
+          "ratio": "1/2"
+        },
+        {
+          "basis": "1101",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "1110",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "basis": "1111",
+          "csv": "481/225",
+          "ym": "962/225",
+          "ratio": "1/2"
+        }
+      ],
+      "helicity": [
+        {
+          "helicities": "++++",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "+++-",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "++-+",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "++--",
+          "csv": "25/9",
+          "ym": "50/9",
+          "ratio": "1/2"
+        },
+        {
+          "helicities": "+-++",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "+-+-",
+          "csv": "256/225",
+          "ym": "512/225",
+          "ratio": "1/2"
+        },
+        {
+          "helicities": "+--+",
+          "csv": "9/25",
+          "ym": "18/25",
+          "ratio": "1/2"
+        },
+        {
+          "helicities": "+---",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "-+++",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "-++-",
+          "csv": "9/25",
+          "ym": "18/25",
+          "ratio": "1/2"
+        },
+        {
+          "helicities": "-+-+",
+          "csv": "256/225",
+          "ym": "512/225",
+          "ratio": "1/2"
+        },
+        {
+          "helicities": "-+--",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "--++",
+          "csv": "25/9",
+          "ym": "50/9",
+          "ratio": "1/2"
+        },
+        {
+          "helicities": "--+-",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "---+",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        },
+        {
+          "helicities": "----",
+          "csv": "0",
+          "ym": "0",
+          "ratio": "None"
+        }
+      ],
+      "ward": [
+        {
+          "leg": 1,
+          "csv": "0",
+          "ym": "0"
+        },
+        {
+          "leg": 2,
+          "csv": "0",
+          "ym": "0"
+        },
+        {
+          "leg": 3,
+          "csv": "0",
+          "ym": "0"
+        },
+        {
+          "leg": 4,
+          "csv": "0",
+          "ym": "0"
+        }
+      ],
+      "generic": {
+        "csv": "13429/25",
+        "ym": "26858/25",
+        "ratio": "1/2"
+      }
+    }
+  ],
+  "all_nonzero_ym_ratios": [
+    "1/2"
+  ]
+}

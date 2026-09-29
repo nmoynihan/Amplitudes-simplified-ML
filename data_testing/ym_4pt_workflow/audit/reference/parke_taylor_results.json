@@ -1,0 +1,149 @@
+{
+  "parameter": "x = tan(theta/2) > 0",
+  "metric": "(+---)",
+  "global_factor": "i and coupling g^2 stripped",
+  "momenta": [
+    [
+      "-1",
+      "0",
+      "0",
+      "-1"
+    ],
+    [
+      "-1",
+      "0",
+      "0",
+      "1"
+    ],
+    [
+      "1",
+      "2*x/(x**2 + 1)",
+      "0",
+      "-(x - 1)*(x + 1)/(x**2 + 1)"
+    ],
+    [
+      "1",
+      "-2*x/(x**2 + 1)",
+      "0",
+      "(x - 1)*(x + 1)/(x**2 + 1)"
+    ]
+  ],
+  "polarizations": "epsilon_i(h) = (b_i + i*h*y)/sqrt(2), b1=(0,1,0,0), b2=(0,-1,0,0), b3=(0,c,0,-sin(theta)), b4=-b3, y=(0,0,1,0); c=(1-x^2)/(1+x^2)",
+  "spinors": [
+    [
+      "sqrt(2)*I",
+      "0"
+    ],
+    [
+      "0",
+      "sqrt(2)*I"
+    ],
+    [
+      "sqrt(2)/sqrt(x**2 + 1)",
+      "sqrt(2)*x/sqrt(x**2 + 1)"
+    ],
+    [
+      "sqrt(2)*x/sqrt(x**2 + 1)",
+      "-sqrt(2)/sqrt(x**2 + 1)"
+    ]
+  ],
+  "parke_taylor_formula": "<ij>^4 / (<12><23><34><41>) for negative helicity legs i,j; <ij>=det(lambda_i,lambda_j)",
+  "checks": [
+    {
+      "helicities": "++++",
+      "csv": "0",
+      "parke_taylor_i_stripped": "0",
+      "residual": "0"
+    },
+    {
+      "helicities": "+++-",
+      "csv": "0",
+      "parke_taylor_i_stripped": "0",
+      "residual": "0"
+    },
+    {
+      "helicities": "++-+",
+      "csv": "0",
+      "parke_taylor_i_stripped": "0",
+      "residual": "0"
+    },
+    {
+      "helicities": "++--",
+      "csv": "x**2 + 1",
+      "parke_taylor_i_stripped": "x**2 + 1",
+      "residual": "0"
+    },
+    {
+      "helicities": "+-++",
+      "csv": "0",
+      "parke_taylor_i_stripped": "0",
+      "residual": "0"
+    },
+    {
+      "helicities": "+-+-",
+      "csv": "x**4/(x**2 + 1)",
+      "parke_taylor_i_stripped": "x**4/(x**2 + 1)",
+      "residual": "0"
+    },
+    {
+      "helicities": "+--+",
+      "csv": "1/(x**2 + 1)",
+      "parke_taylor_i_stripped": "1/(x**2 + 1)",
+      "residual": "0"
+    },
+    {
+      "helicities": "+---",
+      "csv": "0",
+      "parke_taylor_i_stripped": "0",
+      "residual": "0"
+    },
+    {
+      "helicities": "-+++",
+      "csv": "0",
+      "parke_taylor_i_stripped": "0",
+      "residual": "0"
+    },
+    {
+      "helicities": "-++-",
+      "csv": "1/(x**2 + 1)",
+      "parke_taylor_i_stripped": "1/(x**2 + 1)",
+      "residual": "0"
+    },
+    {
+      "helicities": "-+-+",
+      "csv": "x**4/(x**2 + 1)",
+      "parke_taylor_i_stripped": "x**4/(x**2 + 1)",
+      "residual": "0"
+    },
+    {
+      "helicities": "-+--",
+      "csv": "0",
+      "parke_taylor_i_stripped": "0",
+      "residual": "0"
+    },
+    {
+      "helicities": "--++",
+      "csv": "x**2 + 1",
+      "parke_taylor_i_stripped": "x**2 + 1",
+      "residual": "0"
+    },
+    {
+      "helicities": "--+-",
+      "csv": "0",
+      "parke_taylor_i_stripped": "0",
+      "residual": "0"
+    },
+    {
+      "helicities": "---+",
+      "csv": "0",
+      "parke_taylor_i_stripped": "0",
+      "residual": "0"
+    },
+    {
+      "helicities": "----",
+      "csv": "0",
+      "parke_taylor_i_stripped": "0",
+      "residual": "0"
+    }
+  ]
+}

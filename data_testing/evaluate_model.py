@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import csv
 import gzip
+import hashlib
 import io
 import json
 import math
@@ -30,7 +31,7 @@ import threading
 import time
 import traceback
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
@@ -164,6 +165,10 @@ GRAVITY_GAUGE_SHIFT = True
 NUMERIC_TOL_ABS: float | None = None
 NUMERIC_TOL_REL: float | None = None
 BEAM_SIZE = 50
+SAMPLING_SEED = 0
+MASK_INVALID_TOKENS = False
+REFERENCE_PROVIDED_OVERRIDE: bool | None = None
+INPUT_PROVENANCE_PATH: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -223,6 +228,15 @@ CLI_SCRAMBLES: list[str] | None = None
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate a trained transformer on generated amplitude data.")
+    parser.add_argument("--sampling-seed", type=int, default=None)
+    parser.add_argument("--numeric-seed", type=int, default=None)
+    parser.add_argument("--numeric-samples", type=int, default=None)
+    parser.add_argument("--mask-invalid-tokens", action=argparse.BooleanOptionalAction, default=None,
+                        help="Mask PAD/UNK/BOS and unmapped output IDs during inference; default off.")
+    parser.add_argument("--reference-provided", action=argparse.BooleanOptionalAction, default=None,
+                        help="Whether the input supplies an independent target; inferred from format by default.")
+    parser.add_argument("--input-provenance-path", type=str, default=None,
+                        help="Original input path when a frontend imports a selected temporary row.")
     parser.add_argument("--model-path", type=str, default=None)
     parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default=None)
     parser.add_argument("--n-particles", type=int, default=None)
@@ -461,6 +475,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def apply_cli_config(args: argparse.Namespace) -> None:
+    global SAMPLING_SEED, MASK_INVALID_TOKENS, REFERENCE_PROVIDED_OVERRIDE, INPUT_PROVENANCE_PATH
+    global NUMERIC_EQUIV_SEED, NUMERIC_EQUIV_SAMPLES
     global MODEL_PATH, DEVICE, N_PARTICLES, NUM_SAMPLES, GENERATION_SEED
     global TOKENIZER_MAX_PARTICLES, DATA_FILENAME_STEM, RAW_CSV_PATH, TOK_CSV_PATH
     global GEN_LOG_PATH, SUMMARY_CSV_PATH, DATA_SOURCE, EXISTING_RAW_CSV_PATH
@@ -474,6 +490,20 @@ def apply_cli_config(args: argparse.Namespace) -> None:
     global GRAVITY_REFERENCE_MODES, GRAVITY_GAUGE_SHIFT
     global NUMERIC_TOL_ABS, NUMERIC_TOL_REL
     global DECODE_RUNS, CLI_SCRAMBLES, SIMPLE_SUMMARY, HUMAN_CSV, PLOTS
+
+    if args.sampling_seed is not None:
+        SAMPLING_SEED = args.sampling_seed
+    if args.numeric_seed is not None:
+        NUMERIC_EQUIV_SEED = args.numeric_seed
+    if args.numeric_samples is not None:
+        if args.numeric_samples < 1:
+            raise ValueError("--numeric-samples must be positive")
+        NUMERIC_EQUIV_SAMPLES = args.numeric_samples
+    if args.mask_invalid_tokens is not None:
+        MASK_INVALID_TOKENS = args.mask_invalid_tokens
+    REFERENCE_PROVIDED_OVERRIDE = args.reference_provided
+    INPUT_PROVENANCE_PATH = (resolve_input_path(args.input_provenance_path)
+                             if args.input_provenance_path else None)
 
     single_amplitude_args_used = any(
         value is not None
@@ -645,7 +675,8 @@ def apply_cli_config(args: argparse.Namespace) -> None:
                 enabled=cfg.enabled,
                 decoding_method=cfg.decoding_method,
                 max_length=cfg.max_length,
-                beam_size=args.beam_size if cfg.decoding_method in {"beam", "nucleus"} else cfg.beam_size,
+                beam_size=(args.beam_size if args.beam_size is not None and cfg.decoding_method in {"beam", "nucleus"}
+                           else cfg.beam_size),
                 p_nucleus=args.p_nucleus if args.p_nucleus is not None else cfg.p_nucleus,
                 temperature_nucleus=(
                     args.temperature_nucleus
@@ -685,8 +716,10 @@ sys.path.insert(0, str(ROOT / "transformer"))
 sys.path.insert(0, str(ROOT))
 
 import gen_data as gd
-from numeric_utils import numeric_values_close
+from numeric_utils import numeric_values_close  # Shared nucleus evaluator compatibility.
+from data_testing.evaluation_diagnostics import compare_expressions
 from Tokenizer import ScatteringAmplitudeTokenizer
+from data_testing.evaluation_records import inspect_sequence, check_candidate
 from data_gen.data_gen_gravity.core import (
     PROCESS_SPECS as GRAVITY_PROCESS_SPECS,
     eval_expression as eval_gravity_expression,
@@ -698,6 +731,7 @@ from data_gen.data_gen_gravity.kinematics import (
 from data_import import TransformerDataset, dynamic_pad_collate
 from data_gen_ym.kinematics import generate_kinematics as generate_ym_kinematics
 from data_gen_ym.numerics import eval_infix_numeric as eval_ym_infix_numeric
+from data_gen_ym import numerics as ym_numeric_module
 from kinematics import generate_kinematics as generate_sqed_kinematics
 from single_amplitude_test_set_to_simple_scrambled import (
     convert_file as convert_single_amplitude_file,
@@ -1046,6 +1080,7 @@ def select_candidate_for_reporting(
             record
             for record in candidate_records
             if record["decode_ok"] and record["num_eq_scrambled"]
+            and record.get("completed", True) and record.get("syntax_valid", True)
         ]
         if equivalent_candidates:
             selected = min(
@@ -1054,9 +1089,10 @@ def select_candidate_for_reporting(
             )
             selection_reason = "numerically_equivalent_rerank"
 
-    if not selected["decode_ok"]:
+    if not selected["decode_ok"] or not selected.get("syntax_valid", True):
         valid_fallback = next(
-            (record for record in candidate_records if record["decode_ok"]),
+            (record for record in candidate_records if record["decode_ok"]
+             and record.get("syntax_valid", True) and record.get("completed", True)),
             None,
         )
         if valid_fallback is not None:
@@ -1170,9 +1206,9 @@ def resolve_gravity_processes(
     if NUMERIC_BACKEND != "gravity":
         return [None] * len(raw_rows)
 
-    if GRAVITY_PROCESS is not None:
-        return [GRAVITY_PROCESS] * len(raw_rows)
     if DATA_SOURCE != "csv":
+        if GRAVITY_PROCESS is not None:
+            return [GRAVITY_PROCESS] * len(raw_rows)
         raise ValueError(
             "Gravity evaluation outside DATA_SOURCE='csv' requires "
             "--gravity-process 3s2h or --gravity-process 4s1h"
@@ -1185,6 +1221,8 @@ def resolve_gravity_processes(
         else infer_gravity_metadata_path(source_path)
     )
     if metadata_path is None:
+        if GRAVITY_PROCESS is not None:
+            return [GRAVITY_PROCESS] * len(raw_rows)
         raise ValueError(
             f"Could not infer gravity metadata for {source_path}. Pass "
             "--gravity-metadata-csv or --gravity-process."
@@ -1207,6 +1245,9 @@ def resolve_gravity_processes(
         start=2,
     ):
         process = (metadata.get("process") or "").strip()
+        if GRAVITY_PROCESS is not None and process != GRAVITY_PROCESS:
+            raise ValueError(f"Gravity process conflict at {metadata_path}:{row_index}: "
+                             f"metadata={process!r}, explicit={GRAVITY_PROCESS!r}")
         if process not in GRAVITY_PROCESS_SPECS:
             raise ValueError(
                 f"{metadata_path}:{row_index} has unsupported gravity process "
@@ -1277,8 +1318,16 @@ def validate_input_token_rows(rows: list[dict[str, list[int]]]) -> int:
     if not rows:
         raise ValueError("The tokenised evaluation dataset contains no rows")
 
+    known = set(ScatteringAmplitudeTokenizer(max_particles=TOKENIZER_MAX_PARTICLES,
+                                            max_sequence_length=None).id_to_token)
     max_content_tokens = 0
     for row_number, row in enumerate(rows, start=2):
+        for field in ("simple", "scrambled") if "simple" in row else ("scrambled",):
+            content = row.get(field)
+            if not isinstance(content, list) or not content or any(type(t) is not int for t in content):
+                raise ValueError(f"{TOK_CSV_PATH}:{row_number} {field} must be a nonempty JSON list of integers")
+            if any(t not in known or t in (0, 1, 2, 3) for t in content):
+                raise ValueError(f"{TOK_CSV_PATH}:{row_number} {field} contains special or out-of-vocabulary token IDs")
         tokens = row.get("scrambled")
         if not isinstance(tokens, list) or any(type(token) is not int for token in tokens):
             raise ValueError(
@@ -1643,6 +1692,97 @@ def eval_numeric_expr(
     raise ValueError(f"Unknown numerical backend: {NUMERIC_BACKEND!r}")
 
 
+def numerical_comparison(
+    source: str,
+    candidate: str,
+    cached_kinematics: list[tuple[Any, Any]] | dict[str, list[Any]],
+    *,
+    gravity_process: str | None = None,
+) -> dict[str, Any]:
+    """Return numerical evidence using the configured strict backend.
+
+    Every cached point is required and examined. No random replacement points
+    are introduced; source singularities therefore yield insufficient evidence.
+    The gravity oracle checks the same-positive-helicity domain only.
+    """
+    tol_abs, tol_rel = resolve_numeric_tolerances()
+
+    def configuration_failure(reason: str, *, status: str = "invalid_configuration") -> dict[str, Any]:
+        result = compare_expressions(
+            source, candidate, [], evaluator=lambda expression, point: 0.0,
+            atol=tol_abs, rtol=tol_rel,
+        )
+        failure = {
+            "status": status, "phase": "configuration", "role": "pair",
+            "sample_index": None, "error_type": "ValueError", "reason": reason,
+        }
+        result.update(status=status, first_failure=failure, failures=[failure])
+        return result
+
+    if NUMERIC_BACKEND == "gravity":
+        if gravity_process not in GRAVITY_PROCESS_SPECS:
+            return configuration_failure(
+                f"Gravity numerical evaluation requires a supported process; got {gravity_process!r}",
+                status="unsupported_expression",
+            )
+        if not isinstance(cached_kinematics, dict):
+            return configuration_failure("Gravity kinematics cache must be process-keyed")
+        points = cached_kinematics.get(gravity_process, [])
+        if not isinstance(points, list):
+            return configuration_failure("Cached gravity process points must be a list")
+        result = compare_expressions(
+            source, candidate, points,
+            evaluator=lambda expression, point: eval_numeric_expr(
+                expression, point, None, gravity_process=gravity_process,
+            ),
+            validator=lambda expression: validate_gravity_expression(expression, gravity_process),
+            atol=tol_abs, rtol=tol_rel,
+        )
+        result.update(backend="gravity", process=gravity_process, helicity_domain="same-positive-helicity")
+        return result
+
+    if NUMERIC_BACKEND not in {"sqed", "ym"}:
+        return configuration_failure(f"Unknown numerical backend: {NUMERIC_BACKEND!r}")
+    if not isinstance(cached_kinematics, list):
+        return configuration_failure("SQED/Yang-Mills kinematics cache must be a list")
+
+    def validate_scalar(expression: str) -> None:
+        # Reuse each backend's strict grammar and scalar AST boundary without
+        # evaluating it at a potentially singular point just to validate syntax.
+        module = gd if NUMERIC_BACKEND == "sqed" else ym_numeric_module
+        tokens = module._strict_tokenize(expression)
+        module._validate_strict_token_sequence(tokens)
+        depth = 0
+        for token in tokens:
+            if token == "(":
+                depth += 1
+            elif token == ")":
+                depth -= 1
+                if depth < 0:
+                    raise ValueError("numerical evaluator: unmatched closing parenthesis")
+        if depth:
+            raise ValueError("numerical evaluator: unmatched opening parenthesis")
+        parser = module._Parser(tokens)
+        tree = parser.parse()
+        if parser.i != len(tokens):
+            raise ValueError(
+                "numerical evaluator: expression was not fully consumed "
+                f"({parser.i}/{len(tokens)} tokens)"
+            )
+        if NUMERIC_BACKEND == "sqed":
+            module._validate_sqed_source_ast(tree, N_PARTICLES)
+        else:
+            module._validate_source_ast(tree, N_PARTICLES)
+
+    result = compare_expressions(
+        source, candidate, cached_kinematics,
+        evaluator=lambda expression, point: eval_numeric_expr(expression, *point),
+        validator=validate_scalar, atol=tol_abs, rtol=tol_rel,
+    )
+    result.update(backend=NUMERIC_BACKEND, process=None, helicity_domain=None)
+    return result
+
+
 def numerically_equivalent_exprs(
     expr_a: str,
     expr_b: str,
@@ -1650,63 +1790,11 @@ def numerically_equivalent_exprs(
     *,
     gravity_process: str | None = None,
 ) -> bool:
-    tol_abs, tol_rel = resolve_numeric_tolerances()
+    """Compatibility API; detailed failure evidence is in numerical_comparison."""
     try:
-        if NUMERIC_BACKEND == "gravity":
-            if gravity_process is None:
-                return False
-            if not isinstance(cached_kinematics, dict):
-                raise TypeError("Gravity kinematics cache must be process-keyed")
-            points = cached_kinematics.get(gravity_process)
-            if not points:
-                raise ValueError(
-                    f"No cached gravity kinematics for {gravity_process!r}"
-                )
-            for kinematics in points:
-                val_a = eval_numeric_expr(
-                    expr_a,
-                    kinematics,
-                    None,
-                    gravity_process=gravity_process,
-                )
-                val_b = eval_numeric_expr(
-                    expr_b,
-                    kinematics,
-                    None,
-                    gravity_process=gravity_process,
-                )
-                if not (
-                    math.isfinite(abs(val_a))
-                    and math.isfinite(abs(val_b))
-                ):
-                    return False
-                if not numeric_values_close(
-                    val_a,
-                    val_b,
-                    tol_abs=tol_abs,
-                    tol_rel=tol_rel,
-                ):
-                    return False
-            return True
-
-        if not isinstance(cached_kinematics, list):
-            raise TypeError("SQED/Yang-Mills kinematics cache must be a list")
-        for momenta, pols in cached_kinematics:
-            val_a = eval_numeric_expr(expr_a, momenta, pols)
-            val_b = eval_numeric_expr(expr_b, momenta, pols)
-            if not (
-                math.isfinite(abs(val_a))
-                and math.isfinite(abs(val_b))
-            ):
-                return False
-            if not numeric_values_close(
-                val_a,
-                val_b,
-                tol_abs=tol_abs,
-                tol_rel=tol_rel,
-            ):
-                return False
-        return True
+        return bool(numerical_comparison(
+            expr_a, expr_b, cached_kinematics, gravity_process=gravity_process,
+        )["equivalent"])
     except Exception:
         return False
 
@@ -2082,6 +2170,13 @@ def validate_model_sequence_capacity(
     source_capacity = positional_encoding_capacity(model, "src_pos_encoding")
     target_capacity = positional_encoding_capacity(model, "tgt_pos_encoding")
     longest_source_length = max(len(seq) for seq in dataset.scrambled_sequences)
+    vocab_size = getattr(model, "vocab_size", None)
+    if vocab_size is not None:
+        for row_index, sequence in enumerate(dataset.scrambled_sequences):
+            invalid = [int(token) for token in sequence if not 0 <= int(token) < vocab_size]
+            if invalid:
+                raise ValueError(f"Input row {row_index + 1} has token IDs {invalid} outside "
+                                 f"the checkpoint vocabulary [0, {vocab_size})")
 
     if longest_source_length > source_capacity:
         raise ValueError(
@@ -2226,13 +2321,13 @@ def summarize_mode(rows: list[dict[str, Any]], mode_name: str) -> dict[str, Any]
             "unlimited" if INPUT_TOKEN_LIMIT is None else INPUT_TOKEN_LIMIT
         ),
         "total_examples": total,
-        "top1_exact_token_matches": sum(int(r["top1_exact_token_match"]) for r in rows),
-        "top1_exact_string_matches": sum(int(r["top1_exact_string_match"]) for r in rows),
-        "top1_num_eq_simple": sum(int(r["top1_num_eq_simple"]) for r in rows),
+        "top1_exact_token_matches": sum(int(r["top1_exact_token_match"] or 0) for r in rows),
+        "top1_exact_string_matches": sum(int(r["top1_exact_string_match"] or 0) for r in rows),
+        "top1_num_eq_simple": sum(int(r["top1_num_eq_simple"] or 0) for r in rows),
         "top1_num_eq_scrambled": sum(int(r["top1_num_eq_scrambled"]) for r in rows),
-        "any_beam_exact_token_matches": sum(int(r["any_beam_exact_token_match"]) for r in rows),
-        "any_beam_exact_string_matches": sum(int(r["any_beam_exact_string_match"]) for r in rows),
-        "any_beam_num_eq_simple": sum(int(r["any_beam_num_eq_simple"]) for r in rows),
+        "any_beam_exact_token_matches": sum(int(r["any_beam_exact_token_match"] or 0) for r in rows),
+        "any_beam_exact_string_matches": sum(int(r["any_beam_exact_string_match"] or 0) for r in rows),
+        "any_beam_num_eq_simple": sum(int(r["any_beam_num_eq_simple"] or 0) for r in rows),
         "any_beam_num_eq_scrambled": sum(int(r["any_beam_num_eq_scrambled"]) for r in rows),
         "avg_candidate_sequences_checked": (
             sum(float(r["candidate_sequences_checked"]) for r in rows) / total if total else 0.0
@@ -2245,12 +2340,21 @@ def summarize_mode(rows: list[dict[str, Any]], mode_name: str) -> dict[str, Any]
             int(r.get("valid_fallback_replaced_top1", 0)) for r in rows
         ),
         "original_top1_num_eq_simple": sum(
-            int(r.get("original_top1_num_eq_simple", r["top1_num_eq_simple"])) for r in rows
+            int(r.get("original_top1_num_eq_simple", r["top1_num_eq_simple"]) or 0) for r in rows
         ),
         "original_top1_num_eq_scrambled": sum(
             int(r.get("original_top1_num_eq_scrambled", r["top1_num_eq_scrambled"])) for r in rows
         ),
     }
+    summary["reference_examples"] = sum(bool(r.get("reference_provided", True)) for r in rows)
+    summary["target_metrics_available"] = summary["reference_examples"] > 0
+    if not summary["target_metrics_available"]:
+        for key in ("top1_exact_token_matches", "top1_exact_string_matches", "top1_num_eq_simple",
+                    "any_beam_exact_token_matches", "any_beam_exact_string_matches",
+                    "any_beam_num_eq_simple", "original_top1_num_eq_simple"):
+            summary[key] = None
+    for key in ("top1_shorter_equivalent", "original_top1_shorter_equivalent", "any_beam_shorter_equivalent", "top1_copies_input"):
+        summary[key] = sum(int(r.get(key, 0)) for r in rows)
     correct_rows = [r for r in rows if int(r["top1_num_eq_scrambled"])]
     summary["avg_pred_token_count_when_correct"] = (
         sum(int(r["top1_prediction_token_count"]) for r in correct_rows) / len(correct_rows)
@@ -2326,16 +2430,32 @@ def print_simple_summary(summary: dict[str, Any]) -> None:
     avg_scr_tok = summary["avg_scrambled_token_count_when_correct"]
 
     print(f"\n[{summary['mode']}]  n={total}")
-    print(f"  top-1 correct   : {top1:4d} / {total}  ({pct(top1)})")
-    print(f"  any-beam correct: {any_beam:4d} / {total}  ({pct(any_beam)})")
+    print(f"  top-1 equivalent   : {top1:4d} / {total}  ({pct(top1)})")
+    print(f"  any-beam equivalent: {any_beam:4d} / {total}  ({pct(any_beam)})")
     if rerank:
         gain = top1 - orig_top1
         print(f"  rerank gain     : {gain:+d}  ({pct(gain)})")
     if valid_fallbacks:
         print(f"  valid fallbacks : {valid_fallbacks:4d} / {total}  ({pct(valid_fallbacks)})")
     print(f"  avg valid beams : {avg_valid:.1f}")
+    print(f"  shorter equivalent outputs: {summary['top1_shorter_equivalent']} / {total}")
+    print(f"  copied inputs: {summary['top1_copies_input']} / {total}")
+    if not summary['target_metrics_available']:
+        print("  independent target: unavailable; exact-target metrics are not applicable")
     if avg_pred_tok > 0:
         print(f"  avg tokens (correct):  pred {avg_pred_tok:.1f}  vs  scrambled {avg_scr_tok:.1f}")
+
+
+def independent_reference_provided() -> bool:
+    if REFERENCE_PROVIDED_OVERRIDE is not None:
+        return REFERENCE_PROVIDED_OVERRIDE
+    if DATA_SOURCE != "single-amplitude":
+        return True
+    input_format = SINGLE_AMPLITUDE_INPUT_FORMAT
+    if input_format == "auto":
+        input_format = detect_single_amplitude_input_format(
+            resolve_input_path(SINGLE_AMPLITUDE_INPUT_CSV_PATH))
+    return input_format == "token-pair"
 
 
 def evaluate_mode(
@@ -2349,232 +2469,159 @@ def evaluate_mode(
     decode_cfg: DecodeConfig,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if len(gravity_processes) != len(raw_rows):
-        raise ValueError(
-            "Gravity process labels and evaluation rows have different lengths"
-        )
-    loader = DataLoader(
-        dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=False,
-        collate_fn=dynamic_pad_collate,
-    )
+        raise ValueError("Gravity process labels and evaluation rows have different lengths")
+    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False,
+                        collate_fn=dynamic_pad_collate)
     max_length = get_max_decode_length(dataset, decode_cfg)
+    has_reference = independent_reference_provided()
+    forbidden = None
+    if MASK_INVALID_TOKENS:
+        forbidden = sorted(({0, 1, 2} | (set(range(model.vocab_size))
+                            - set(tokenizer.id_to_token))) & set(range(model.vocab_size)))
+    torch.manual_seed(SAMPLING_SEED)
     detail_rows: list[dict[str, Any]] = []
     row_idx = 0
-
-    print(f"\nRunning decode mode: {decode_cfg.name}")
-    print(f"  method     : {decode_cfg.decoding_method}")
-    print(f"  max_length : {max_length}")
-    if decode_cfg.decoding_method in {"beam", "nucleus"}:
-        print(f"  beam_size  : {decode_cfg.beam_size}")
-    if decode_cfg.decoding_method == "nucleus":
-        print(f"  p_nucleus  : {decode_cfg.p_nucleus}")
-        print(f"  temperature: {decode_cfg.temperature_nucleus}")
-
+    print(f"\nRunning decode mode: {decode_cfg.name}; max_length={max_length}; "
+          f"beam_size={decode_cfg.beam_size}; mask_invalid_tokens={MASK_INVALID_TOKENS}")
     for batch in loader:
         src = batch["input"]
-        decoded, all_beams = decode_with_model(
-            model,
-            src,
-            max_length=max_length,
-            decoding_method=decode_cfg.decoding_method,
-            beam_size=decode_cfg.beam_size,
+        _, _, batch_evidence = decode_with_model(
+            model, src, max_length=max_length,
+            decoding_method=decode_cfg.decoding_method, beam_size=decode_cfg.beam_size,
             p_nucleus=decode_cfg.p_nucleus,
             temperature_nucleus=decode_cfg.temperature_nucleus,
-            bos_token=SPECIAL_TOKENS["bos"],
-            eos_token=SPECIAL_TOKENS["eos"],
-            pad_token=SPECIAL_TOKENS["pad"],
+            bos_token=SPECIAL_TOKENS["bos"], eos_token=SPECIAL_TOKENS["eos"],
+            pad_token=SPECIAL_TOKENS["pad"], forbidden_token_ids=forbidden,
+            return_diagnostics=True,
         )
-
-        batch_size = src.size(0)
-        for i in range(batch_size):
-            raw_row = raw_rows[row_idx]
-            tok_row = token_rows[row_idx]
-            target_simple_tokens = tok_row["simple"]
-            target_scrambled_tokens = tok_row["scrambled"]
-            target_simple_expr = raw_row["simple"]
-            target_scrambled_expr = raw_row["scrambled"]
-            gravity_process = gravity_processes[row_idx]
-
-            top1_full = clean_seq(decoded[i].tolist(), pad_token=SPECIAL_TOKENS["pad"], eos_token=SPECIAL_TOKENS["eos"])
-            top1_tokens = strip_special_tokens(top1_full)
-
-            original_top1_decode_ok, original_pred_expr, original_pred_decode_error = safe_decode_infix(
-                tokenizer,
-                top1_tokens,
-            )
-            target_decode_ok, target_simple_decoded, _ = safe_decode_infix(tokenizer, target_simple_tokens)
-            original_top1_num_eq_simple = (
-                numerically_equivalent_exprs(
-                    original_pred_expr,
-                    target_simple_expr,
-                    cached_kinematics,
-                    gravity_process=gravity_process,
-                )
-                if original_top1_decode_ok
-                else False
-            )
-            original_top1_num_eq_scrambled = (
-                numerically_equivalent_exprs(
-                    original_pred_expr,
-                    target_scrambled_expr,
-                    cached_kinematics,
-                    gravity_process=gravity_process,
-                )
-                if original_top1_decode_ok
-                else False
-            )
-
-            candidate_sequences = [top1_tokens]
-            raw_beam_candidates = []
-            if decode_cfg.evaluate_beam_hypotheses and all_beams is not None:
-                raw_beam_candidates = [
-                    strip_special_tokens(seq)
-                    for seq in all_beams[i]
-                ]
-                if decode_cfg.max_beams_to_check is not None:
-                    raw_beam_candidates = raw_beam_candidates[: decode_cfg.max_beams_to_check]
-                candidate_sequences.extend(raw_beam_candidates)
-            candidate_sequences = unique_sequences(candidate_sequences)
-
-            candidate_valid_decode_count = 0
-            exact_token_count = 0
-            exact_string_count = 0
-            num_eq_simple_count = 0
-            num_eq_scrambled_count = 0
-            candidate_exprs: list[str] = []
-            candidate_records: list[dict[str, Any]] = []
-
-            for candidate_index, candidate in enumerate(candidate_sequences):
-                exact_token = candidate == target_simple_tokens
-                if exact_token:
-                    exact_token_count += 1
-
-                cand_decode_ok, cand_expr, cand_decode_error = safe_decode_infix(tokenizer, candidate)
-                cand_exact_string = False
-                cand_num_eq_simple = False
-                cand_num_eq_scrambled = False
-                if cand_decode_ok:
-                    candidate_valid_decode_count += 1
-                    candidate_exprs.append(cand_expr)
-                    if target_decode_ok and cand_expr == target_simple_decoded:
-                        cand_exact_string = True
-                        exact_string_count += 1
-                    if numerically_equivalent_exprs(
-                        cand_expr,
-                        target_simple_expr,
-                        cached_kinematics,
-                        gravity_process=gravity_process,
-                    ):
-                        cand_num_eq_simple = True
-                        num_eq_simple_count += 1
-                    if numerically_equivalent_exprs(
-                        cand_expr,
-                        target_scrambled_expr,
-                        cached_kinematics,
-                        gravity_process=gravity_process,
-                    ):
-                        cand_num_eq_scrambled = True
-                        num_eq_scrambled_count += 1
-                candidate_records.append(
-                    {
-                        "index": candidate_index,
-                        "tokens": candidate,
-                        "decode_ok": cand_decode_ok,
-                        "expr": cand_expr,
-                        "decode_error": cand_decode_error or "",
-                        "exact_token": exact_token,
-                        "exact_string": cand_exact_string,
-                        "num_eq_simple": cand_num_eq_simple,
-                        "num_eq_scrambled": cand_num_eq_scrambled,
-                    }
-                )
-
-            selected, selection_reason = select_candidate_for_reporting(
-                candidate_records,
-                rerank_numerical_equiv=decode_cfg.rerank_numerical_equiv,
-            )
-
-            top1_tokens = selected["tokens"]
-            top1_decode_ok = selected["decode_ok"]
-            pred_expr = selected["expr"]
-            pred_decode_error = selected["decode_error"]
-            pred_display = prediction_text_for_display(tokenizer, selected)
-            top1_exact_token_match = selected["exact_token"]
-            top1_exact_string_match = selected["exact_string"]
-            top1_num_eq_simple = selected["num_eq_simple"]
-            top1_num_eq_scrambled = selected["num_eq_scrambled"]
-            selection_replaced_top1 = int(selected["index"] != 0)
-            rerank_replaced_top1 = int(
-                selection_replaced_top1
-                and selection_reason == "numerically_equivalent_rerank"
-            )
-            valid_fallback_replaced_top1 = int(
-                selection_replaced_top1
-                and selection_reason == "valid_decode_fallback"
-            )
-            original_top1_display = prediction_text_for_display(
-                tokenizer,
-                candidate_records[0],
-            )
-
-            detail_rows.append(
-                {
-                    "row_id": row_idx,
-                    "mode": decode_cfg.name,
-                    "numeric_backend": NUMERIC_BACKEND,
-                    "process": gravity_process or "",
-                    "input_scrambled": target_scrambled_expr,
-                    "target_simple": target_simple_expr,
-                    "target_simple_token_count": len(target_simple_tokens),
-                    "target_scrambled_token_count": len(target_scrambled_tokens),
-                    "top1_prediction_expr": pred_expr,
-                    "top1_prediction_display": pred_display,
-                    "top1_prediction_tokens": json.dumps(top1_tokens),
-                    "top1_prediction_token_count": len(top1_tokens),
-                    "top1_decode_ok": int(top1_decode_ok),
-                    "top1_decode_error": pred_decode_error or "",
-                    "top1_exact_token_match": int(top1_exact_token_match),
-                    "top1_exact_string_match": int(top1_exact_string_match),
-                    "top1_num_eq_simple": int(top1_num_eq_simple),
-                    "top1_num_eq_scrambled": int(top1_num_eq_scrambled),
-                    "selection_reason": selection_reason,
-                    "selection_replaced_top1": selection_replaced_top1,
-                    "rerank_numerical_equiv": int(decode_cfg.rerank_numerical_equiv),
-                    "rerank_replaced_top1": rerank_replaced_top1,
-                    "valid_fallback_replaced_top1": valid_fallback_replaced_top1,
-                    "rerank_selected_candidate_index": selected["index"],
-                    "original_top1_prediction_expr": original_pred_expr,
-                    "original_top1_prediction_display": original_top1_display,
-                    "original_top1_decode_ok": int(original_top1_decode_ok),
-                    "original_top1_decode_error": original_pred_decode_error or "",
-                    "original_top1_num_eq_simple": int(original_top1_num_eq_simple),
-                    "original_top1_num_eq_scrambled": int(original_top1_num_eq_scrambled),
-                    "candidate_sequences_checked": len(candidate_sequences),
-                    "candidate_valid_decode_count": candidate_valid_decode_count,
-                    "candidate_exact_token_count": exact_token_count,
-                    "candidate_exact_string_count": exact_string_count,
-                    "candidate_num_eq_simple_count": num_eq_simple_count,
-                    "candidate_num_eq_scrambled_count": num_eq_scrambled_count,
-                    "any_beam_exact_token_match": int(exact_token_count > 0),
-                    "any_beam_exact_string_match": int(exact_string_count > 0),
-                    "any_beam_num_eq_simple": int(num_eq_simple_count > 0),
-                    "any_beam_num_eq_scrambled": int(num_eq_scrambled_count > 0),
-                    "candidate_exprs_preview": " || ".join(candidate_exprs[:3]),
-                }
-            )
-
+        for i in range(src.size(0)):
+            raw_row, tok_row = raw_rows[row_idx], token_rows[row_idx]
+            process = gravity_processes[row_idx]
+            evidence = batch_evidence[i]
+            # Diagnostics preserve actual tokens, including an unfinished final
+            # token. Legacy display beams may contain a fabricated terminal EOS.
+            hypotheses = sorted(evidence["candidates"],
+                                key=lambda h: (not h["selected_top1"], h["rank"]))
+            if not hypotheses:
+                raise RuntimeError("Decoder returned no raw candidate evidence")
+            limit = len(hypotheses) if decode_cfg.evaluate_beam_hypotheses else 1
+            if decode_cfg.max_beams_to_check is not None:
+                limit = min(limit, max(1, decode_cfg.max_beams_to_check))
+            records, seen = [], {}
+            for index, hypothesis in enumerate(hypotheses):
+                ids = hypothesis["raw_token_ids"]
+                key = tuple(ids)
+                duplicate_of = seen.get(key)
+                seen.setdefault(key, index)
+                if index < limit:
+                    record = check_candidate(
+                        ids, tokenizer, source_expression=raw_row["scrambled"],
+                        source_tokens=tok_row["scrambled"], index=index,
+                        reference_expression=raw_row["simple"] if has_reference else None,
+                        reference_tokens=tok_row["simple"] if has_reference else None,
+                        compare=lambda source, candidate: numerical_comparison(
+                            source, candidate, cached_kinematics, gravity_process=process),
+                    )
+                else:
+                    record = inspect_sequence(ids, tokenizer)
+                    record.update(index=index, numerical_check=None, reference_check=None,
+                                  num_eq_scrambled=False, num_eq_simple=None,
+                                  exact_token=None, exact_string=None, syntax_valid=None,
+                                  shorter_equivalent=None,
+                                  copies_input=record["decode_ok"] and record["tokens"] == tok_row["scrambled"],
+                                  source_token_count=len(tok_row["scrambled"]),
+                                  token_reduction=len(tok_row["scrambled"]) - len(record["tokens"]),
+                                  reference_provided=has_reference)
+                record.update({"decoder": hypothesis, "checked": index < limit,
+                               "duplicate_of": duplicate_of})
+                records.append(record)
+            checked = [r for r in records if r["checked"]]
+            selected, reason = select_candidate_for_reporting(
+                checked, rerank_numerical_equiv=decode_cfg.rerank_numerical_equiv)
+            original = records[0]
+            counts = {
+                "generated": len(records), "unique": len(seen), "checked": len(checked),
+                "checked_unique": len({tuple(r["raw_token_ids"]) for r in checked}),
+                "valid": sum(bool(r["syntax_valid"]) for r in checked),
+                "complete": sum(bool(r["completed"]) for r in checked),
+                "equivalent": sum(bool(r["num_eq_scrambled"]) for r in checked),
+                "shorter_equivalent": sum(bool(r["shorter_equivalent"]) for r in checked),
+            }
+            replacements = int(selected["index"] != 0)
+            row = {
+                "row_id": row_idx, "mode": decode_cfg.name, "numeric_backend": NUMERIC_BACKEND,
+                "process": process or "", "reference_provided": has_reference,
+                "input_scrambled": raw_row["scrambled"],
+                "target_simple": raw_row["simple"] if has_reference else "",
+                "target_simple_token_count": len(tok_row["simple"]) if has_reference else None,
+                "target_scrambled_token_count": len(tok_row["scrambled"]),
+                "top1_prediction_expr": selected["expr"],
+                "top1_prediction_display": prediction_text_for_display(tokenizer, selected),
+                "top1_prediction_tokens": json.dumps(selected["tokens"]),
+                "top1_prediction_token_count": len(selected["tokens"]),
+                "top1_decode_ok": int(selected["decode_ok"]),
+                "top1_decode_error": selected["decode_error"],
+                "top1_syntax_valid": int(selected["syntax_valid"]),
+                "top1_completed": int(selected["completed"]),
+                "top1_numerical_status": selected["numerical_check"]["status"],
+                "top1_exact_token_match": selected["exact_token"],
+                "top1_exact_string_match": selected["exact_string"],
+                "top1_num_eq_simple": selected["num_eq_simple"],
+                "top1_num_eq_scrambled": int(selected["num_eq_scrambled"]),
+                "top1_copies_input": int(selected["copies_input"]),
+                "top1_token_reduction": selected["token_reduction"],
+                "top1_shorter_equivalent": int(selected["shorter_equivalent"]),
+                "selection_reason": reason, "selection_replaced_top1": replacements,
+                "rerank_numerical_equiv": int(decode_cfg.rerank_numerical_equiv),
+                "rerank_replaced_top1": int(replacements and reason == "numerically_equivalent_rerank"),
+                "valid_fallback_replaced_top1": int(replacements and reason == "valid_decode_fallback"),
+                "rerank_selected_candidate_index": selected["index"],
+                "original_top1_prediction_expr": original["expr"],
+                "original_top1_prediction_display": prediction_text_for_display(tokenizer, original),
+                "original_top1_decode_ok": int(original["decode_ok"]),
+                "original_top1_decode_error": original["decode_error"],
+                "original_top1_num_eq_simple": original["num_eq_simple"],
+                "original_top1_num_eq_scrambled": int(original["num_eq_scrambled"]),
+                "original_top1_shorter_equivalent": int(original["shorter_equivalent"]),
+                "candidate_sequences_generated": counts["generated"],
+                "candidate_sequences_unique": counts["unique"],
+                "candidate_sequences_checked": counts["checked"],
+                "candidate_unique_sequences_checked": counts["checked_unique"],
+                "candidate_valid_decode_count": counts["valid"],
+                "candidate_num_eq_scrambled_count": counts["equivalent"],
+                "candidate_shorter_equivalent_count": counts["shorter_equivalent"],
+                "any_beam_num_eq_scrambled": int(counts["equivalent"] > 0),
+                "any_beam_shorter_equivalent": int(counts["shorter_equivalent"] > 0),
+                "candidate_exprs_preview": " || ".join(r["expr"] for r in checked[:3] if r["decode_ok"]),
+            }
+            for metric, field in (("exact_token", "exact_token"),
+                                  ("exact_string", "exact_string"), ("num_eq_simple", "num_eq_simple")):
+                count = sum(bool(r[field]) for r in checked) if has_reference else None
+                row[f"candidate_{metric}_count"] = count
+                suffix = "_match" if metric.startswith("exact_") else ""
+                row[f"any_beam_{metric}{suffix}"] = int(count > 0) if count is not None else None
+            row["_candidate_evidence"] = {
+                "row_id": row_idx, "mode": decode_cfg.name, "process": process,
+                "reference_provided": has_reference,
+                "token_count_convention": "content tokens, excluding BOS/EOS/PAD",
+                "count_scope": "all retained raw decoder hypotheses; duplicates preserved",
+                "counts": counts, "decoding": {k: v for k, v in evidence.items() if k != "candidates"},
+                "candidates": records, "original_top1_index": 0,
+                "selected_index": selected["index"], "selection_reason": reason,
+                "any_equivalent": counts["equivalent"] > 0,
+                "any_successful_simplification": counts["shorter_equivalent"] > 0,
+            }
+            detail_rows.append(row)
             row_idx += 1
-
-    summary = summarize_mode(detail_rows, decode_cfg.name)
-    return detail_rows, summary
+    return detail_rows, summarize_mode(detail_rows, decode_cfg.name)
 
 
 def write_detail_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(handle, fieldnames=[k for k in rows[0] if not k.startswith("_")],
+                                extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -2618,6 +2665,8 @@ def write_human_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "scrambled_tokens",
         "decode_ok",
         "prediction_source",
+        "reference_provided", "copies_input", "token_reduction", "shorter_equivalent",
+        "completed", "numerical_status",
     ]
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -2638,6 +2687,12 @@ def write_human_csv(path: Path, rows: list[dict[str, Any]]) -> None:
                 "scrambled_tokens": row["target_scrambled_token_count"],
                 "decode_ok": "yes" if int(row["top1_decode_ok"]) else "no",
                 "prediction_source": row.get("selection_reason", "model_top1"),
+                "reference_provided": row.get("reference_provided", True),
+                "copies_input": row.get("top1_copies_input", ""),
+                "token_reduction": row.get("top1_token_reduction", ""),
+                "shorter_equivalent": row.get("top1_shorter_equivalent", ""),
+                "completed": row.get("top1_completed", ""),
+                "numerical_status": row.get("top1_numerical_status", ""),
             })
 
 
@@ -2790,6 +2845,90 @@ def print_examples(detail_rows: list[dict[str, Any]], count: int) -> None:
         )
 
 
+def file_identity(path: Path | str | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    path = Path(path).resolve()
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {"path": str(path), "sha256": digest.hexdigest(), "bytes": path.stat().st_size}
+
+
+def write_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+
+
+def evaluation_manifest(model, tokenizer, device, argv, integrity, cached_kinematics):
+    source_path = INPUT_PROVENANCE_PATH or (
+        SINGLE_AMPLITUDE_INPUT_CSV_PATH if DATA_SOURCE == "single-amplitude"
+        else EXISTING_RAW_CSV_PATH if DATA_SOURCE == "csv" else RAW_CSV_PATH)
+    vocab = json.dumps(tokenizer.id_to_token, sort_keys=True).encode()
+    source_format = SINGLE_AMPLITUDE_INPUT_FORMAT if DATA_SOURCE == "single-amplitude" else DATA_SOURCE
+    if source_format == "auto":
+        source_format = detect_single_amplitude_input_format(resolve_input_path(SINGLE_AMPLITUDE_INPUT_CSV_PATH))
+    sample_schedule = {}
+    if NUMERIC_BACKEND == "gravity":
+        for process, spec in GRAVITY_PROCESS_SPECS.items():
+            checks = []
+            for sample_idx in range(NUMERIC_EQUIV_SAMPLES):
+                seed = NUMERIC_EQUIV_SEED + sample_idx
+                for mode in resolve_gravity_reference_modes():
+                    checks.append({"sample_index": len(checks), "momentum_seed": seed,
+                                   "reference_seed": seed + 11, "reference_mode": mode,
+                                   "gauge_shifts": {}})
+                if GRAVITY_GAUGE_SHIFT:
+                    checks.append({"sample_index": len(checks), "momentum_seed": seed,
+                                   "reference_mode": "cyclic", "gauge_shifts": {
+                                       str(leg): {"real": 0.19 * (leg + 1), "imag": -0.07 * leg}
+                                       for leg in spec.graviton_legs}})
+            sample_schedule[process] = checks
+    return {
+        "schema_version": 1, "created_at": datetime.now().astimezone().isoformat(),
+        "argv": list(argv) if argv is not None else sys.argv[1:],
+        "checkpoint": file_identity(MODEL_PATH), "input": file_identity(source_path),
+        "prepared_raw": file_identity(RAW_CSV_PATH), "prepared_tokens": file_identity(TOK_CSV_PATH),
+        "source_format": source_format,
+        "reference_provided": independent_reference_provided(),
+        "reference_provenance": "supplied paired target" if independent_reference_provided() else "unavailable",
+        "device": str(device), "torch_version": str(torch.__version__), "python_version": sys.version,
+        "torch_threads": torch.get_num_threads(), "model_hyperparams": model.model_hyperparams,
+        "source_capacity": positional_encoding_capacity(model, "src_pos_encoding"),
+        "target_capacity": positional_encoding_capacity(model, "tgt_pos_encoding"),
+        "tokenizer": {"file": file_identity(ROOT / "data_gen" / "Tokenizer.py"),
+                      "max_particles": TOKENIZER_MAX_PARTICLES, "id_to_token": tokenizer.id_to_token,
+                      "vocabulary_sha256": hashlib.sha256(vocab).hexdigest()},
+        "implementation": [file_identity(Path(__file__)),
+                           file_identity(ROOT / "transformer" / "transformer_functions.py"),
+                           file_identity(ROOT / "data_testing" / "evaluation_diagnostics.py"),
+                           file_identity(ROOT / "data_testing" / "evaluation_records.py"),
+                           file_identity(ROOT / "data_testing" / "evaluation_integrity.py")],
+        "decoding": [asdict(cfg) for cfg in DECODE_RUNS if cfg.enabled],
+        "max_decode_length_override": MAX_SEQ_LENGTH_OVERRIDE, "input_token_limit": INPUT_TOKEN_LIMIT,
+        "sampling_seed": SAMPLING_SEED, "mask_invalid_tokens": MASK_INVALID_TOKENS,
+        "numerical": {
+            "backend": NUMERIC_BACKEND,
+            "n_particles": N_PARTICLES, "mass": NUMERIC_EQUIV_MASS,
+            "energy_scale": NUMERIC_EQUIV_ENERGY_SCALE,
+            "domain": "complex massless five-point, positive-helicity gravitons" if NUMERIC_BACKEND == "gravity" else NUMERIC_BACKEND,
+            "seed": NUMERIC_EQUIV_SEED, "momentum_samples": NUMERIC_EQUIV_SAMPLES,
+            "sample_schedule": sample_schedule,
+            "reference_modes": list(resolve_gravity_reference_modes()) if NUMERIC_BACKEND == "gravity" else [],
+            "gauge_shift": GRAVITY_GAUGE_SHIFT if NUMERIC_BACKEND == "gravity" else None,
+            "polarization_modes": list(resolve_numeric_pol_modes()),
+            "atol": resolve_numeric_tolerances()[0], "rtol": resolve_numeric_tolerances()[1],
+            "available_checks": ({k: len(v) for k, v in cached_kinematics.items()}
+                                 if isinstance(cached_kinematics, dict) else len(cached_kinematics)),
+            "required_checks": "all configured checks",
+            "resampling_policy": "none in CLI; source failures are inconclusive; candidate errors and mismatches never skipped",
+        },
+        "inputs": integrity,
+        "training_provenance": "Checkpoint training dataset hash not authenticated by this evaluation.",
+    }
+
+
 def _run_evaluation(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     apply_cli_config(args)
@@ -2854,13 +2993,18 @@ def _run_evaluation(argv: list[str] | None = None) -> None:
             f"tol_abs={tol_abs:g}; tol_rel={tol_rel:g})"
         )
     cached_kinematics = precompute_kinematics()
-    validate_numeric_reference_rows(
-        raw_rows,
-        cached_kinematics,
-        gravity_processes,
+    from data_testing.evaluation_integrity import validate_input_integrity
+    integrity = validate_input_integrity(
+        raw_rows, token_rows, tokenizer, gravity_processes,
+        lambda source, decoded, process: numerical_comparison(
+            source, decoded, cached_kinematics, gravity_process=process),
+        reference_provided=independent_reference_provided(),
     )
     model = load_model(device)
     validate_model_sequence_capacity(model, dataset)
+    manifest_path = DATA_TESTING_DIR / OUTPUT_SUBDIR / f"{DATA_FILENAME_STEM}_manifest.json"
+    manifest = evaluation_manifest(model, tokenizer, device, argv, integrity, cached_kinematics)
+    write_json(manifest_path, manifest)
 
     summary_rows: list[dict[str, Any]] = []
     for decode_cfg in DECODE_RUNS:
@@ -2878,6 +3022,13 @@ def _run_evaluation(argv: list[str] | None = None) -> None:
         )
         detail_path = DATA_TESTING_DIR / OUTPUT_SUBDIR / f"{DATA_FILENAME_STEM}_{decode_cfg.name}_results.csv"
         write_detail_csv(detail_path, detail_rows)
+        candidate_path = DATA_TESTING_DIR / OUTPUT_SUBDIR / f"{DATA_FILENAME_STEM}_{decode_cfg.name}_candidates.jsonl"
+        with candidate_path.open("w", encoding="utf-8") as handle:
+            for row in detail_rows:
+                evidence = row["_candidate_evidence"]
+                evidence["manifest_path"] = str(manifest_path)
+                evidence["input_integrity"] = integrity[row["row_id"]]
+                handle.write(json.dumps(evidence, allow_nan=False) + "\n")
         if HUMAN_CSV:
             human_path = DATA_TESTING_DIR / OUTPUT_SUBDIR / f"{DATA_FILENAME_STEM}_{decode_cfg.name}_human.csv"
             write_human_csv(human_path, detail_rows)
@@ -2920,9 +3071,16 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             traceback.print_exc()
             exit_code = 130
-        except BaseException:
+        except BaseException as exc:
             traceback.print_exc()
             exit_code = 1
+            try:
+                write_json(DATA_TESTING_DIR / OUTPUT_SUBDIR / f"{DATA_FILENAME_STEM}_failure.json", {
+                    "status": "evaluation_failed", "error_type": type(exc).__name__,
+                    "error": str(exc), "argv": argv, "input_evidence": getattr(exc, "record", None),
+                })
+            except (OSError, TypeError, ValueError):
+                traceback.print_exc()
 
         if pdf_available:
             pdf_path = evaluation_pdf_path(started_at)

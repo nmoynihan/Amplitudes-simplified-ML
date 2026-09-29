@@ -6,6 +6,8 @@ import itertools
 import random
 import re
 from dataclasses import dataclass
+from collections import Counter, defaultdict
+from fractions import Fraction
 from typing import Mapping, Sequence
 
 import numpy as np
@@ -110,71 +112,174 @@ def field_strength_counts(expr: str) -> dict[int, int]:
     return counts
 
 
+class _ExactParser(sqed._Parser):
+    """Use the shared AST without passing rational literals through a float."""
+
+    def _primary(self):
+        token = self.peek()
+        if token and re.fullmatch(r"\d+(?:\.\d+)?", token):
+            self.pop()
+            node = sqed._Num.__new__(sqed._Num)
+            node.value = Fraction(token)
+            return node
+        return super()._primary()
+
+    def _power(self):
+        node = self._primary()
+        if self.peek() == "**":
+            self.pop()
+            node = sqed._BinOp("**", node, self._factor())
+        return node
+
+
+def _integer_power(node) -> int:
+    value = _constant_value(node)
+    if value is None or value.denominator != 1:
+        raise ValueError("Gravity powers require an integer exponent")
+    exponent = value.numerator
+    if abs(exponent) > 64:
+        raise ValueError("Gravity power exceeds the supported bound of 64")
+    return exponent
+
+
+def _constant_value(node) -> Fraction | None:
+    """Exactly fold a numerical-only subtree, otherwise return None."""
+    if isinstance(node, sqed._Num):
+        return Fraction(str(node.value))
+    if isinstance(node, sqed._UnaryOp):
+        value = _constant_value(node.operand)
+        return -value if value is not None and node.op == "-" else value
+    if isinstance(node, sqed._BinOp):
+        left, right = _constant_value(node.left), _constant_value(node.right)
+        if left is None or right is None:
+            return None
+        if node.op == "+":
+            return left + right
+        if node.op == "-":
+            return left - right
+        if node.op == "*":
+            return left * right
+        if node.op == "/":
+            return left / right
+        if node.op == "**":
+            if right.denominator != 1 or abs(right.numerator) > 64:
+                raise ValueError("Gravity powers require a bounded integer exponent")
+            return left ** right.numerator
+    return None
+
+
+def _validate_scalar_ast(node) -> None:
+    if isinstance(node, sqed._Num):
+        return
+    if isinstance(node, sqed._UnaryOp):
+        if node.op != "-":
+            raise ValueError(f"Unsupported unary operator: {node.op}")
+        _validate_scalar_ast(node.operand)
+        return
+    if isinstance(node, sqed._BinOp):
+        if node.op not in {"+", "-", "*", "/", "**"}:
+            raise ValueError(f"Unsupported operator: {node.op}")
+        _validate_scalar_ast(node.left)
+        _validate_scalar_ast(node.right)
+        if node.op == "**":
+            _integer_power(node.right)
+        if node.op == "/" and _constant_value(node.right) == 0:
+            raise ValueError("Division by zero")
+        return
+    if isinstance(node, sqed._DotChain):
+        trace = bool(node.parts) and node.parts[-1] is sqed._DotChain._TR
+        parts = node.parts[:-1] if trace else node.parts
+        if not parts or any(not isinstance(part, sqed._Vec) for part in parts):
+            raise ValueError("Malformed gravity contraction")
+        if any(part.tag not in {"p", "e", "F"} or not 1 <= part.idx <= 5 for part in parts):
+            raise ValueError("Unsupported gravity vector")
+        if trace:
+            if len(parts) < 2 or any(part.tag != "F" for part in parts):
+                raise ValueError("A trace requires at least two field strengths")
+        elif any(part.tag == "F" for part in parts):
+            if not (len(parts) >= 3 and parts[0].tag == parts[-1].tag == "p"
+                    and all(part.tag == "F" for part in parts[1:-1])):
+                raise ValueError("A mixed chain requires momentum endpoints and ordered F factors")
+        elif len(parts) != 2 or any(part.tag not in {"p", "e"} for part in parts):
+            raise ValueError("A scalar dot requires exactly two p/e vectors")
+        return
+    raise ValueError(f"Unsupported gravity scalar node: {type(node).__name__}")
+
+
+def parse_expression(expr: str):
+    """Strict five-point scalar parser with exact rational number leaves."""
+    tokens = sqed._strict_tokenize(expr)
+    sqed._validate_strict_token_sequence(tokens)
+    depth = 0
+    for token in tokens:
+        if token == "(":
+            depth += 1
+        elif token == ")":
+            depth -= 1
+            if depth < 0:
+                raise ValueError("Unmatched closing parenthesis")
+    if depth:
+        raise ValueError("Unmatched opening parenthesis")
+    parser = _ExactParser(tokens)
+    tree = parser.parse()
+    if parser.i != len(tokens):
+        raise ValueError("Gravity expression was not fully consumed")
+    _validate_scalar_ast(tree)
+    return tree
+
+
+def _degree_and_dimension(node) -> tuple[dict[int, int], int]:
+    if isinstance(node, sqed._Num):
+        return {}, 0
+    if isinstance(node, sqed._UnaryOp):
+        return _degree_and_dimension(node.operand)
+    if isinstance(node, sqed._DotChain):
+        parts = [part for part in node.parts if isinstance(part, sqed._Vec)]
+        degree = Counter(part.idx for part in parts if part.tag in {"e", "F"})
+        return dict(degree), sum(part.tag in {"p", "F"} for part in parts)
+    if isinstance(node, sqed._BinOp):
+        left, ld = _degree_and_dimension(node.left)
+        if node.op == "**":
+            power = _integer_power(node.right)
+            return {leg: count * power for leg, count in left.items() if count * power}, ld * power
+        right, rd = _degree_and_dimension(node.right)
+        if node.op in {"+", "-"}:
+            if left != right:
+                raise ValueError(f"Non-homogeneous polarization degrees: {left} and {right}")
+            if ld != rd:
+                raise ValueError(f"Non-homogeneous dimensions: {ld} and {rd}")
+            return left, ld
+        sign = -1 if node.op == "/" else 1
+        degree = {leg: left.get(leg, 0) + sign * right.get(leg, 0) for leg in left.keys() | right.keys()}
+        return {leg: count for leg, count in degree.items() if count}, ld + sign * rd
+    raise ValueError(f"Unsupported gravity degree node: {type(node).__name__}")
+
+
+def polarization_degree(expr: str) -> dict[int, int]:
+    """Homogeneous polarization degree, including e, F and integer powers."""
+    return _degree_and_dimension(parse_expression(expr))[0]
+
+
 def field_strength_counts_per_term(expr: str) -> list[dict[int, int]]:
-    """Return F multiplicities for each top-level additive term."""
-    tree = sqed._Parser(sqed._tokenize(expr)).parse()
+    """Polarization degrees per additive term, checking nested homogeneity.
 
-    def additive_terms(node) -> list:
-        if isinstance(node, sqed._BinOp) and node.op in ("+", "-"):
-            return additive_terms(node.left) + additive_terms(node.right)
-        return [node]
+    This historical name is retained for callers. Expanded e vectors carry the
+    same polarization degree as compact F factors; a power multiplies degree.
+    """
+    tree = parse_expression(expr)
+    _degree_and_dimension(tree)
 
-    def count(node, result: dict[int, int]) -> None:
-        if isinstance(node, sqed._Vec) and node.tag == "F":
-            result[node.idx] = result.get(node.idx, 0) + 1
-        elif isinstance(node, sqed._DotChain):
-            for part in node.parts:
-                if isinstance(part, sqed._Vec) and part.tag == "F":
-                    result[part.idx] = result.get(part.idx, 0) + 1
-        elif isinstance(node, sqed._UnaryOp):
-            count(node.operand, result)
-        elif isinstance(node, sqed._BinOp):
-            count(node.left, result)
-            count(node.right, result)
+    def terms(node):
+        if isinstance(node, sqed._BinOp) and node.op in {"+", "-"}:
+            return terms(node.left) + terms(node.right)
+        return [_degree_and_dimension(node)[0]]
 
-    output: list[dict[int, int]] = []
-    for term in additive_terms(tree):
-        item: dict[int, int] = {}
-        count(term, item)
-        output.append(item)
-    return output
+    return terms(tree)
 
 
 def expression_mass_dimension(expr: str) -> int:
-    """Dimension of a homogeneous compact expression.
-
-    ``p·F·p`` has dimension three, ``p·p`` dimension two.  All top-level
-    terms are required to agree.
-    """
-    tree = sqed._Parser(sqed._tokenize(expr)).parse()
-
-    def dim(node) -> int:
-        if isinstance(node, sqed._Num):
-            return 0
-        if isinstance(node, sqed._UnaryOp):
-            return dim(node.operand)
-        if isinstance(node, sqed._DotChain):
-            parts = [x for x in node.parts if isinstance(x, sqed._Vec)]
-            if any(x.tag == "F" for x in parts):
-                return sum(1 for x in parts if x.tag in ("p", "F"))
-            return 2 if len(parts) == 2 else max(0, len(parts))
-        if isinstance(node, sqed._BinOp):
-            if node.op in ("+", "-"):
-                left, right = dim(node.left), dim(node.right)
-                if left != right:
-                    raise ValueError(f"Non-homogeneous dimensions: {left} and {right}")
-                return left
-            if node.op == "*":
-                return dim(node.left) + dim(node.right)
-            if node.op == "/":
-                return dim(node.left) - dim(node.right)
-            if node.op == "**":
-                if not isinstance(node.right, sqed._Num):
-                    raise ValueError("Non-numeric power")
-                return int(dim(node.left) * node.right.value)
-        return 0
-
-    return dim(tree)
+    """Homogeneous stripped dimension: p and F have dimension one, e zero."""
+    return _degree_and_dimension(parse_expression(expr))[1]
 
 
 def _eval_tree(tree, kin: SpinorKinematics) -> complex:
@@ -201,14 +306,14 @@ def _eval_tree(tree, kin: SpinorKinematics) -> complex:
             va = P[lhs[2]] if lhs[1] == "p" else E[lhs[2]]
             vb = P[rhs[2]] if rhs[1] == "p" else E[rhs[2]]
             return mdot(va, vb)
-        return 0j
+        raise ValueError(f"Unsupported evaluated gravity node: {type(node).__name__}")
 
     return complex(evaluate(sqed._expand_ast(tree)))
 
 
 def eval_expression(expr: str, kin: SpinorKinematics) -> complex:
     """Evaluate either compact F notation or its dot-product expansion."""
-    tree = sqed._Parser(sqed._tokenize(expr)).parse()
+    tree = parse_expression(expr)
     return _eval_tree(tree, kin)
 
 
@@ -224,8 +329,8 @@ def numerically_equivalent(
     atol: float = 2e-9,
 ) -> tuple[bool, float]:
     spec = PROCESS_SPECS[process] if isinstance(process, str) else process
-    left_tree = sqed._Parser(sqed._tokenize(left)).parse()
-    right_tree = sqed._Parser(sqed._tokenize(right)).parse()
+    left_tree = parse_expression(left)
+    right_tree = parse_expression(right)
     worst = 0.0
     for seed in seeds:
         base = generate_kinematics(
@@ -280,13 +385,19 @@ def validate_expression_pair(
 ) -> tuple[bool, str]:
     spec = PROCESS_SPECS[process] if isinstance(process, str) else process
     expected = {leg: 2 for leg in spec.graviton_legs}
-    if any(counts != expected for counts in field_strength_counts_per_term(simple)):
-        return False, "field-strength multiplicity"
-    try:
-        if expression_mass_dimension(simple) != spec.target_dimension:
-            return False, "mass dimension"
-    except ValueError:
-        return False, "non-homogeneous dimension"
+    for label, expression in (("target", simple), ("source", scrambled)):
+        try:
+            tree = parse_expression(expression)
+        except (ArithmeticError, ValueError) as exc:
+            return False, f"{label} parse error: {exc}"
+        try:
+            degree, dimension = _degree_and_dimension(tree)
+        except ValueError as exc:
+            return False, f"{label} non-homogeneous: {exc}"
+        if degree != expected:
+            return False, f"{label} polarization degree"
+        if dimension != spec.target_dimension:
+            return False, f"{label} mass dimension"
     try:
         ok, error = numerically_equivalent(simple, scrambled, spec, seeds=seeds)
     except (KeyError, ValueError, ZeroDivisionError, FloatingPointError):
@@ -342,91 +453,105 @@ def _normalise_text(expr: str) -> str:
 
 
 def compact_signature(expr: str) -> tuple:
-    """Canonical compact signature, insensitive to product/term ordering.
+    """Exact structural Laurent polynomial, preserving matrix order.
 
-    This is deliberately structural rather than a string comparison so the
-    benchmark blacklist also catches equivalent formatting and factor order.
+    Scalar products commute. Mixed chains reverse with (-1)^number_of_F;
+    traces are cyclic and obey the same signed reversal. No other matrix
+    permutation is allowed. Unsupported scalars fail before canonicalization.
     """
-    tokens = sqed._strict_tokenize(expr)
-    sqed._validate_strict_token_sequence(tokens)
-    depth = 0
-    for token in tokens:
-        if token == "(":
-            depth += 1
-        elif token == ")":
-            depth -= 1
-            if depth < 0:
-                raise ValueError(
-                    "Compact signature has an unmatched closing parenthesis"
-                )
-    if depth:
-        raise ValueError("Compact signature has an unmatched opening parenthesis")
-    parser = sqed._Parser(tokens)
-    tree = parser.parse()
-    if parser.i != len(tokens):
-        raise ValueError("Compact signature expression was not fully consumed")
+    tree = parse_expression(expr)
 
-    def signed_terms(node, sign: int = 1) -> list[tuple[int, object]]:
-        if isinstance(node, sqed._UnaryOp):
-            return signed_terms(node.operand, -sign)
-        if isinstance(node, sqed._BinOp) and node.op == "+":
-            return signed_terms(node.left, sign) + signed_terms(node.right, sign)
-        if isinstance(node, sqed._BinOp) and node.op == "-":
-            return signed_terms(node.left, sign) + signed_terms(node.right, -sign)
-        return [(sign, node)]
+    def atom(node) -> tuple[int, tuple]:
+        parts = node.parts
+        trace = parts[-1] is sqed._DotChain._TR
+        if trace:
+            labels = tuple(part.idx for part in parts[:-1])
+            rotations = [labels[i:] + labels[:i] for i in range(len(labels))]
+            reversed_labels = labels[::-1]
+            reversed_rotations = [reversed_labels[i:] + reversed_labels[:i] for i in range(len(labels))]
+            forward, backward = min(rotations), min(reversed_rotations)
+            reverse_sign = (-1) ** len(labels)
+            if reverse_sign == -1 and forward == backward:
+                return 0, ("trace", forward)
+            return (1, ("trace", forward)) if forward <= backward else (reverse_sign, ("trace", backward))
+        if any(part.tag == "F" for part in parts):
+            labels = tuple(part.idx for part in parts[1:-1])
+            a, b = parts[0].idx, parts[-1].idx
+            forward, backward = (a, labels, b), (b, labels[::-1], a)
+            sign = (-1) ** len(labels)
+            if forward == backward and sign == -1:
+                return 0, ("chain", forward)
+            chosen, coefficient = (forward, 1) if forward <= backward else (backward, sign)
+            if len(labels) == 1:
+                return coefficient, ("X", chosen[1][0], chosen[0], chosen[2])
+            return coefficient, ("chain", *chosen)
+        endpoints = tuple(sorted((part.tag, part.idx) for part in parts))
+        if all(tag == "p" for tag, _ in endpoints):
+            return 1, ("s", endpoints[0][1], endpoints[1][1])
+        return 1, ("dot", *endpoints)
 
-    def factor_signature(node) -> tuple[int, tuple]:
+    def multiply(left, right):
+        if len(left) * len(right) > 16384:
+            raise ValueError("Structural expansion exceeds 16384 terms")
+        result = defaultdict(Fraction)
+        for lp, lc in left.items():
+            for rp, rc in right.items():
+                powers = Counter(dict(lp))
+                powers.update(dict(rp))
+                key = tuple(sorted((factor, power) for factor, power in powers.items() if power))
+                result[key] += lc * rc
+        return {key: coefficient for key, coefficient in result.items() if coefficient}
+
+    def invert(poly):
+        if not poly:
+            raise ValueError("Division by an identically zero expression")
+        if len(poly) == 1:
+            powers, coefficient = next(iter(poly.items()))
+            return {tuple((factor, -power) for factor, power in powers): 1 / coefficient}
+        ordered = tuple(sorted(poly.items()))
+        scale = ordered[0][1]
+        normalized = tuple((powers, coefficient / scale) for powers, coefficient in ordered)
+        return {((("sum", normalized), -1),): 1 / scale}
+
+    def polynomial(node):
+        constant = _constant_value(node)
+        if constant is not None:
+            return {(): constant} if constant else {}
         if isinstance(node, sqed._DotChain):
-            parts = [part for part in node.parts if isinstance(part, sqed._Vec)]
-            if (
-                len(parts) == 3
-                and parts[0].tag == "p"
-                and parts[1].tag == "F"
-                and parts[2].tag == "p"
-            ):
-                a, b = parts[0].idx, parts[2].idx
-                sign = 1
-                if a > b:
-                    a, b = b, a
-                    sign = -1
-                return sign, ("X", parts[1].idx, a, b)
-            if len(parts) == 2 and all(part.tag == "p" for part in parts):
-                a, b = sorted((parts[0].idx, parts[1].idx))
-                return 1, ("s", a, b)
-        if isinstance(node, sqed._Num):
-            value = node.value
-            sign = -1 if value < 0 else 1
-            return sign, ("n", abs(value))
-        return 1, ("raw", _normalise_text(sqed._ast_to_infix(node)))
-
-    def rational_factors(node, inverted: bool = False) -> tuple[int, list, list]:
+            coefficient, factor = atom(node)
+            return {((factor, 1),): Fraction(coefficient)} if coefficient else {}
         if isinstance(node, sqed._UnaryOp):
-            sign, numerator, denominator = rational_factors(node.operand, inverted)
-            return -sign, numerator, denominator
-        if isinstance(node, sqed._BinOp) and node.op == "*":
-            ls, ln, ld = rational_factors(node.left, inverted)
-            rs, rn, rd = rational_factors(node.right, inverted)
-            return ls * rs, ln + rn, ld + rd
-        if isinstance(node, sqed._BinOp) and node.op == "/":
-            ls, ln, ld = rational_factors(node.left, inverted)
-            rs, rn, rd = rational_factors(node.right, not inverted)
-            return ls * rs, ln + rn, ld + rd
-        factor_sign, factor = factor_signature(node)
-        if inverted:
-            return factor_sign, [], [factor]
-        return factor_sign, [factor], []
+            return {powers: -coefficient for powers, coefficient in polynomial(node.operand).items()}
+        if isinstance(node, sqed._BinOp):
+            left = polynomial(node.left)
+            if node.op == "**":
+                power = _integer_power(node.right)
+                if power < 0:
+                    left, power = invert(left), -power
+                result = {(): Fraction(1)}
+                for _ in range(power):
+                    result = multiply(result, left)
+                return result
+            right = polynomial(node.right)
+            if node.op in {"+", "-"}:
+                result = defaultdict(Fraction, left)
+                for powers, coefficient in right.items():
+                    result[powers] += coefficient if node.op == "+" else -coefficient
+                return {powers: coefficient for powers, coefficient in result.items() if coefficient}
+            return multiply(left, invert(right) if node.op == "/" else right)
+        raise ValueError(f"Unsupported compact-signature node: {type(node).__name__}")
 
-    canonical_terms = []
-    for outer_sign, node in signed_terms(tree):
-        inner_sign, numerator, denominator = rational_factors(node)
-        canonical_terms.append(
-            (
-                outer_sign * inner_sign,
-                tuple(sorted(numerator)),
-                tuple(sorted(denominator)),
-            )
-        )
-    return tuple(sorted(canonical_terms))
+    output = []
+    for powers, coefficient in polynomial(tree).items():
+        numerator, denominator = [], []
+        if abs(coefficient.numerator) != 1:
+            numerator.append(("n", abs(coefficient.numerator)))
+        if coefficient.denominator != 1:
+            denominator.append(("n", coefficient.denominator))
+        for factor, power in powers:
+            (numerator if power > 0 else denominator).extend([factor] * abs(power))
+        output.append((1 if coefficient > 0 else -1, tuple(sorted(numerator)), tuple(sorted(denominator))))
+    return tuple(sorted(output))
 
 
 def _relabel(expr: str, mapping: Mapping[int, int]) -> str:

@@ -1,0 +1,27 @@
+{
+  "symbolic_results.json": {
+    "original_relative_path": "symbolic_results.json",
+    "copy": "historical evidence; only source changed to the relative bundled input path",
+    "original_source": "/Users/kymani/Documents/Big_YM_Data_Sets/gpt_Test_Amplitude_ym_4pt_colour_ordered/gluon4feyn1234_model_ready.csv",
+    "original_sha256": "a6a36ac1b6f4b5437ee3a2b629c4e88b4fb2f1f575fb06cac98ebcd8f3bc3ce9",
+    "adapted_sha256": "94541bc1294ab5684f863279f5cb255c9fc1e47299d1745285352e46b7f38bf1"
+  },
+  "vertices_results.json": {
+    "original_relative_path": "independent/vertices_results.json",
+    "copy": "historical evidence; only source changed to the relative bundled input path",
+    "original_source": "/Users/kymani/Documents/Big_YM_Data_Sets/gpt_Test_Amplitude_ym_4pt_colour_ordered/gluon4feyn1234_model_ready.csv",
+    "original_sha256": "ae44bd70c3cf4d245aa0564f7ff334621934af38abdb16495195eeb8802d24c3",
+    "adapted_sha256": "3ce458776c08cebcfaa91f7eac9816563cb8b3a5f0d87c3f6c51284436efa90c"
+  },
+  "parke_taylor_results.json": {
+    "original_relative_path": "independent/parke_taylor_results.json",
+    "sha256": "6d41f64af344397e851fdf272b01f3ea91c3c1aad97327fa9c37890337fca5c8",
+    "copy": "byte-identical historical evidence"
+  },
+  "report.md": {
+    "original_relative_path": "report.md",
+    "original_sha256": "b17752a340dfb51a992778405d717293bda59516cda3dd396e90c6cc26d80335",
+    "copy": "historical scientific text with local links and reproduction instructions adapted for the portable package",
+    "adapted_sha256": "bf53a707cfa68a91f006b4e36d46248208f65cd8d791d944d4709bf32737aa1f"
+  }
+}

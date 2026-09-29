@@ -50,6 +50,7 @@ from data_gen import gen_data as sqed
 from data_gen.data_gen_gravity.core import (
     BENCHMARKS, PROCESS_SPECS, _relabel, compact_signature, eval_expression,
     expand_expression, field_strength_counts_per_term, numerically_equivalent,
+    parse_expression, _constant_value, _integer_power,
 )
 from data_gen.data_gen_gravity.generate import (
     Candidate, _make_candidate, _open_text, _quota, tokenise, write_raw,
@@ -68,49 +69,56 @@ PARTNERS = {"3s2h": (1, 2, 3, 5, 4), "4s1h": (3, 4, 1, 2, 5)}
 
 
 def parenthesize_for_semantic_tokenization(expression: str) -> str:
-    """Preserve the physics AST in prefix tokens, including m4's half factors.
+    """Serialize a checked, exact subset of the unchanged digit vocabulary.
 
-    The legacy expansion produces decimal coefficients, whereas the shared
-    vocabulary contains integer digits. Render rational literals as explicit
-    integer divisions, and dot chains as atomic factors. The tokenizer assigns
-    dot the same precedence as multiplication, so these parentheses matter.
+    Fold numerical-only arithmetic, move rational coefficients onto nonconstant
+    factors, and replace integer powers by multiplication. A final *actual*
+    encode/decode and exact structural comparison is mandatory: numeric leaves
+    on different prefix subtrees can otherwise silently merge into one integer.
+    Cases outside this safe subset raise ValueError instead of changing value.
     """
-    compact_signature(expression)  # Strict complete-input syntax validation.
-    tree = sqed._Parser(sqed._tokenize(expression)).parse()
+    tree = parse_expression(expression)
+
+    def product(parts):
+        if not parts:
+            return "1"
+        return "(" + "*".join(parts) + ")" if len(parts) > 1 else parts[0]
 
     def render(node) -> str:
-        if isinstance(node, sqed._Num):
-            coefficient = Fraction(str(node.value))
-            if coefficient.denominator != 1:
-                raise ValueError("A standalone fractional literal cannot be represented by the legacy tokenizer")
-            return str(coefficient.numerator)
-        if isinstance(node, sqed._Vec):
-            return f"{node.tag}_{node.idx}"
+        constant = _constant_value(node)
+        if constant is not None:
+            if constant.denominator != 1:
+                raise ValueError("unsafe_numeric_literal: standalone fraction in legacy vocabulary")
+            return str(constant.numerator)
         if isinstance(node, sqed._DotChain):
-            return "(" + " · ".join(render(part) for part in node.parts) + ")"
+            trace = node.parts[-1] is sqed._DotChain._TR
+            parts = node.parts[:-1] if trace else node.parts
+            content = " · ".join(f"{part.tag}_{part.idx}" for part in parts)
+            return f"Tr({content})" if trace else f"({content})"
         if isinstance(node, sqed._UnaryOp):
             return f"(-({render(node.operand)}))"
         if isinstance(node, sqed._BinOp):
-            if node.op in ("*", "/"):
-                # Prefix digits have no literal separator: / 1: 2: is read as
-                # the single integer 12. Absorb a coefficient such as 0.5 into
-                # the whole monomial, rendering X/(2*Y), never (1/2)*X/Y.
+            if node.op in {"*", "/", "**"}:
                 coefficient = Fraction(1)
                 numerator, denominator = [], []
 
-                def collect(current, inverted=False):
+                def collect(current, direction=1):
                     nonlocal coefficient
-                    if isinstance(current, sqed._Num):
-                        value = Fraction(str(current.value))
-                        coefficient = coefficient / value if inverted else coefficient * value
+                    value = _constant_value(current)
+                    if value is not None:
+                        coefficient *= value ** direction
                     elif isinstance(current, sqed._UnaryOp):
                         coefficient *= -1
-                        collect(current.operand, inverted)
-                    elif isinstance(current, sqed._BinOp) and current.op in ("*", "/"):
-                        collect(current.left, inverted)
-                        collect(current.right, not inverted if current.op == "/" else inverted)
+                        collect(current.operand, direction)
+                    elif isinstance(current, sqed._BinOp) and current.op in {"*", "/"}:
+                        collect(current.left, direction)
+                        collect(current.right, -direction if current.op == "/" else direction)
+                    elif isinstance(current, sqed._BinOp) and current.op == "**":
+                        exponent = _integer_power(current.right) * direction
+                        for _ in range(abs(exponent)):
+                            collect(current.left, 1 if exponent > 0 else -1)
                     else:
-                        (denominator if inverted else numerator).append(render(current))
+                        (numerator if direction > 0 else denominator).append(render(current))
 
                 collect(node)
                 if coefficient == 0:
@@ -119,16 +127,23 @@ def parenthesize_for_semantic_tokenization(expression: str) -> str:
                     numerator.insert(0, str(abs(coefficient.numerator)))
                 if coefficient.denominator != 1:
                     denominator.insert(0, str(coefficient.denominator))
-                top = "(" + "*".join(numerator) + ")" if len(numerator) > 1 else numerator[0]
+                top = product(numerator)
                 if denominator:
-                    bottom = "(" + "*".join(denominator) + ")" if len(denominator) > 1 else denominator[0]
-                    top = f"({top}/{bottom})"
+                    top = f"({top}/{product(denominator)})"
                 return f"(-({top}))" if coefficient < 0 else top
-            operator = "^" if node.op == "**" else node.op
-            return f"({render(node.left)}{operator}{render(node.right)})"
+            return f"({render(node.left)}{node.op}{render(node.right)})"
         raise ValueError(f"Unsupported gravity expression node: {type(node).__name__}")
 
-    return render(tree)
+    rendered = render(tree)
+    tokenizer = ScatteringAmplitudeTokenizer(max_particles=8, max_sequence_length=None)
+    try:
+        tokens = tokenizer.encode_infix(rendered)
+        decoded = tokenizer.decode_infix(tokens)
+        if compact_signature(expression) != compact_signature(decoded):
+            raise ValueError("decoded expression differs exactly")
+    except (ArithmeticError, KeyError, ValueError) as exc:
+        raise ValueError(f"unsafe_numeric_token_stream: {exc}") from exc
+    return rendered
 
 
 def _processes(process: str) -> tuple[str, ...]:
@@ -142,8 +157,8 @@ def _scaled_signature(expression: str) -> tuple:
 
     compact_signature handles F antisymmetry and strict parsing. Here we also
     collect numeric coefficients, cancel common factors and combine like terms.
-    Factored additive subexpressions remain structural atoms; the independent
-    numerical family check covers their physical equivalences.
+    Additive denominators remain structural atoms; the independent numerical
+    family check covers additional physical equivalences.
     """
     terms = defaultdict(Fraction)
     for sign, numerator, denominator in compact_signature(expression):

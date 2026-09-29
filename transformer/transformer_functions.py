@@ -3,7 +3,27 @@ import os
 import torch
 import torch.nn as nn
 import math
+import operator
 from tqdm import tqdm
+
+
+def _forbidden_ids(token_ids, vocab_size, eos_token):
+    """Validate an optional inference-only mask without changing token IDs."""
+    ids = tuple(sorted({operator.index(token) for token in (token_ids or ())}))
+    if any(token < 0 or token >= vocab_size for token in ids):
+        raise ValueError("Forbidden token IDs must lie inside the model vocabulary")
+    if eos_token in ids:
+        raise ValueError("EOS must remain available when masking output tokens")
+    return ids
+
+
+def _mask_inference_logits(logits, forbidden_ids):
+    if not forbidden_ids:
+        return logits
+    masked = logits.clone()
+    masked[..., list(forbidden_ids)] = -float("inf")
+    return masked
+
 
 class SinusoidalPositionalEncoding(nn.Module):
     """Sinusoidal positional encoding as used in 'Attention Is All You Need'"""
@@ -206,7 +226,8 @@ class TransformerRegressor(nn.Module):
         
         return output
     
-    def generate(self, src, max_length=100, bos_token=2, eos_token=3, pad_token=0):
+    def generate(self, src, max_length=100, bos_token=2, eos_token=3, pad_token=0,
+                 forbidden_token_ids=None, return_diagnostics=False):
         """
         Generate sequences using the trained model.
         Encoder output is cached once and reused every decoding step (Fix 1).
@@ -218,12 +239,17 @@ class TransformerRegressor(nn.Module):
             bos_token: Beginning of sequence token
             eos_token: End of sequence token
             pad_token: Padding token
+            forbidden_token_ids: Optional inference-only vocabulary mask.
+            return_diagnostics: Include unmodified per-sequence token evidence.
         
         Returns:
             Generated sequences [batch_size, generated_seq_len]
         """
         self.eval()
         batch_size = src.size(0)
+        forbidden_ids = _forbidden_ids(forbidden_token_ids, self.vocab_size, eos_token)
+        if max_length < 2:
+            raise ValueError("max_length must allow BOS and at least one emitted token")
         
         # Ensure source is on correct device
         src = src.to(self.device)
@@ -241,6 +267,7 @@ class TransformerRegressor(nn.Module):
             
             # --- Fix 4: Track which sequences have finished ---
             done = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+            sum_logprobs = torch.zeros(batch_size, dtype=torch.float, device=self.device)
             
             for _ in range(max_length - 1):
                 tgt_seq_len = generated.size(1)
@@ -259,8 +286,11 @@ class TransformerRegressor(nn.Module):
                 output = self.output_projection(dec_out)
                 
                 # Get next token predictions (last position)
-                next_token_logits = output[:, -1, :]  # [batch_size, vocab_size]
+                next_token_logits = _mask_inference_logits(output[:, -1, :], forbidden_ids)
                 next_tokens = torch.argmax(next_token_logits, dim=-1, keepdim=True)  # [batch_size, 1]
+                if return_diagnostics:
+                    chosen = torch.log_softmax(next_token_logits, dim=-1).gather(1, next_tokens).squeeze(1)
+                    sum_logprobs += torch.where(done, torch.zeros_like(chosen), chosen)
                 
                 # --- Fix 4: Finished sequences emit pad instead of a real token ---
                 next_tokens = torch.where(
@@ -277,11 +307,29 @@ class TransformerRegressor(nn.Module):
                 if done.all():
                     break
         
-        return generated
+        if not return_diagnostics:
+            return generated
+        diagnostics = []
+        for row, total in zip(generated.tolist(), sum_logprobs.tolist()):
+            completed = eos_token in row[1:]
+            emitted_length = row.index(eos_token) if completed else len(row) - 1
+            candidate = {
+                "raw_token_ids": row, "rank": 1, "returned_index": 0,
+                "selected_top1": True, "score": total, "sum_logprobs": total,
+                "eos_emitted": completed, "completed": completed,
+                "stop_reason": "eos" if completed else "max_length",
+                "generated_length": emitted_length,
+            }
+            diagnostics.append({
+                "candidates": [candidate], "stop_reason": candidate["stop_reason"],
+                "score_definition": "sum_logprobs; no length normalization",
+                "steps_executed": generated.size(1) - 1,
+            })
+        return generated, diagnostics
 
     def generate_beam(self, src, beam_size=5, length_penalty=1.0, early_stopping=True, max_length=100,
                       stochastic=True, nucl_p=0.95, temperature=1.0, rng_gen=None,
-                      bos_token=2, eos_token=3, pad_token=0):
+                      bos_token=2, eos_token=3, pad_token=0, forbidden_token_ids=None):
         """
         Beam search or nucleus sampling decoding for sequence generation.
         Args:
@@ -295,6 +343,7 @@ class TransformerRegressor(nn.Module):
             temperature: Softmax temperature (for stochastic sampling)
             rng_gen: Optional torch.Generator for reproducibility
             bos_token, eos_token, pad_token: Special token ids
+            forbidden_token_ids: Optional mask applied before log-softmax.
         Returns:
             decoded: [max_length, batch_size] tensor of generated tokens
             tgt_len: [batch_size] tensor of output lengths
@@ -305,6 +354,11 @@ class TransformerRegressor(nn.Module):
         src = src.to(device)
         batch_size = src.size(0)
         n_words = self.vocab_size
+        forbidden_ids = _forbidden_ids(forbidden_token_ids, n_words, eos_token)
+        if max_length < 2:
+            raise ValueError("max_length must allow BOS and at least one emitted token")
+        if beam_size < 1:
+            raise ValueError("beam_size must be positive")
 
         # Expand source for beam size
         src_rep = src.unsqueeze(1).expand((batch_size, beam_size, src.size(1))).contiguous().view(batch_size * beam_size, src.size(1))
@@ -324,6 +378,7 @@ class TransformerRegressor(nn.Module):
 
         # Done flags
         done = [False for _ in range(batch_size)]
+        stop_reasons = [None for _ in range(batch_size)]
         cur_len = 1
 
         # --- Fix 1: Run encoder once and cache memory (reused every beam step) ---
@@ -352,7 +407,7 @@ class TransformerRegressor(nn.Module):
                     memory_key_padding_mask=src_key_padding_mask,
                 )
                 logits = self.output_projection(output)  # [batch_size * beam_size, cur_len, vocab_size]
-                scores = logits[:, -1, :]  # [batch_size * beam_size, vocab_size]
+                scores = _mask_inference_logits(logits[:, -1, :], forbidden_ids)
 
             if stochastic:
                 scores = scores / temperature
@@ -381,7 +436,9 @@ class TransformerRegressor(nn.Module):
             # Prepare next beam
             next_batch_beam = []
             for sent_id in range(batch_size):
-                done[sent_id] = done[sent_id] or generated_hyps[sent_id].is_done(next_scores[sent_id].max().item())
+                if not done[sent_id] and generated_hyps[sent_id].is_done(next_scores[sent_id].max().item()):
+                    done[sent_id] = True
+                    stop_reasons[sent_id] = "retained_hypotheses_complete"
                 if done[sent_id]:
                     next_batch_beam.extend([(0, pad_token, 0)] * beam_size)
                     continue
@@ -393,18 +450,32 @@ class TransformerRegressor(nn.Module):
                     else:
                         beam_id = idx.item() // n_words
                         word_id = idx.item() % n_words
+                    # Never promote a masked -inf proposal just to fill a beam.
+                    if forbidden_ids and not math.isfinite(value.item()):
+                        continue
                     if word_id == eos_token or cur_len + 1 == max_length:
                         hyp = generated[:cur_len, sent_id * beam_size + beam_id].clone().cpu()
-                        generated_hyps[sent_id].add(hyp, value.item())
+                        generated_hyps[sent_id].add(
+                            hyp, value.item(), raw_token_ids=hyp.tolist() + [word_id],
+                            eos_emitted=(word_id == eos_token),
+                            stop_reason="eos" if word_id == eos_token else "max_length",
+                        )
                     else:
                         next_sent_beam.append((value.item(), word_id, sent_id * beam_size + beam_id))
                     if len(next_sent_beam) == beam_size:
                         break
-                if not stochastic:
+                if not stochastic and not forbidden_ids:
                     assert len(next_sent_beam) == 0 if cur_len + 1 == max_length else len(next_sent_beam) == beam_size
                 if len(next_sent_beam) == 0:
+                    if forbidden_ids:
+                        done[sent_id] = True
+                        stop_reasons[sent_id] = "max_length" if cur_len + 1 == max_length else "no_active_continuations"
                     next_sent_beam = [(0, pad_token, 0)] * beam_size
-                if stochastic and len(next_sent_beam) < beam_size:
+                if forbidden_ids and len(next_sent_beam) < beam_size:
+                    # Keep only actual allowed continuations; preserve duplicate
+                    # hypotheses instead of introducing synthetic PAD prefixes.
+                    next_sent_beam.extend([next_sent_beam[-1]] * (beam_size - len(next_sent_beam)))
+                elif stochastic and len(next_sent_beam) < beam_size:
                     next_sent_beam.extend([(-1e9, pad_token, 0)] * (beam_size - len(next_sent_beam)))
                 next_batch_beam.extend(next_sent_beam)
                 assert len(next_batch_beam) == beam_size * (sent_id + 1)
@@ -421,6 +492,8 @@ class TransformerRegressor(nn.Module):
         tgt_len = torch.zeros(batch_size, dtype=torch.long)
         best = []
         for i, hypotheses in enumerate(generated_hyps):
+            hypotheses.steps_executed = cur_len - 1
+            hypotheses.stop_reason = stop_reasons[i] or "max_length"
             best_hyp = max(hypotheses.hyp, key=lambda x: x[0])[1]
             tgt_len[i] = len(best_hyp) + 1
             best.append(best_hyp)
@@ -438,16 +511,25 @@ class BeamHypotheses(object):
         self.early_stopping = early_stopping
         self.n_hyp = n_hyp
         self.hyp = []
+        self.hyp_metadata = []
+        self.terminal_proposals = 0
         self.worst_score = 1e9
     def __len__(self):
         return len(self.hyp)
-    def add(self, hyp, sum_logprobs):
+    def add(self, hyp, sum_logprobs, raw_token_ids=None, eos_emitted=None, stop_reason=None):
         score = sum_logprobs / (len(hyp) ** self.length_penalty)
+        self.terminal_proposals += 1
         if len(self) < self.n_hyp or score > self.worst_score:
             self.hyp.append((score, hyp))
+            self.hyp_metadata.append({
+                "raw_token_ids": raw_token_ids if raw_token_ids is not None else hyp.tolist(),
+                "sum_logprobs": sum_logprobs, "eos_emitted": eos_emitted,
+                "completed": eos_emitted, "stop_reason": stop_reason or "unknown",
+            })
             if len(self) > self.n_hyp:
                 sorted_scores = sorted([(s, idx) for idx, (s, _) in enumerate(self.hyp)])
                 del self.hyp[sorted_scores[0][1]]
+                del self.hyp_metadata[sorted_scores[0][1]]
                 self.worst_score = sorted_scores[1][0]
             else:
                 self.worst_score = min(score, self.worst_score)
@@ -859,8 +941,9 @@ def load_transformer_model(model_class, model_path, optimizer=None, device='cpu'
     }
 
 
-def decode_with_model(model, src, max_length, decoding_method='greedy', beam_size=5, 
-                     p_nucleus=0.9, temperature_nucleus=1.0, bos_token=2, eos_token=3, pad_token=0):
+def decode_with_model(model, src, max_length, decoding_method='greedy', beam_size=5,
+                     p_nucleus=0.9, temperature_nucleus=1.0, bos_token=2, eos_token=3, pad_token=0,
+                     forbidden_token_ids=None, return_diagnostics=False):
     """
     Decode sequences using various decoding methods.
     
@@ -873,13 +956,32 @@ def decode_with_model(model, src, max_length, decoding_method='greedy', beam_siz
         p_nucleus: Nucleus probability cutoff
         temperature_nucleus: Temperature for nucleus sampling
         bos_token, eos_token, pad_token: Special tokens
+        forbidden_token_ids: Optional inference mask, disabled by default. EOS
+            must remain allowed. The mask is applied before log-softmax, so beam
+            and sampling scores are renormalized over allowed tokens.
+        return_diagnostics: Return a third, per-input evidence list. Its raw IDs
+            are authoritative: historical beam outputs append EOS even when a
+            length limit, rather than an emitted EOS, terminated the sequence.
         
     Returns:
-        tuple: (decoded_sequences, beam_hypotheses_or_None)
+        tuple: (decoded_sequences, beam_hypotheses_or_None), optionally followed
+            by diagnostics. Legacy output tensors and beam ordering are kept for
+            callers that do not request evidence. Duplicate hypotheses survive.
     """
+    mask_kwargs = {}
+    if forbidden_token_ids is not None:
+        forbidden_token_ids = list(forbidden_token_ids)
+        mask_kwargs["forbidden_token_ids"] = forbidden_token_ids
     if decoding_method == 'greedy':
-        out = model.generate(src, max_length=max_length, bos_token=bos_token, eos_token=eos_token, pad_token=pad_token)
-        return out, None
+        greedy_kwargs = dict(mask_kwargs)
+        if return_diagnostics:
+            greedy_kwargs["return_diagnostics"] = True
+        generated = model.generate(src, max_length=max_length, bos_token=bos_token,
+                                   eos_token=eos_token, pad_token=pad_token, **greedy_kwargs)
+        if not return_diagnostics:
+            return generated, None
+        out, diagnostics = generated
+        all_beams = None
     elif decoding_method in ['beam', 'nucleus']:
         stochastic = (decoding_method == 'nucleus')
         decoded, tgt_len, generated_hyps = model.generate_beam(
@@ -893,7 +995,8 @@ def decode_with_model(model, src, max_length, decoding_method='greedy', beam_siz
             temperature=temperature_nucleus,
             bos_token=bos_token,
             eos_token=eos_token,
-            pad_token=pad_token
+            pad_token=pad_token,
+            **mask_kwargs,
         )
         # Prepare list of all hypotheses per sample (append EOS for fair comparison)
         all_beams = []
@@ -904,9 +1007,48 @@ def decode_with_model(model, src, max_length, decoding_method='greedy', beam_siz
                 hyps_for_sample.append(seq)
             all_beams.append(hyps_for_sample)
         # Return in same shape as greedy for compatibility, plus beams
-        return decoded.transpose(0, 1), all_beams
+        out = decoded.transpose(0, 1)
+        if not return_diagnostics:
+            return out, all_beams
+        diagnostics = []
+        for hyps in generated_hyps:
+            ranked_indices = sorted(range(len(hyps.hyp)), key=lambda i: -hyps.hyp[i][0])
+            candidates = []
+            for rank, index in enumerate(ranked_indices, 1):
+                score, _ = hyps.hyp[index]
+                evidence = dict(hyps.hyp_metadata[index])
+                evidence.update({
+                    "rank": rank, "returned_index": index, "selected_top1": rank == 1,
+                    "score": score, "generated_length": len(evidence["raw_token_ids"]) - 1,
+                })
+                candidates.append(evidence)
+            diagnostics.append({
+                "candidates": candidates, "stop_reason": hyps.stop_reason,
+                "steps_executed": hyps.steps_executed,
+                "terminal_proposals": hyps.terminal_proposals,
+                "retained_hypotheses": len(candidates),
+                "score_definition": "sum_logprobs / prefix_length**1.0; prefix includes BOS and excludes final proposed token",
+                "candidate_scope": "all retained hypotheses, including duplicates; pruned search proposals are not returned",
+            })
     else:
         raise ValueError(f"Unknown decoding method: {decoding_method}")
+
+    for record in diagnostics:
+        record.update({
+            "decoding_method": decoding_method, "max_length": max_length,
+            "length_limit_includes_bos": True,
+            "forbidden_token_ids": sorted(forbidden_token_ids or []),
+            "mask_enabled": bool(forbidden_token_ids),
+            "score_distribution": "allowed-token renormalized log_softmax" if forbidden_token_ids else "unmasked log_softmax",
+            "nucleus_sampling_renormalized": decoding_method == "nucleus",
+            "nucleus_score_before_top_p_renormalization": decoding_method == "nucleus",
+        })
+        if decoding_method == "nucleus":
+            record.update({
+                "p_nucleus": p_nucleus, "temperature": temperature_nucleus,
+                "nucleus_cutoff_rule": "cumulative_probability < p, always including the highest-probability token (legacy policy)",
+            })
+    return out, all_beams, diagnostics
 
 
 def clean_seq(arr, pad_token=0, eos_token=3):

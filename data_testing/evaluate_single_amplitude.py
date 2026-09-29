@@ -599,6 +599,8 @@ def build_evaluator_args(
 
     backend = "ym" if args.numeric_backend == "yang-mills" else args.numeric_backend
     evaluator_args = [
+        "--input-provenance-path", str(resolve_repo_path(args.amplitude_csv)),
+        "--reference-provided" if selected.evaluator_format in {"raw", "token-pair"} else "--no-reference-provided",
         "--model-path",
         str(resolve_repo_path(args.model_path)),
         "--numeric-backend",
@@ -642,6 +644,9 @@ def build_evaluator_args(
             evaluator_args.extend(["--single-amplitude-expression-column", "1"])
 
     scalar_options = (
+        ("--sampling-seed", getattr(args, "sampling_seed", None)),
+        ("--numeric-seed", getattr(args, "numeric_seed", None)),
+        ("--numeric-samples", getattr(args, "numeric_samples", None)),
         ("--device", args.device),
         ("--n-particles", args.n_particles),
         ("--numeric-mass", args.numeric_mass),
@@ -655,6 +660,8 @@ def build_evaluator_args(
     for flag, value in scalar_options:
         if value is not None:
             evaluator_args.extend([flag, str(value)])
+    if getattr(args, "mask_invalid_tokens", None) is not None:
+        evaluator_args.append("--mask-invalid-tokens" if args.mask_invalid_tokens else "--no-mask-invalid-tokens")
 
     if args.decoding_method in {"beam", "nucleus"}:
         evaluator_args.extend(["--beam-size", str(args.beam_size)])
@@ -690,6 +697,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("model_path", help="Trained model checkpoint (.pt).")
+    parser.add_argument("--sampling-seed", type=int, default=None)
+    parser.add_argument("--numeric-seed", type=int, default=None)
+    parser.add_argument("--numeric-samples", type=int, default=None)
+    parser.add_argument("--mask-invalid-tokens", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("amplitude_csv", help="Input .csv or .csv.gz amplitude file.")
     parser.add_argument(
         "--numeric-backend",
@@ -855,7 +866,8 @@ def main(argv: list[str] | None = None) -> int:
         # Import lazily so CSV selection and --help do not require PyTorch.
         if str(ROOT) not in sys.path:
             sys.path.insert(0, str(ROOT))
-        from data_testing import evaluate_model
+        import importlib
+        evaluate_model = importlib.import_module("data_testing.evaluate_model")
 
         return evaluate_model.main(evaluator_args)
 

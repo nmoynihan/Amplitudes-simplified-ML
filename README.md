@@ -150,6 +150,64 @@ Datasets are named `<theory>_<N>pt_<size>[_tok].csv[.gz]` (`ym_`/`sqed_`/`gi_`; 
 `transformer_evaluator.py` and the Optuna hyperparameter-search scripts (`optuna_*.py`) are configured
 in-file. The `run_*.sh` scripts chain generate → train → evaluate at fixed scales.
 
+## Reproduce the four-point Yang–Mills audit and simplification
+
+The [four-gluon workflow](data_testing/ym_4pt_workflow/README.md) includes the
+seed completion, sparse symbolic basis derivation, model-input preparation,
+one actual greedy prediction, and all independent checks behind the scientific
+audit of `gluon4feyn1234_model_ready.csv`:
+
+```sh
+python -m data_testing.ym_4pt_workflow run --derive \
+    --checkpoint /path/to/4POINT_YM_Model_500k_Colour/best_model.pt \
+    --output-dir /tmp/ym4-complete-run
+```
+
+Use `verify --output-dir /tmp/ym4-audit-run` to reconstruct and audit the input
+without a checkpoint. The package includes the original audit report, small
+input fixture, and historical evidence; generated results go to a new or empty
+output directory. The compact representation was derived symbolically before
+the model call, and the documentation records that distinction.
+
+## Reproduce the five-point scalar-gravity simplification
+
+The [model-assisted five-point workflow](data_testing/gravity_5pt_workflow/README.md)
+reproduces the two selected greedy predictions and the analytic reconstruction
+used in the technical note:
+
+```sh
+python -m data_testing.gravity_5pt_workflow \
+    --source /path/to/gravity5unified12345_seed.csv \
+    --checkpoint /path/to/best_model.pt \
+    --output-dir /path/to/new-empty-run
+```
+
+The source CSV and model checkpoint remain external. Use a new or empty output
+directory for each run. The package documents the 99-token unrestricted
+identity, the 67- and 53-token positive-positive helicity results, and the
+division between analytic preparation, actual neural inference and verification.
+Use `--prepare-only` without `--checkpoint` to run just the analytic preparation.
+
+
+## Reproduce the five-point Yang–Mills simplification
+
+The [verified 16-component YM workflow](data_testing/ym_5pt_workflow/README.md)
+contains the symbolic preparation, model inference, cyclic reconstruction, and
+independent exact/numerical checks used for the five-point worked example:
+
+```sh
+python -m data_testing.ym_5pt_workflow \
+    --checkpoint /path/to/5POINT_YM_Model_500k_Colour/best_model.pt \
+    --output-dir /tmp/ym5-run
+```
+
+This reconstructs the **complete cyclic amplitude**, formed from the five images
+of `gluon5feyn12345.csv.gz`, with no averaging factor. The package includes the
+16 prepared scalar inputs and a command to regenerate them. Use `--verify-only`
+without a checkpoint to check the preparation; use a new output directory for
+each run. The workflow documentation explains the fixed representative selection
+and the scope of this prepared-input demonstration.
+
 ## Citation
 
 ```
