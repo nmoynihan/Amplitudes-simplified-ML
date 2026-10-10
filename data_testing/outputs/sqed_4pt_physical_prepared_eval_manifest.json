@@ -1,0 +1,754 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-10-07T17:12:20.010692+01:00",
+  "argv": [
+    "--model-path",
+    "/Users/kymani/Documents/SQED_KYMANI/SQED/4PT_Model/best_model.pt",
+    "--device",
+    "cpu",
+    "--data-source",
+    "csv",
+    "--existing-raw-csv",
+    "/Users/kymani/Documents/New_Scattering_AI/Repo/Amplitudes-simplified-ML/data_testing/sqed_4pt_physical/sqed_4pt_physical.csv",
+    "--n-particles",
+    "4",
+    "--numeric-backend",
+    "sqed",
+    "--numeric-pol-modes",
+    "coulomb",
+    "covariant",
+    "--numeric-samples",
+    "5",
+    "--tokenizer-max-particles",
+    "8",
+    "--existing-csv-max-rows",
+    "1",
+    "--decoding-method",
+    "greedy",
+    "--max-decode-tokens",
+    "256",
+    "--batch-size",
+    "1",
+    "--no-plots",
+    "--output-stem",
+    "sqed_4pt_physical_eval",
+    "--existing-raw-csv",
+    "/Users/kymani/Documents/New_Scattering_AI/Repo/Amplitudes-simplified-ML/data_testing/sqed_4pt_physical/sqed_4pt_physical_prepared.csv",
+    "--output-stem",
+    "sqed_4pt_physical_prepared_eval"
+  ],
+  "checkpoint": {
+    "path": "/Users/kymani/Documents/SQED_KYMANI/SQED/4PT_Model/best_model.pt",
+    "sha256": "394dfb218041f7d28ac5d775a1ec9604c033cd7297c9d375aa5117ef7c249197",
+    "bytes": 337205131
+  },
+  "input": {
+    "path": "/Users/kymani/Documents/New_Scattering_AI/Repo/Amplitudes-simplified-ML/data_testing/sqed_4pt_physical/sqed_4pt_physical_prepared.csv",
+    "sha256": "b63df5a971bcd826efc1f23e866fa518fb82c868643646d1a1fb378625575de2",
+    "bytes": 272
+  },
+  "prepared_raw": {
+    "path": "/Users/kymani/Documents/New_Scattering_AI/Repo/Amplitudes-simplified-ML/data_testing/outputs/sqed_4pt_physical_prepared_eval.csv",
+    "sha256": "9f234b9a0f42ab253ab0521e8d03ee0f70643437794cd0fd9dfa8855defa787f",
+    "bytes": 264
+  },
+  "prepared_tokens": {
+    "path": "/Users/kymani/Documents/New_Scattering_AI/Repo/Amplitudes-simplified-ML/data_testing/outputs/sqed_4pt_physical_prepared_eval_tok.csv",
+    "sha256": "411acf8b751f41cef20097c44f609fc0c813f7e0cbf7141e90911758912f7894",
+    "bytes": 321
+  },
+  "source_format": "csv",
+  "reference_provided": true,
+  "reference_provenance": "supplied paired target",
+  "device": "cpu",
+  "torch_version": "2.13.0",
+  "python_version": "3.12.13 | packaged by conda-forge | (main, Mar  5 2026, 17:06:14) [Clang 19.1.7 ]",
+  "torch_threads": 6,
+  "model_hyperparams": {
+    "vocab_size": 58,
+    "embedding_dim": 512,
+    "n_heads": 4,
+    "n_enc_layers": 5,
+    "n_dec_layers": 5,
+    "dropout": 0.025,
+    "sinusoidal_embeddings": true,
+    "max_seq_len": 5000,
+    "pad_token_id": 0,
+    "head_ff_dim": 1024,
+    "device": "cpu"
+  },
+  "source_capacity": 5000,
+  "target_capacity": 5000,
+  "tokenizer": {
+    "file": {
+      "path": "/Users/kymani/Documents/New_Scattering_AI/Repo/Amplitudes-simplified-ML/data_gen/Tokenizer.py",
+      "sha256": "cd43e14a7ed6b516c04732b5c6255fb4218c2cb69c0604e934e8dbe170e228dc",
+      "bytes": 15549
+    },
+    "max_particles": 8,
+    "id_to_token": {
+      "0": "<PAD>",
+      "1": "<UNK>",
+      "2": "<BOS>",
+      "3": "<EOS>",
+      "4": "+",
+      "5": "-",
+      "6": "*",
+      "7": "/",
+      "8": "^",
+      "9": "(",
+      "10": ")",
+      "11": "0:",
+      "12": "1:",
+      "13": "2:",
+      "14": "3:",
+      "15": "4:",
+      "16": "5:",
+      "17": "6:",
+      "18": "7:",
+      "19": "8:",
+      "20": "9:",
+      "21": "\u00b7",
+      "22": "Tr",
+      "23": "u-",
+      "24": "M",
+      "25": "p_1",
+      "26": "p_2",
+      "27": "p_3",
+      "28": "p_4",
+      "29": "p_5",
+      "30": "p_6",
+      "31": "p_7",
+      "32": "p_8",
+      "33": "e_1",
+      "34": "e_2",
+      "35": "e_3",
+      "36": "e_4",
+      "37": "e_5",
+      "38": "e_6",
+      "39": "e_7",
+      "40": "e_8",
+      "41": "F_1",
+      "42": "F_2",
+      "43": "F_3",
+      "44": "F_4",
+      "45": "F_5",
+      "46": "F_6",
+      "47": "F_7",
+      "48": "F_8",
+      "49": "M_1",
+      "50": "M_2",
+      "51": "M_3",
+      "52": "M_4",
+      "53": "M_5",
+      "54": "M_6",
+      "55": "M_7",
+      "56": "M_8"
+    },
+    "vocabulary_sha256": "e6589121cf0f58d048734e0dae25876e07e483fae774d567a8885bc1382c8717"
+  },
+  "implementation": [
+    {
+      "path": "/Users/kymani/Documents/New_Scattering_AI/Repo/Amplitudes-simplified-ML/data_testing/evaluate_model.py",
+      "sha256": "a98577c3dd8a2843456f79c71de3e8db7c305a2bdd42caddc14ca8dd065e0e1b",
+      "bytes": 130108
+    },
+    {
+      "path": "/Users/kymani/Documents/New_Scattering_AI/Repo/Amplitudes-simplified-ML/transformer/transformer_functions.py",
+      "sha256": "84902375637eebdb82435b2be60b3ea17ebd2c7d0f177402f05094cc3aad5853",
+      "bytes": 46612
+    },
+    {
+      "path": "/Users/kymani/Documents/New_Scattering_AI/Repo/Amplitudes-simplified-ML/data_testing/evaluation_diagnostics.py",
+      "sha256": "8b841ad3c32bca5fa76061f36a51c3c7faee9c4a171aab6111461b65b22606e4",
+      "bytes": 11176
+    },
+    {
+      "path": "/Users/kymani/Documents/New_Scattering_AI/Repo/Amplitudes-simplified-ML/data_testing/evaluation_records.py",
+      "sha256": "2514cba3da3acb6367c0eae769fa29304cd07244e45ce6ca4d51b923b5ff811e",
+      "bytes": 4408
+    },
+    {
+      "path": "/Users/kymani/Documents/New_Scattering_AI/Repo/Amplitudes-simplified-ML/data_testing/evaluation_integrity.py",
+      "sha256": "8b0715691acc716698f11d1bc93767361807c7092aa339fac5c45be50232071f",
+      "bytes": 7748
+    }
+  ],
+  "decoding": [
+    {
+      "name": "greedy",
+      "enabled": true,
+      "decoding_method": "greedy",
+      "max_length": null,
+      "beam_size": 1,
+      "p_nucleus": 0.95,
+      "temperature_nucleus": 1.0,
+      "evaluate_beam_hypotheses": false,
+      "max_beams_to_check": null,
+      "rerank_numerical_equiv": false
+    }
+  ],
+  "max_decode_length_override": 256,
+  "input_token_limit": null,
+  "sampling_seed": 0,
+  "mask_invalid_tokens": false,
+  "numerical": {
+    "backend": "sqed",
+    "n_particles": 4,
+    "mass": 2.0,
+    "energy_scale": 2.0,
+    "domain": "sqed",
+    "seed": 151,
+    "momentum_samples": 5,
+    "sample_schedule": {},
+    "reference_modes": [],
+    "gauge_shift": null,
+    "polarization_modes": [
+      "coulomb",
+      "covariant"
+    ],
+    "atol": 1e-12,
+    "rtol": 1e-10,
+    "available_checks": 10,
+    "required_checks": "all configured checks",
+    "resampling_policy": "none in CLI; source failures are inconclusive; candidate errors and mismatches never skipped"
+  },
+  "inputs": [
+    {
+      "row_index": 0,
+      "process": null,
+      "reference_provided": true,
+      "source": {
+        "status": "verified",
+        "field": "scrambled",
+        "original_expression": "2*(e_2 \u00b7 e_3) - 2*(e_2 \u00b7 p_1)*(e_3 \u00b7 p_1)/(p_1 \u00b7 p_2) - 2*(e_2 \u00b7 p_1)*(e_3 \u00b7 p_2)/(p_1 \u00b7 p_2) - 2*(e_3 \u00b7 p_1)*(e_2 \u00b7 p_1)/(p_1 \u00b7 p_3) - 2*(e_3 \u00b7 p_1)*(e_2 \u00b7 p_3)/(p_1 \u00b7 p_3)",
+        "original_tokens": [
+          5,
+          5,
+          5,
+          5,
+          6,
+          13,
+          21,
+          34,
+          35,
+          7,
+          6,
+          6,
+          13,
+          21,
+          34,
+          25,
+          21,
+          35,
+          25,
+          21,
+          25,
+          26,
+          7,
+          6,
+          6,
+          13,
+          21,
+          34,
+          25,
+          21,
+          35,
+          26,
+          21,
+          25,
+          26,
+          7,
+          6,
+          6,
+          13,
+          21,
+          35,
+          25,
+          21,
+          34,
+          25,
+          21,
+          25,
+          27,
+          7,
+          6,
+          6,
+          13,
+          21,
+          35,
+          25,
+          21,
+          34,
+          27,
+          21,
+          25,
+          27
+        ],
+        "decoded_expression": "2*e_2\u00b7e_3 - (2*e_2\u00b7p_1*e_3\u00b7p_1)/(p_1\u00b7p_2) - (2*e_2\u00b7p_1*e_3\u00b7p_2)/(p_1\u00b7p_2) - (2*e_3\u00b7p_1*e_2\u00b7p_1)/(p_1\u00b7p_3) - (2*e_3\u00b7p_1*e_2\u00b7p_3)/(p_1\u00b7p_3)",
+        "content_token_count": 61,
+        "bos_eos_token_count": 63,
+        "exact_check": {
+          "available": false,
+          "ok": null,
+          "reason": "no_exact_backend_for_process"
+        },
+        "numerical_check": {
+          "status": "equivalent",
+          "equivalent": true,
+          "conclusive": true,
+          "atol": 1e-12,
+          "rtol": 1e-10,
+          "comparison_rule": "abs(source-candidate) <= max(atol, rtol*max(abs(source),abs(candidate)))",
+          "relative_error_definition": "absolute_error/max(abs(source),abs(candidate)); zero for two zeros",
+          "scaled_error_definition": "absolute_error/allowed_error; zero for an exact match with zero allowed_error, inf otherwise",
+          "sample_policy": "all_supplied; source arithmetic exceptions/nonfinite values only may be replaced within the supplied bounded pool",
+          "counts": {
+            "available_samples": 10,
+            "requested_valid_samples": 10,
+            "attempted_samples": 10,
+            "valid_source_samples": 10,
+            "valid_samples": 10,
+            "equivalent_samples": 10,
+            "mismatched_samples": 0,
+            "source_error_samples": 0,
+            "candidate_error_samples": 0
+          },
+          "first_failure": null,
+          "first_mismatch": null,
+          "failures": [],
+          "checks": [
+            {
+              "sample_index": 0,
+              "source": {
+                "real": 1.9397299368921428,
+                "imag": 0.0
+              },
+              "candidate": {
+                "real": 1.9397299368921428,
+                "imag": 0.0
+              },
+              "status": "equivalent",
+              "absolute_error": 0.0,
+              "relative_error": 0.0,
+              "allowed_error": 1.939729936892143e-10,
+              "scaled_error": 0.0,
+              "atol": 1e-12,
+              "rtol": 1e-10
+            },
+            {
+              "sample_index": 1,
+              "source": {
+                "real": 1.8757482881903544,
+                "imag": 0.0
+              },
+              "candidate": {
+                "real": 1.8757482881903544,
+                "imag": 0.0
+              },
+              "status": "equivalent",
+              "absolute_error": 0.0,
+              "relative_error": 0.0,
+              "allowed_error": 1.8757482881903544e-10,
+              "scaled_error": 0.0,
+              "atol": 1e-12,
+              "rtol": 1e-10
+            },
+            {
+              "sample_index": 2,
+              "source": {
+                "real": 1.9353383087849885,
+                "imag": 0.0
+              },
+              "candidate": {
+                "real": 1.9353383087849885,
+                "imag": 0.0
+              },
+              "status": "equivalent",
+              "absolute_error": 0.0,
+              "relative_error": 0.0,
+              "allowed_error": 1.9353383087849885e-10,
+              "scaled_error": 0.0,
+              "atol": 1e-12,
+              "rtol": 1e-10
+            },
+            {
+              "sample_index": 3,
+              "source": {
+                "real": 1.131457609582224,
+                "imag": 0.0
+              },
+              "candidate": {
+                "real": 1.131457609582224,
+                "imag": 0.0
+              },
+              "status": "equivalent",
+              "absolute_error": 0.0,
+              "relative_error": 0.0,
+              "allowed_error": 1.131457609582224e-10,
+              "scaled_error": 0.0,
+              "atol": 1e-12,
+              "rtol": 1e-10
+            },
+            {
+              "sample_index": 4,
+              "source": {
+                "real": 1.7787750953869477,
+                "imag": 0.0
+              },
+              "candidate": {
+                "real": 1.7787750953869477,
+                "imag": 0.0
+              },
+              "status": "equivalent",
+              "absolute_error": 0.0,
+              "relative_error": 0.0,
+              "allowed_error": 1.7787750953869477e-10,
+              "scaled_error": 0.0,
+              "atol": 1e-12,
+              "rtol": 1e-10
+            },
+            {
+              "sample_index": 5,
+              "source": {
+                "real": 1.9397299368921426,
+                "imag": 0.0
+              },
+              "candidate": {
+                "real": 1.9397299368921426,
+                "imag": 0.0
+              },
+              "status": "equivalent",
+              "absolute_error": 0.0,
+              "relative_error": 0.0,
+              "allowed_error": 1.9397299368921427e-10,
+              "scaled_error": 0.0,
+              "atol": 1e-12,
+              "rtol": 1e-10
+            },
+            {
+              "sample_index": 6,
+              "source": {
+                "real": 1.875748288190354,
+                "imag": 0.0
+              },
+              "candidate": {
+                "real": 1.875748288190354,
+                "imag": 0.0
+              },
+              "status": "equivalent",
+              "absolute_error": 0.0,
+              "relative_error": 0.0,
+              "allowed_error": 1.8757482881903542e-10,
+              "scaled_error": 0.0,
+              "atol": 1e-12,
+              "rtol": 1e-10
+            },
+            {
+              "sample_index": 7,
+              "source": {
+                "real": 1.9353383087849885,
+                "imag": 0.0
+              },
+              "candidate": {
+                "real": 1.9353383087849885,
+                "imag": 0.0
+              },
+              "status": "equivalent",
+              "absolute_error": 0.0,
+              "relative_error": 0.0,
+              "allowed_error": 1.9353383087849885e-10,
+              "scaled_error": 0.0,
+              "atol": 1e-12,
+              "rtol": 1e-10
+            },
+            {
+              "sample_index": 8,
+              "source": {
+                "real": 1.131457609582224,
+                "imag": 0.0
+              },
+              "candidate": {
+                "real": 1.131457609582224,
+                "imag": 0.0
+              },
+              "status": "equivalent",
+              "absolute_error": 0.0,
+              "relative_error": 0.0,
+              "allowed_error": 1.131457609582224e-10,
+              "scaled_error": 0.0,
+              "atol": 1e-12,
+              "rtol": 1e-10
+            },
+            {
+              "sample_index": 9,
+              "source": {
+                "real": 1.778775095386949,
+                "imag": 0.0
+              },
+              "candidate": {
+                "real": 1.778775095386949,
+                "imag": 0.0
+              },
+              "status": "equivalent",
+              "absolute_error": 0.0,
+              "relative_error": 0.0,
+              "allowed_error": 1.778775095386949e-10,
+              "scaled_error": 0.0,
+              "atol": 1e-12,
+              "rtol": 1e-10
+            }
+          ],
+          "backend": "sqed",
+          "process": null,
+          "helicity_domain": null
+        }
+      },
+      "reference": {
+        "status": "verified",
+        "field": "simple",
+        "original_expression": "-2*(p_1 \u00b7 F_2 \u00b7 F_3 \u00b7 p_1)/((p_1 \u00b7 p_2)*(p_1 \u00b7 p_3))",
+        "original_tokens": [
+          7,
+          6,
+          23,
+          13,
+          21,
+          21,
+          21,
+          25,
+          42,
+          43,
+          25,
+          6,
+          21,
+          25,
+          26,
+          21,
+          25,
+          27
+        ],
+        "decoded_expression": "(-2*p_1\u00b7F_2\u00b7F_3\u00b7p_1)/(p_1\u00b7p_2*p_1\u00b7p_3)",
+        "content_token_count": 18,
+        "bos_eos_token_count": 20,
+        "exact_check": {
+          "available": false,
+          "ok": null,
+          "reason": "no_exact_backend_for_process"
+        },
+        "numerical_check": {
+          "status": "equivalent",
+          "equivalent": true,
+          "conclusive": true,
+          "atol": 1e-12,
+          "rtol": 1e-10,
+          "comparison_rule": "abs(source-candidate) <= max(atol, rtol*max(abs(source),abs(candidate)))",
+          "relative_error_definition": "absolute_error/max(abs(source),abs(candidate)); zero for two zeros",
+          "scaled_error_definition": "absolute_error/allowed_error; zero for an exact match with zero allowed_error, inf otherwise",
+          "sample_policy": "all_supplied; source arithmetic exceptions/nonfinite values only may be replaced within the supplied bounded pool",
+          "counts": {
+            "available_samples": 10,
+            "requested_valid_samples": 10,
+            "attempted_samples": 10,
+            "valid_source_samples": 10,
+            "valid_samples": 10,
+            "equivalent_samples": 10,
+            "mismatched_samples": 0,
+            "source_error_samples": 0,
+            "candidate_error_samples": 0
+          },
+          "first_failure": null,
+          "first_mismatch": null,
+          "failures": [],
+          "checks": [
+            {
+              "sample_index": 0,
+              "source": {
+                "real": 1.9397299368921426,
+                "imag": 0.0
+              },
+              "candidate": {
+                "real": 1.9397299368921426,
+                "imag": 0.0
+              },
+              "status": "equivalent",
+              "absolute_error": 0.0,
+              "relative_error": 0.0,
+              "allowed_error": 1.9397299368921427e-10,
+              "scaled_error": 0.0,
+              "atol": 1e-12,
+              "rtol": 1e-10
+            },
+            {
+              "sample_index": 1,
+              "source": {
+                "real": 1.8757482881903544,
+                "imag": 0.0
+              },
+              "candidate": {
+                "real": 1.8757482881903544,
+                "imag": 0.0
+              },
+              "status": "equivalent",
+              "absolute_error": 0.0,
+              "relative_error": 0.0,
+              "allowed_error": 1.8757482881903544e-10,
+              "scaled_error": 0.0,
+              "atol": 1e-12,
+              "rtol": 1e-10
+            },
+            {
+              "sample_index": 2,
+              "source": {
+                "real": 1.9353383087849885,
+                "imag": 0.0
+              },
+              "candidate": {
+                "real": 1.9353383087849885,
+                "imag": 0.0
+              },
+              "status": "equivalent",
+              "absolute_error": 0.0,
+              "relative_error": 0.0,
+              "allowed_error": 1.9353383087849885e-10,
+              "scaled_error": 0.0,
+              "atol": 1e-12,
+              "rtol": 1e-10
+            },
+            {
+              "sample_index": 3,
+              "source": {
+                "real": 1.1314576095822237,
+                "imag": 0.0
+              },
+              "candidate": {
+                "real": 1.1314576095822237,
+                "imag": 0.0
+              },
+              "status": "equivalent",
+              "absolute_error": 0.0,
+              "relative_error": 0.0,
+              "allowed_error": 1.1314576095822238e-10,
+              "scaled_error": 0.0,
+              "atol": 1e-12,
+              "rtol": 1e-10
+            },
+            {
+              "sample_index": 4,
+              "source": {
+                "real": 1.7787750953869474,
+                "imag": 0.0
+              },
+              "candidate": {
+                "real": 1.7787750953869474,
+                "imag": 0.0
+              },
+              "status": "equivalent",
+              "absolute_error": 0.0,
+              "relative_error": 0.0,
+              "allowed_error": 1.7787750953869474e-10,
+              "scaled_error": 0.0,
+              "atol": 1e-12,
+              "rtol": 1e-10
+            },
+            {
+              "sample_index": 5,
+              "source": {
+                "real": 1.9397299368921421,
+                "imag": 0.0
+              },
+              "candidate": {
+                "real": 1.9397299368921421,
+                "imag": 0.0
+              },
+              "status": "equivalent",
+              "absolute_error": 0.0,
+              "relative_error": 0.0,
+              "allowed_error": 1.9397299368921422e-10,
+              "scaled_error": 0.0,
+              "atol": 1e-12,
+              "rtol": 1e-10
+            },
+            {
+              "sample_index": 6,
+              "source": {
+                "real": 1.875748288190354,
+                "imag": 0.0
+              },
+              "candidate": {
+                "real": 1.875748288190354,
+                "imag": 0.0
+              },
+              "status": "equivalent",
+              "absolute_error": 0.0,
+              "relative_error": 0.0,
+              "allowed_error": 1.8757482881903542e-10,
+              "scaled_error": 0.0,
+              "atol": 1e-12,
+              "rtol": 1e-10
+            },
+            {
+              "sample_index": 7,
+              "source": {
+                "real": 1.9353383087849885,
+                "imag": 0.0
+              },
+              "candidate": {
+                "real": 1.9353383087849885,
+                "imag": 0.0
+              },
+              "status": "equivalent",
+              "absolute_error": 0.0,
+              "relative_error": 0.0,
+              "allowed_error": 1.9353383087849885e-10,
+              "scaled_error": 0.0,
+              "atol": 1e-12,
+              "rtol": 1e-10
+            },
+            {
+              "sample_index": 8,
+              "source": {
+                "real": 1.1314576095822264,
+                "imag": 0.0
+              },
+              "candidate": {
+                "real": 1.1314576095822264,
+                "imag": 0.0
+              },
+              "status": "equivalent",
+              "absolute_error": 0.0,
+              "relative_error": 0.0,
+              "allowed_error": 1.1314576095822264e-10,
+              "scaled_error": 0.0,
+              "atol": 1e-12,
+              "rtol": 1e-10
+            },
+            {
+              "sample_index": 9,
+              "source": {
+                "real": 1.778775095386949,
+                "imag": 0.0
+              },
+              "candidate": {
+                "real": 1.778775095386949,
+                "imag": 0.0
+              },
+              "status": "equivalent",
+              "absolute_error": 0.0,
+              "relative_error": 0.0,
+              "allowed_error": 1.778775095386949e-10,
+              "scaled_error": 0.0,
+              "atol": 1e-12,
+              "rtol": 1e-10
+            }
+          ],
+          "backend": "sqed",
+          "process": null,
+          "helicity_domain": null
+        }
+      },
+      "token_count_convention": "prefix content tokens; model input adds one BOS and one EOS"
+    }
+  ],
+  "training_provenance": "Checkpoint training dataset hash not authenticated by this evaluation."
+}

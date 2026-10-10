@@ -1,0 +1,10 @@
+{
+  "recorded_unit_run_calls": 2,
+  "earlier_debug_calls": 2,
+  "earlier_debug_note": "Same initial expanded U input decoded greedy and beam20 before inspection-key typo was corrected. Earlier raw evidence overwritten by corrected recorded run. Earlier runs are not used as successful evidence.",
+  "recorded_unit_input_variants": 1,
+  "recorded_numerator_calls": 3,
+  "recorded_numerator_input_variants": 2,
+  "total_decode_calls_so_far": 7,
+  "numerator_note": "No success in two scalar-dot numerator variants. Next generated variant was rejected by the limited on_shell precheck before any inference; it requires additionally reducing p1.p4 and p4.p4. Search stopped because root found a direct full-amplitude greedy success."
+}

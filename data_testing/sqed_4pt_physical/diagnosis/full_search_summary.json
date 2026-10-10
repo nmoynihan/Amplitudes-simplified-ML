@@ -1,0 +1,19 @@
+{
+  "attempted_inputs": 3,
+  "retained_candidates_checked": 43,
+  "success": {
+    "case": "momentum_eliminated",
+    "input": "2*(e_2 · e_3) - 2*(e_2 · p_1)*(e_3 · p_1)/(p_1 · p_2) - 2*(e_2 · p_1)*(e_3 · p_2)/(p_1 · p_2) - 2*(e_3 · p_1)*(e_2 · p_1)/(p_1 · p_3) - 2*(e_3 · p_1)*(e_2 · p_3)/(p_1 · p_3)",
+    "prediction": "(-2*p_1·F_2·F_3·p_1)/(p_1·p_2*p_1·p_3)",
+    "mode": "greedy",
+    "rank": 1,
+    "input_tokens": 61,
+    "prediction_tokens": 18,
+    "scope": "complete physical amplitude"
+  },
+  "checkpoint_sha256": "394dfb218041f7d28ac5d775a1ec9604c033cd7297c9d375aa5117ef7c249197",
+  "elapsed_seconds": 1.9819088749936782,
+  "weights_changed": false,
+  "compact_target_sent_to_inference": false,
+  "scope": "Bounded search of exact equivalent scalar-only complete-amplitude serializations"
+}

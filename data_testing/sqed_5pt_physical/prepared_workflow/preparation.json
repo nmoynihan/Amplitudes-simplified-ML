@@ -1,0 +1,10 @@
+{
+  "source": "/Users/kymani/Documents/New_Scattering_AI/Repo/Amplitudes-simplified-ML/data_testing/sqed_5pt_physical/sqed_5pt_physical.csv",
+  "output": "/Users/kymani/Documents/New_Scattering_AI/Repo/Amplitudes-simplified-ML/data_testing/sqed_5pt_physical/prepared_workflow/sqed_5pt_prepared.csv",
+  "preparation": "Substitute e_i -> e_i-p_i*(p1.e_i)/(p1.p_i) in the original scalar input; expand and cancel scalar factors.",
+  "compact_target_used_for_preparation": false,
+  "exact_original_minus_prepared": 0,
+  "input_tokens": 348,
+  "prepared_tokens": 528,
+  "exact_tokenizer_round_trip": true
+}

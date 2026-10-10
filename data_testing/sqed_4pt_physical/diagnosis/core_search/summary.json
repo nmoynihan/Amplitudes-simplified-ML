@@ -1,0 +1,28 @@
+{
+  "cores": [
+    "unit_core"
+  ],
+  "successful_cores": {
+    "unit_core": {
+      "input": "(p_1 · p_2*e_2 · p_3*e_3 · p_1)/(p_1 · p_2*p_1 · p_3) - (p_1 · e_2*p_2 · p_3*e_3 · p_1)/(p_1 · p_2*p_1 · p_3) - (p_1 · p_2*e_2 · e_3*p_3 · p_1)/(p_1 · p_2*p_1 · p_3) + (p_1 · e_2*p_2 · e_3*p_3 · p_1)/(p_1 · p_2*p_1 · p_3)",
+      "prediction": "(p_1·F_3·F_2·p_1)/(p_1·p_2*p_1·p_3)",
+      "variant": 0,
+      "seed": 739100,
+      "mode": "beam",
+      "rank": 5,
+      "reconstructed_physical_amplitude": "(-2)*((p_1·F_3·F_2·p_1)/(p_1·p_2*p_1·p_3))",
+      "reconstruction_exact_on_shell": true
+    }
+  },
+  "model_calls": 2,
+  "unique_inputs": 1,
+  "elapsed_seconds": 0.7269495420041494,
+  "reference_supplied_to_inference": false,
+  "checkpoint_updated": false,
+  "scope": "external scalar normalization and reconstruction",
+  "checked_candidate_count": 6,
+  "unit_core_unrestricted_dot_identity": true,
+  "earlier_debug_calls": 2,
+  "separate_numerator_probe_calls": 3,
+  "total_decode_calls_including_debug_and_numerator": 7
+}

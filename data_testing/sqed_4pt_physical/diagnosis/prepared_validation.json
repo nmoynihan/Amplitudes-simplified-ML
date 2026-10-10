@@ -1,0 +1,24 @@
+{
+  "exact_input_equality": true,
+  "exact_model_prediction_equality": true,
+  "exact_ward_identities": true,
+  "numerical_points": 120,
+  "masses": [
+    0.7,
+    2.0,
+    5.0
+  ],
+  "polarisations": "random transverse rotations plus covariant gauge shifts",
+  "max_normalized_errors": {
+    "diagrams": 7.993605777301127e-15,
+    "gauge_shift": 8.548717289613705e-15,
+    "photon_exchange": 3.812922200197022e-15
+  },
+  "preparation": "p4=-p1-p2-p3 and e2.p2=e3.p3=0; distribute scalar terms",
+  "unchanged_model": true,
+  "model_input_contains_field_strengths": false,
+  "external_reconstruction_factors": false,
+  "input_tokens": 61,
+  "output_tokens": 18,
+  "model_prediction": "(-2*p_1·F_2·F_3·p_1)/(p_1·p_2*p_1·p_3)"
+}

@@ -1,0 +1,26 @@
+{
+  "checkpoint": "/Users/kymani/Documents/SQED_KYMANI/SQED/5PT_Model/best_model.pt",
+  "checkpoint_sha256": "b903feb4f875085e770e6f125af525cded69f41781768d49f2ad487f2c54f7f2",
+  "source_results": "/Users/kymani/Documents/New_Scattering_AI/Repo/Amplitudes-simplified-ML/data_testing/outputs/sqed_5pt_prepared_beam20_beam_results.csv",
+  "exact_prediction_minus_original": 0,
+  "exact_prediction_minus_prepared": 0,
+  "exact_tokenizer_round_trip": true,
+  "masses": [
+    0.7,
+    2.0,
+    5.0
+  ],
+  "momentum_points": 60,
+  "polarization_and_gauge_checks": 120,
+  "max_normalized_numerical_error": 9.43689570931383e-15,
+  "token_counts": {
+    "original": 348,
+    "prepared": 528,
+    "prediction": 96
+  },
+  "selection": "numerically_equivalent_rerank",
+  "original_top1_correct": "0",
+  "retained_candidates": "20",
+  "equivalent_candidates": "3",
+  "prediction": "(-2*p_1\u00b7F_3\u00b7p_5*p_1\u00b7F_2\u00b7F_4\u00b7p_1)/(p_1\u00b7p_2*p_1\u00b7p_3*p_1\u00b7p_4*p_3\u00b7p_5) + (2*p_5\u00b7F_4\u00b7p_1*p_1\u00b7F_2\u00b7F_3\u00b7p_1)/(p_1\u00b7p_2*p_1\u00b7p_3*p_1\u00b7p_4*p_4\u00b7p_5) - (2*p_1\u00b7F_2\u00b7p_5*p_1\u00b7F_3\u00b7F_4\u00b7p_1)/(p_1\u00b7p_2*p_1\u00b7p_3*p_1\u00b7p_4*p_2\u00b7p_5)"
+}

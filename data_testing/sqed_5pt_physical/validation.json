@@ -1,0 +1,33 @@
+{
+  "process": "phi(p1), gamma(p2), gamma(p3), gamma(p4), phi_conjugate(p5)",
+  "conventions": "All outgoing, metric (+---), p1^2=p5^2=m^2, photons massless/transverse; i*q^3 stripped.",
+  "construction": "Six scalar-line orderings plus six seagull diagrams; 18 expanded input terms; 3 F-tensor reference terms.",
+  "reference_derivation": "Gauge project all e_i to e_i-p_i*(p1.e_i)/(p1.p_i); only seagull-first diagrams survive.",
+  "physical_poles": "p1.pi and p5.pi for i=2,3,4; D_i=2*p1.pi and D_ij=2*p5.pk.",
+  "symbolic_reference_equivalence": true,
+  "symbolic_ward_identities": [
+    2,
+    3,
+    4
+  ],
+  "numerical_phase_space_points": 120,
+  "max_normalized_errors": {
+    "reference_vs_input": 1.1712852909795402e-14,
+    "independent_diagrams": 1.9539925233402755e-14,
+    "ward": 3.907985046680551e-14,
+    "gauge_shift": 1.8485213360008856e-14,
+    "photon_permutations": 2.4424906541753444e-15
+  },
+  "token_counts_without_bos_eos": {
+    "simple": 96,
+    "scrambled": 348
+  },
+  "tokenizer_max_particles": 8,
+  "training_token_row_exactly_reproduced": true,
+  "model_path": "/Users/kymani/Documents/SQED_KYMANI/SQED/5PT_Model/best_model.pt",
+  "model_vocabulary_size": 58,
+  "model_sequence_capacity": 5000,
+  "five_point_training_data": "/Users/kymani/Documents/SQED_KYMANI/sqed_5pt_500k/sqed_5pt_oneshot_train_499800.csv.gz",
+  "user_supplied_training_path_note": "The supplied sqed_4pt_500k path contains four-point data. The model log names sqed_5pt_oneshot_train_499800_tok.csv.",
+  "physics_background": "https://doi.org/10.1007/JHEP08(2022)131 (section 2.2.1); expressions derived here from scalar QED vertices, not copied from the paper."
+}

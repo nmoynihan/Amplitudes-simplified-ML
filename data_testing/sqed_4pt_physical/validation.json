@@ -1,0 +1,42 @@
+{
+  "process": "phi(p1), gamma(p2), gamma(p3), phi_conjugate(p4)",
+  "conventions": "All outgoing; metric (+---); p1^2=p4^2=m^2; photons massless/transverse; i*q^2 stripped.",
+  "construction": "Two scalar exchange diagrams and one scalar-scalar-photon-photon contact diagram.",
+  "reference_derivation": "Set E_i=e_i-p_i*(p1.e_i)/(p1.p_i). Exchange diagrams vanish; 2*E2.E3=-2*p1.F2.F3.p1/(p1.p2*p1.p3).",
+  "exact_reference_equivalence": true,
+  "exact_ward_legs": [
+    2,
+    3
+  ],
+  "exact_bose_symmetry": true,
+  "numerical_phase_space_points": 120,
+  "masses": [
+    0.7,
+    2.0,
+    5.0
+  ],
+  "polarisation_modes": [
+    "coulomb",
+    "covariant"
+  ],
+  "max_normalized_errors": {
+    "reference_vs_input": 9.992007221626409e-15,
+    "independent_diagrams": 1.1234100963225608e-14,
+    "ward": 2.1316282072803006e-14,
+    "gauge_shift": 1.2838972529400839e-14,
+    "photon_exchange": 4.052314039881821e-15
+  },
+  "token_counts_without_bos_eos": {
+    "simple": 18,
+    "scrambled": 33
+  },
+  "tokenizer_max_particles": 8,
+  "training_token_row_exactly_reproduced": true,
+  "training_data": "/Users/kymani/Documents/SQED_KYMANI/sqed_4pt_500k/sqed_4pt_oneshot_train_499800.csv.gz",
+  "model_path": "/Users/kymani/Documents/SQED_KYMANI/SQED/4PT_Model/best_model.pt",
+  "model_vocabulary_size": 58,
+  "model_sequence_capacity": 5000,
+  "saved_csv_exactly_verified": true,
+  "normalization_note": "Older repository Compton seed chain/(a*b) equals this physical amplitude divided by -2.",
+  "physics_background": "https://arxiv.org/abs/1309.0804, equations 2.11, 2.18, 2.21; formula independently derived from the stated scalar QED vertices."
+}
